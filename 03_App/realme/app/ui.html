@@ -968,6 +968,7 @@ Consider a cohort where 15.3 percent received the intervention…</pre>
         <span class="hint" id="gem-status"></span>
       </div>
       <p class="hint" id="gem-detail"></p>
+    <p class="hint warn" id="gem-rate-note" style="display:none"></p>
       <p class="hint" id="gem-check"></p>
       <div id="gem-existing" class="hidden">
         <p class="hint">Voices that already exist in your Google project. A
@@ -2292,8 +2293,17 @@ async function gemLoad(){
   bits.push(`${GEM.max_chars_effective} characters per call`
     + (GEM.max_chars == null ? ' (measured default)'
        : (GEM.max_chars === 0 ? " (the pipeline's own)" : '')));
-  bits.push(GEM.rate_match ? `pace retimed by ${GEM.rate_match}` : 'pace as cloned');
+  bits.push(GEM.rate_match ? `pace retimed by ${GEM.rate_match} (measured)`
+            : 'pace as cloned');
+  // One chunk is one request, and the allowance is daily. Worth seeing
+  // before pressing render rather than at slide nine of thirteen.
+  if(GEM.daily_calls) bits.push(`${GEM.calls_today||0} of ~${GEM.daily_calls} requests today`);
   $('gem-detail').textContent = bits.join(' · ');
+  // A correction that is on file but not being applied has to say so here.
+  // The badge used to read the stored number whether or not any render used
+  // it, which is how a 1.25 nobody measured looked like a setting.
+  const warn = $('gem-rate-note');
+  if(warn){ warn.textContent = GEM.rate_note || ''; warn.style.display = GEM.rate_note ? '' : 'none'; }
   $('gem-enroll').disabled = !(GEM.have_key && GEM.have_reference
                                && GEM.have_consent && GEM.paid_tier_ack);
   $('gem-forget').disabled = !GEM.voice;
@@ -2415,6 +2425,9 @@ for(const [id,kind] of [['conaud','consent_recording'],['gemaud','gemini_consent
       ? `${kind.replace('_',' ')} stored (${j.duration_s}s). ${kind === 'gemini_consent' ? 'You can create the cloned voice now.' : (j.ready_for_cloning?'Reference and consent both on file.':'Still need the other clip.')}`
       : `Rejected: ${j.detail}`;
     if(res.ok && j.pace_note) where.textContent += ' ' + j.pace_note;
+    // A new recording makes the transcript on file a transcript of
+    // something else, and every pace number is words over seconds.
+    if(res.ok && j.transcript_note) where.textContent += ' ' + j.transcript_note;
     if(kind === 'gemini_consent') await gemLoad();
     boot();
   });

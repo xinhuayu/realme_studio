@@ -14,8 +14,64 @@ from realme.core.media import require, run, MediaError
 from realme.pipeline import pdfdoc
 
 
-def deck_to_pdf(src: Path, workdir: Path) -> Path:
+def _missing_deck(src: Path) -> str:
+    """Why a deck path did not resolve, in terms of what to do about it.
+
+    A relative path and the wrong working directory is the ordinary way to get
+    here, and it used to surface as `pymupdf.FileNotFoundError: no such file:
+    'RealMe_Guide_narrated_v2.pdf'` five frames down -- after the preflight
+    had run, and naming only the half of the problem the reader already knew.
+    The directory is the missing half, so this names it, and looks one level
+    up and one level down for a file of the same name, because when that
+    search finds something it has found the actual mistake.
+    """
+    here = Path.cwd()
+    said = [f"No deck at {src}"]
+    if not src.is_absolute():
+        said.append(f"  The path is relative, so it was looked for in {here}")
+    found, name = [], src.name
+    for root in (here.parent, here.parent.parent):
+        try:
+            if (root / name).is_file() and (root / name) not in found:
+                found.append(root / name)
+        except OSError:
+            pass
+    for base in (here, here.parent):
+        try:
+            for child in sorted(base.iterdir()):
+                if child.is_dir() and (child / name).is_file():
+                    if (child / name) not in found:
+                        found.append(child / name)
+        except OSError:
+            pass
+    for hit in found[:3]:
+        said.append(f"  There is one here: {hit}")
+    if found:
+        said.append(f"  Run the command from {found[0].parent}, or give the "
+                    f"path in full.")
+    return "\n".join(said)
+
+
+def require_deck(src) -> Path:
+    """The deck, or a refusal that says where it was looked for.
+
+    A function rather than a line inside `deck_to_pdf`, so that a caller with
+    expensive work ahead of it can ask first: `write_script` runs the
+    writer's preflight -- a network round trip for a hosted engine -- before
+    it touches the deck, and failing after that is a wait for nothing.
+    """
     src = Path(src)
+    if not src.is_file():
+        raise MediaError(_missing_deck(src))
+    return src
+
+
+def deck_to_pdf(src: Path, workdir: Path) -> Path:
+    # Checked here as well because this is the one function every deck path
+    # goes through -- the CLI, the Studio's two upload routes, `write_script`,
+    # `revise` and `deck_texts` all arrive here before anything opens the
+    # file.
+    src = require_deck(src)
     if src.suffix.lower() == ".pdf":
         return src
     if src.suffix.lower() in {".pptx", ".ppt", ".odp"}:

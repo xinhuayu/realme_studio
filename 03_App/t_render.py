@@ -92,9 +92,131 @@ def main():
     check(len(tts2.calls) == 1, "a different voice fingerprint is a miss")
     check(all("seg_" not in Path(u.wav).name for u in u1 if u.wav),
           "utterance files are named by key, not by position")
+
+    # A pace correction belongs to the voice, not to the words, and for an
+    # engine that realises pace with ffmpeg it can be applied after the fact.
+    # The guarantee: changing it rebuilds the stretched copy and buys nothing.
+    # Before this, the factor sat in `voice_fingerprint`, so re-measuring a
+    # correction invalidated every utterance in the project -- which cost a
+    # whole guide video to put right once.
+    class Retimes(FakeTTS):
+        retimes_after = True
+
+        def __init__(self, factor=1.0, **kw):
+            super().__init__(**kw)
+            self.factor = factor
+
+        def timing_factor(self, pace=1.0):
+            return pace * self.factor
+
+    slow = Retimes(0.8, voice="v3")
+    led2 = RenderLedger(tmp / "ledger2.json")
+    a = speak_segment("The odds ratio was two.", slow, tmp / "b", 1, led2)
+    bought = len(slow.calls)
+    check(bought == 1, f"the take is bought once ({bought})")
+    check(abs(a[0].duration_s - 0.5 / 0.8) < 0.05,
+          f"and the duration the pipeline reports is the stretched one "
+          f"({a[0].duration_s:.3f}s)")
+
+    faster = Retimes(1.1, voice="v3")
+    faster.calls = slow.calls                    # the same meter
+    b = speak_segment("The odds ratio was two.", faster, tmp / "b", 1, led2)
+    check(len(slow.calls) == bought,
+          "a different correction buys nothing from the engine")
+    check(Path(b[0].wav) != Path(a[0].wav),
+          "it is a different file, so no audio at the old speed is served")
+    check(b[0].duration_s < a[0].duration_s - 0.05,
+          f"and it is genuinely faster ({b[0].duration_s:.3f}s vs "
+          f"{a[0].duration_s:.3f}s)")
+    again = speak_segment("The odds ratio was two.", faster, tmp / "b", 1, led2)
+    check(Path(again[0].wav) == Path(b[0].wav) and len(slow.calls) == bought,
+          "and repeating it is free twice over")
+
     k = RenderLedger.key("utt", "x|1.000|en-US", "fake:v1")
     check(":" in k and k.split(":")[0] == "utt" and RenderLedger.stem(k) == k.replace(":", "_"),
           "key carries no position and has a filename stem")
+
+    print("stopping at a quota loses nothing")
+    # A hosted engine's daily allowance runs out mid-render. The ledger is
+    # written after every take, so the requests already spent are recorded
+    # and the same command resumes from there. Checked, because "it should
+    # resume" is exactly the kind of claim that is true until it is not.
+    from realme.adapters.base import QuotaExceeded
+    # Every sentence distinct. A first draft repeated one sentence fourteen
+    # times, and the repeats were cache hits on the first take -- so the
+    # segment finished having bought two calls and the test proved nothing.
+    long_text = " ".join(
+        f"Point number {n} concerns the design of the study and what it can "
+        f"support." for n in range(1, 25))
+
+    class RunsOut(FakeTTS):
+        def __init__(self, allow, **kw):
+            super().__init__(**kw)
+            self.allow = allow
+
+        def synthesize(self, text, out_wav, voice=None, pace=1.0, **kw):
+            if len(self.calls) >= self.allow:
+                raise QuotaExceeded("no requests left", retry_after_s=42704.0,
+                                    limit=100, period="day")
+            return super().synthesize(text, out_wav, voice=voice, pace=pace)
+
+    led3 = RenderLedger(tmp / "ledger3.json")
+    stingy = RunsOut(2, voice="v4")
+    try:
+        speak_segment(long_text, stingy, tmp / "c", 1, led3)
+        stopped = False
+    except QuotaExceeded:
+        stopped = True
+    spent = len(stingy.calls)
+    check(stopped, "the render stops rather than carrying on silently")
+    check(spent == 2, f"after spending exactly what was allowed ({spent})")
+    kept = sum(1 for k in led3.state if k.startswith("utt:"))
+    check(kept == spent,
+          f"and every take it paid for is in the ledger ({kept} of {spent})")
+
+    plenty = RunsOut(99, voice="v4")
+    utts = speak_segment(long_text, plenty, tmp / "c", 1, led3)
+    check(len(plenty.calls) + spent > spent,
+          "re-running continues instead of starting over")
+    check(len(plenty.calls) == len(utts) - spent,
+          f"buying only what was missing ({len(plenty.calls)} more for "
+          f"{len(utts)} utterances, {spent} already paid for)")
+    check(all(Path(u.wav).is_file() for u in utts if u.wav),
+          "and the finished segment is whole")
+
+    print("a deck that is not there says where it looked")
+    # `realme lecture RealMe_Guide_narrated_v2.pdf` run from 00_Windows
+    # instead of the project root arrived as a pymupdf FileNotFoundError
+    # thirteen lines down, naming the file -- which the reader knew -- and not
+    # the directory, which was the whole mistake.
+    from realme.core.media import MediaError
+    from realme.cli import main as cli_main
+    from realme.pipeline import slides as slides_mod
+    proj = tmp / "proj"
+    (proj / "00_Windows").mkdir(parents=True, exist_ok=True)
+    (proj / "Guide.pdf").write_bytes(b"%PDF-1.4\n")
+    was = Path.cwd()
+    try:
+        os.chdir(proj / "00_Windows")
+        try:
+            slides_mod.require_deck("Guide.pdf")
+            said = ""
+        except MediaError as e:
+            said = str(e)
+        check(bool(said), "a missing deck is refused before any work")
+        check("00_Windows" in said,
+              "and the message names the directory it looked in")
+        check(str(proj / "Guide.pdf") in said,
+              "and the file of that name one level up, which is the mistake")
+        check("from " + str(proj) in said,
+              "with where to run it from")
+        check(Path(slides_mod.require_deck(proj / "Guide.pdf")).is_file(),
+              "while a deck that is there comes straight back")
+        rc = cli_main(["lecture", "Guide.pdf", "--script", "imported",
+                       "-o", "out", "--tts", "piper"])
+        check(rc == 1, f"and the CLI exits 1 rather than raising ({rc})")
+    finally:
+        os.chdir(was)
 
     print("pause-only text")
     try:

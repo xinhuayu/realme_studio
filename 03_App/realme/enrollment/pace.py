@@ -42,6 +42,57 @@ MIN_SILENCE_S = 0.18
 MIN_SPEED, MAX_SPEED = 0.55, 1.25
 FALLBACK_SPEED = 0.8
 
+#: A measured correction this small is reported as no correction at all.
+#:
+#: Not a tolerance for sloppiness -- the measurement still happens and the
+#: number is still printed. It is that two takes of the same passage by the
+#: same person differ by 3-5% (193.8 and 183.1 words a minute of speech on one
+#: measured pair), so a 1.5% gap between a speaker and their clone is inside
+#: the variation of the thing being measured. Retiming is not free: atempo
+#: costs 2-11% of the energy above 4 kHz, which is the band a voice sounds
+#: "smoothed" in. Paying that to chase a difference nobody can hear, and which
+#: the next recording session would move anyway, is a bad trade.
+RATE_DEADBAND = 0.03
+
+#: What a person reading aloud can actually be, in words per minute of SPEECH
+#: (pauses excluded, so these are higher than the familiar 110-160 figures for
+#: conversation). Auctioneers and sports commentators reach 250; a lecture does
+#: not. Anything outside this band is not a measurement of a person, it is a
+#: mismatch between the recording and the text it was measured against.
+#:
+#: This band exists because of a real 25% error. A re-recorded enrolment was a
+#: SHORTER passage than the first, and the transcript on disk still described
+#: the first one: 163 words divided by 28.8 seconds of new speech gave 323
+#: words a minute. The calibration believed it, asked for a 1.846x speed-up,
+#: clamped it to MAX_SPEED, and stored 1.25 as if it had been measured. Every
+#: lecture after that was retimed a quarter faster than the speaker.
+#:
+#: `store_audio` already carried the warning in a comment -- "a mismatch there
+#: silently degrades every clone" -- and nothing checked it. This is the check.
+HUMAN_WPM_MIN, HUMAN_WPM_MAX = 90.0, 260.0
+
+
+def check_human_wpm(wpm: float, wav: Path, text: str) -> float:
+    """`wpm` back, or a refusal that says which of the two inputs is wrong.
+
+    Measured, not assumed: the message carries the word count and the seconds
+    of speech, because the fix is almost always to paste the transcript of the
+    passage that was actually read.
+    """
+    if HUMAN_WPM_MIN <= wpm <= HUMAN_WPM_MAX:
+        return wpm
+    words = len([w for w in re.split(r"\s+", (text or "").strip()) if w])
+    speech = duration_of(wav) - silence_seconds(wav)
+    direction = "faster" if wpm > HUMAN_WPM_MAX else "slower"
+    raise ValueError(
+        f"The enrolment measures {wpm:.0f} words a minute of speech, which is "
+        f"{direction} than anyone lectures ({HUMAN_WPM_MIN:.0f}-"
+        f"{HUMAN_WPM_MAX:.0f} is the plausible band). That is a mismatch "
+        f"between the recording and its transcript, not a speaking rate: "
+        f"{words} words of text against {speech:.0f} s of speech in "
+        f"{Path(wav).name}. Paste the transcript of the passage you actually "
+        f"read, then measure again.")
+
 
 def silence_seconds(wav: Path) -> float:
     proc = subprocess.run(
@@ -82,6 +133,7 @@ def calibrate(reference_wav, reference_text: str, *, voice: str | None = None,
             "Not enough to measure from: the enrolment transcript needs at "
             "least a dozen words and a few seconds of speech.\n"
             "    realme voice enroll <file> --transcript-file <txt>")
+    mine = check_human_wpm(mine, reference_wav, reference_text)
 
     # A sample, not the whole transcript: rate is stable well before a minute
     # of audio and this is a calibration, not a render.
@@ -125,6 +177,13 @@ def calibrate_all(reference_wav, reference_text: str, *, voices=None,
     """
     from realme.adapters.tts import DRAFT_VOICES
     voices = list(voices or DRAFT_VOICES)
+    # Checked once, before the loop. Every voice fails on a stale transcript,
+    # and the collected failure below reads "No draft voice could be
+    # measured. Install them with `realme engine install`" -- which blames
+    # the engines for a problem in the text file.
+    once = words_per_minute(Path(reference_wav), reference_text)
+    if once:
+        check_human_wpm(once, Path(reference_wav), reference_text)
     table, mine, failed = {}, None, []
     for v in voices:
         try:
@@ -196,11 +255,26 @@ def calibrate_engine(engine_name: str, reference_wav, reference_text: str, *,
             "Nothing to match: the enrolment needs a transcript of at least a "
             "dozen words.\n"
             "    realme voice enroll <file> --transcript-file <txt>")
+    if not target_wpm:
+        mine = check_human_wpm(mine, reference_wav, reference_text)
 
     sample = " ".join([w for w in re.split(r"\s+", reference_text.strip())
                        if w][:words])
     from realme.adapters.factory import build
     engine = build(engine_name, quiet=True, **build_kw)
+    # Measure the engine, not the engine plus the last correction.
+    #
+    # An adapter that declares `retimes_after` leaves the stretching to the
+    # pipeline, so what `engine_wpm` gets back below is already the engine's
+    # own rate. This stays as the guard for the other case: an engine that
+    # applies a stored correction itself would be measured through it, and
+    # each calibration would then multiply on top of the last -- reporting an
+    # already-corrected voice as matching when it does not.
+    if (getattr(engine, "rate_match", 1.0) != 1.0
+            and not getattr(engine, "retimes_after", False)):
+        log(f"  (ignoring the stored correction {engine.rate_match:.3f} "
+            f"while measuring)")
+        engine.rate_match = 1.0
     engine.preflight()
     workdir = Path(workdir) if workdir else reference_wav.parent
     workdir.mkdir(parents=True, exist_ok=True)
@@ -210,14 +284,34 @@ def calibrate_engine(engine_name: str, reference_wav, reference_text: str, *,
         raise ValueError("The calibration render was too short to measure.")
 
     raw = mine / theirs
-    speed = max(MIN_SPEED, min(MAX_SPEED, raw))
     log(f"  target     {mine:5.1f} words/min of speech")
     log(f"  {engine_name:<22} {theirs:5.1f} words/min at pace 1.0")
-    log(f"  pace       {speed:.3f}"
-        + ("" if abs(speed - raw) < 1e-6 else f"  (clamped from {raw:.3f})"))
+    # A saturated calibration is a failed measurement, not a setting.
+    #
+    # Clamping and storing the clamp is how 1.846 became a stored 1.25 that
+    # looked deliberate. A clone speaks at the rate of what it was cloned
+    # from, so a correction anywhere near the bounds means one of the two
+    # measurements is wrong -- and the retiming needed to realise it would be
+    # audible as an artefact even if it were right.
+    if not MIN_SPEED <= raw <= MAX_SPEED:
+        raise ValueError(
+            f"Not stored: matching this would need a {raw:.3f}x retime, "
+            f"outside the {MIN_SPEED:.2f}-{MAX_SPEED:.2f} range that can be "
+            f"applied without being audible. The target measured "
+            f"{mine:.0f} words a minute of speech and {engine_name} measured "
+            f"{theirs:.0f}; a cloned voice should be within a few per cent of "
+            f"its reference, so check that the transcript describes the "
+            f"recording before trusting either number.")
+    if abs(raw - 1.0) <= RATE_DEADBAND:
+        log(f"  pace       1.000  (measured {raw:.3f}, inside the "
+            f"{RATE_DEADBAND:.0%} take-to-take spread -- not retimed)")
+        speed = 1.0
+    else:
+        speed = raw
+        log(f"  pace       {speed:.3f}")
     return {"engine": engine_name, "target_wpm": round(mine, 1),
             "engine_wpm": round(theirs, 1), "pace": round(speed, 3),
-            "clamped": abs(speed - raw) > 1e-6, "sample_wav": str(out)}
+            "clamped": False, "sample_wav": str(out)}
 
 
 def reference_drift(reference_wav, reference_text: str,

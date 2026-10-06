@@ -448,6 +448,45 @@ try:
 except Exception as e:
     check("string literals hold no stray control characters", False, str(e))
 
+# 5g. a paid take must not depend on anything free.
+#
+# The hosted engine charges per sentence, so what its cache holds has to be
+# the thing that cost money and nothing else. The measured pace correction was
+# baked into the take by `synthesize` and folded into `voice_fingerprint`, so
+# re-measuring it -- a free ffmpeg factor -- invalidated every utterance in
+# every project. One corrected number cost a whole guide video to re-render.
+#
+# The stretch now happens in `speak.apply_timing`, cached under its own key.
+# Checked structurally because the easy mistake is to "simplify" it back into
+# the adapter, where it would look tidier and quietly cost money again.
+try:
+    import ast as _ast
+    src = (APP / "realme" / "adapters" / "tts_gemini.py").read_text(encoding="utf-8")
+    tree = _ast.parse(src)
+    cls = next(n for n in _ast.walk(tree)
+               if isinstance(n, _ast.ClassDef) and n.name == "GeminiTTS")
+    synth = next(n for n in cls.body
+                 if isinstance(n, _ast.FunctionDef) and n.name == "synthesize")
+    called = {n.func.id for n in _ast.walk(synth)
+              if isinstance(n, _ast.Call) and isinstance(n.func, _ast.Name)}
+    if "retime" in called:
+        raise ValueError("synthesize retimes its own output again, so the "
+                         "take the ledger pays for depends on a free factor")
+    fp = next(n for n in cls.body
+              if isinstance(n, _ast.FunctionDef) and n.name == "voice_fingerprint")
+    if "rate_match" in _ast.unparse(fp):
+        raise ValueError("voice_fingerprint carries rate_match again, so "
+                         "re-measuring a pace invalidates every paid take")
+    if "retimes_after = True" not in src:
+        raise ValueError("GeminiTTS no longer declares retimes_after, so "
+                         "speak.apply_timing will not stretch its output")
+    speak = (APP / "realme" / "pipeline" / "speak.py").read_text(encoding="utf-8")
+    if "apply_timing(" not in speak or '"timed"' not in speak:
+        raise ValueError("speak.py no longer applies the timing downstream")
+    check("a paid take does not depend on a free factor", True)
+except Exception as e:
+    check("a paid take does not depend on a free factor", False, str(e))
+
 # 6. launchers: no reference to a file that does not exist
 win = ROOT / "00_Windows"
 present = {p.name for p in win.iterdir()}

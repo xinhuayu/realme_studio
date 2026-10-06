@@ -596,16 +596,22 @@ async def upload_profile_audio(kind: str = Form(...), file: UploadFile = File(..
         try:
             from realme.enrollment.pace import reference_drift
             text = (profile.reference_text or "").strip()
-            if text:
+            if text and profile.transcript_matches_recording:
                 drift = reference_drift(dst, text,
                                         profile.data.get("reference_wpm"))
                 if drift.get("wpm"):
                     profile.update({"reference_wpm": drift["wpm"]})
+            elif text:
+                # The transcript describes the PREVIOUS recording. Dividing
+                # its word count by this recording's speech time is how a
+                # 323 words-a-minute "measurement" happened.
+                drift = {"note": profile.transcript_note}
         except Exception as e:                     # never block an enrolment
             drift = {"note": "", "error": str(e)[:200]}
     return {"stored": str(dst), "duration_s": round(secs, 2),
             "pace_note": drift.get("note", ""),
             "wpm": drift.get("wpm"),
+            "transcript_note": profile.transcript_note,
             "ready_for_cloning": profile.ready_for_cloning}
 
 
@@ -1271,7 +1277,15 @@ def _gemini_state() -> dict:
                                 if g.get("max_chars") is None
                                 else (g["max_chars"] or 260)),
         "measured_default": G.MEASURED_MAX_CHARS,
-        "rate_match": g.get("rate_match"),
+        # The EFFECTIVE correction, not the stored one. The Studio's badge
+        # read "pace retimed by 1.25" off the stored field while the adapter
+        # was free to ignore it -- a number on screen that no render used.
+        "rate_match": G.effective_rate_match(g)[0] if g.get("rate_match") else None,
+        "rate_match_stored": g.get("rate_match"),
+        "rate_match_for": g.get("rate_match_for"),
+        "rate_note": G.effective_rate_match(g)[1],
+        "calls_today": G.calls_today(),
+        "daily_calls": G.DAILY_CALLS_TIER1,
         "consent_recording": g.get("consent_recording"),
         "have_consent": bool(g.get("consent_recording")
                              and Path(g["consent_recording"]).is_file()),
@@ -1404,6 +1418,8 @@ def gemini_pace(body: dict | None = None):
             400, "Measuring a pace needs the enrolment recording and its "
                  "transcript. Add the transcript in Twin Setup.")
     target = (body or {}).get("target_wpm")
+    if not target and not profile.transcript_matches_recording:
+        raise HTTPException(400, profile.transcript_note)
     try:
         r = calibrate_engine("gemini-tts", Path(ref), text,
                              target_wpm=float(target) if target else None,
@@ -1411,7 +1427,10 @@ def gemini_pace(body: dict | None = None):
     except Exception as e:
         raise HTTPException(400, str(e)[:400])
     g["rate_match"] = r["pace"]
+    g["rate_match_for"] = g.get("voice")
     profile.update({"gemini_voice": g})
+    if not target:
+        profile.note_transcript_pairing()
     forget_tts()
     return {**r, **_gemini_state()}
 
@@ -1448,10 +1467,10 @@ def gemini_enroll(body: dict):
                                             or "RealMe instructor"))
     except AdapterUnavailable as e:
         raise HTTPException(400, str(e))
-    g = dict(profile.data.get("gemini_voice") or {})
-    g.update({"voice": made["voice"], "model": made["model"],
-              "stored": made["stored"],
-              "created_at": _dt.datetime.now().isoformat(timespec="seconds")})
+    g = G.with_voice(
+        profile.data.get("gemini_voice") or {}, made["voice"],
+        model=made["model"], stored=made["stored"],
+        created_at=_dt.datetime.now().isoformat(timespec="seconds"))
     profile.update({"gemini_voice": g})
     forget_tts()        # so the next render builds the engine with the new id
     return _gemini_state()
@@ -1471,8 +1490,7 @@ def gemini_forget(body: dict | None = None):
             note = (f"Removed here, but Google would not delete it ({e}). "
                     f"Check aistudio.google.com so it does not sit there.")
     if voice == g.get("voice"):
-        g.update({"voice": "", "created_at": None})
-        profile.update({"gemini_voice": g})
+        profile.update({"gemini_voice": G.with_voice(g, "", created_at=None)})
         forget_tts()
     return {**_gemini_state(), "note": note}
 

@@ -283,7 +283,8 @@ def main() -> int:
     print(f"api key    : {'found' if have else 'MISSING'}"
           + (f" (from {used[0]})" if used and have else ""))
     if tts.rate_match and abs(tts.rate_match - 1.0) > 1e-3:
-        print(f"pace       : every render retimed by {tts.rate_match:.3f}")
+        print(f"pace       : a lecture is retimed by {tts.rate_match:.3f} "
+              f"after the call; the takes measured below are not")
     print(f"text       : {source} -- {len(sents)} sentences, "
           f"{len(body.split())} words")
     print(f"calibration: {len(calib)} sentences, one call each")

@@ -16,6 +16,33 @@ class AdapterUnavailable(RuntimeError):
     """Raised when an adapter's dependency, key, or model is missing."""
 
 
+class QuotaExceeded(AdapterUnavailable):
+    """The account's own limit, not a fault in the request.
+
+    Separate from `AdapterUnavailable` because the response is different in
+    kind: nothing is wrong with the text, the voice or the key, and retrying
+    the same question sooner makes it worse -- each attempt counts against the
+    very quota that is exhausted. The old code retried a 429 four times with
+    exponential backoff, which spent four more of a hundred daily requests to
+    learn the same thing twice.
+
+    Carries what a person needs in order to act: how long until it clears, and
+    what the limit was.
+    """
+
+    def __init__(self, message: str, *, retry_after_s: float | None = None,
+                 limit: int | None = None, period: str = "", tier: str = ""):
+        super().__init__(message)
+        self.retry_after_s = retry_after_s
+        self.limit = limit
+        self.period = period          # "day" or "minute", when Google says
+        self.tier = tier
+
+    @property
+    def per_day(self) -> bool:
+        return self.period == "day" or (self.retry_after_s or 0) > 600
+
+
 class BaseTTS(ABC):
     #: Human-readable identity recorded in output provenance.
     name: str = "base"
@@ -40,6 +67,23 @@ class BaseTTS(ABC):
     #: from `probe_gemini_tts.py` or its equivalent, never the documented
     #: ceiling.
     max_chars_per_call: int | None = None
+    #: True when this engine has no rate control of its own and `pace` is
+    #: realised by stretching the finished audio.
+    #:
+    #: It matters because of WHERE the stretching happens. Doing it inside
+    #: `synthesize` bakes it into the file the ledger caches, so changing a
+    #: pace afterwards means paying the engine again for every utterance in
+    #: the lecture -- which is what happened: a pace correction was corrected
+    #: and a whole guide video had to be re-rendered to apply it. An engine
+    #: that declares this returns its own audio and leaves the stretching to
+    #: the caller, which caches the stretched copy separately: the paid take
+    #: survives a pace change, and only the free ffmpeg step is redone.
+    #:
+    #: False is right for an engine with a real rate parameter (piper's
+    #: `speed`): there the pace changes the synthesis, so it cannot be moved
+    #: downstream and it belongs in the paid key.
+    retimes_after: bool = False
+
     #: Which inline pronunciation syntax this engine understands, if any.
     #: One of "espeak", "indextts", "moss", "voxcpm", or None for engines
     #: with no phoneme interface (they get a respelling instead).
@@ -59,6 +103,24 @@ class BaseTTS(ABC):
         ready costs nothing.
         """
         self.preflight()
+
+    def budget_note(self, calls: int) -> str:
+        """What to say before a render that may run out of requests, or "".
+
+        Default empty: a local engine has no quota to run out of, and an
+        engine that charges per call knows its own limits. Asked by the
+        pipeline so that the warning can be engine-specific without the
+        pipeline knowing which engine it has.
+        """
+        return ""
+
+    def timing_factor(self, pace: float = 1.0) -> float:
+        """What a caller must still apply to this engine's output, as a speed.
+
+        1.0 for an engine that has already done whatever `pace` asked for.
+        See `retimes_after`.
+        """
+        return 1.0
 
     def last_rush(self) -> float | None:
         """How much faster than its own norm the LAST take came out, or None.

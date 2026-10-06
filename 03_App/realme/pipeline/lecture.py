@@ -10,6 +10,7 @@ single biggest cost control in the system.
 from __future__ import annotations
 import json
 from pathlib import Path
+from realme.adapters.base import QuotaExceeded
 from realme.core.ledger import RenderLedger
 from realme.core.textio import read_text
 from realme.core.media import duration_of, probe
@@ -41,6 +42,11 @@ def write_script(deck: Path, outdir: Path, writer, *, style="", course_context="
     deck, outdir = Path(deck), Path(outdir)
     work = outdir / "_work"
     work.mkdir(parents=True, exist_ok=True)
+
+    # Before the preflight, not after: a hosted writer's preflight is a
+    # network call, and a mistyped deck path or the wrong working directory
+    # should not cost that wait before it is reported.
+    slides_mod.require_deck(deck)
 
     log("Preflight")
     if writer is not None:
@@ -462,6 +468,25 @@ def render(deck: Path, outdir: Path, manifest: Manifest, tts, *, layout="slide_o
         return float(value) if isinstance(value, (int, float)) else None
 
     spend_before = _spent(tts)
+
+    # Said before the first call, not discovered at slide nine.
+    #
+    # A hosted engine has a request allowance, and `realme lecture` on a
+    # thirteen-slide deck is thirty-three requests. A daily limit of a hundred
+    # is three renders, and the one that runs out does so in the middle --
+    # which costs nothing (every take is cached) but reads like a fault.
+    try:
+        from realme.pipeline.speak import plan_calls
+        planned = plan_calls([sg.spoken_text for sg in manifest.segments],
+                             tts, mode=mode)
+        note = tts.budget_note(planned) if hasattr(tts, "budget_note") else ""
+        if note:
+            log(f"about {planned} engine calls for this deck")
+            log(note)
+    except Exception as e:                 # advisory; never blocks a render
+        log(f"  (could not estimate the engine calls: {e})")
+
+    done_slides = 0
     for i, seg in enumerate(manifest.segments):
         # One line before the slide and one after, and nothing in between.
         #
@@ -475,10 +500,30 @@ def render(deck: Path, outdir: Path, manifest: Manifest, tts, *, layout="slide_o
             f"({len(seg.spoken_text.split())} words) ...")
         # Synthesis happens at the utterance level; the segment's wav is the
         # join of its utterances. Fixing one sentence re-renders one sentence.
-        utts = speak_segment(seg.spoken_text, tts, work / "audio", seg.segment_id,
-                             ledger, lexicon=lexicon, pace=seg.prosody.pace,
-                             rhythm=rhythm, mode=mode,
-                             pause_scale=pause_scale, reuse=not fresh, log=log)
+        try:
+            utts = speak_segment(seg.spoken_text, tts, work / "audio",
+                                 seg.segment_id, ledger, lexicon=lexicon,
+                                 pace=seg.prosody.pace, rhythm=rhythm,
+                                 mode=mode, pause_scale=pause_scale,
+                                 reuse=not fresh, log=log)
+        except QuotaExceeded as e:
+            # Stopping at a quota is not a crash, and the state on disk is
+            # not damaged: the ledger is written after every take, so what
+            # has been paid for is recorded and keyed on its own text and
+            # voice. Re-running the identical command resumes here.
+            log("")
+            log(f"Stopped at slide {seg.slide_index + 1} of {len(slide_pngs)}: "
+                f"this account has no engine requests left.")
+            log(f"  {done_slides} slide(s) are finished and their audio is "
+                f"cached; none of it will be charged again.")
+            if e.retry_after_s:
+                from realme.adapters.tts_gemini import _spell_wait
+                log(f"  The allowance returns in {_spell_wait(e.retry_after_s)}.")
+            log("  Re-run the same command then and it continues from this "
+                "slide.")
+            log("  Or finish it now at no cost with  --tts qwen3cpp  "
+                "(slower, local, and a different voice for the rest).")
+            raise
         for u in utts:
             all_warnings.extend(u.warnings or [])
             if u.lexicon_terms and u.wav:
@@ -621,6 +666,7 @@ def render(deck: Path, outdir: Path, manifest: Manifest, tts, *, layout="slide_o
                 log(f"  slide {seg.slide_index + 1}: could not reuse the "
                     f"previous frame (the narration changed), so the new "
                     f"picture was rendered")
+        done_slides = i + 1
         progress((i + 1) / total)
 
     log("Assembling master")

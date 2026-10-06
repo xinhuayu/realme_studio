@@ -46,10 +46,12 @@ API shape, for the next person reading this against Google's docs:
   speak            POST /v1beta/interactions (generation_config.speech_config)
 """
 from __future__ import annotations
-import base64, json, os, time, urllib.error, urllib.request
+import base64, datetime as _dtime, json, os, time
+import urllib.error, urllib.request
 from pathlib import Path
 
-from realme.adapters.base import BaseTTS, AdapterUnavailable
+from realme.adapters.base import (BaseTTS, AdapterUnavailable,
+                                  QuotaExceeded)
 
 API_ROOT = "https://generativelanguage.googleapis.com/v1beta"
 
@@ -95,6 +97,168 @@ TOKENS_PER_SECOND = 32.0
 #: predictable extra API call. Measure your own with probe_gemini_tts.py; this
 #: is the default, not a constant of nature.
 MEASURED_MAX_CHARS = 738
+
+#: Requests a day on the entry paid tier, as Google's own refusal states it:
+#: "limit: 100 requests per day on Tier 1". Advisory, not authoritative -- the
+#: API does not report what is left, and a tier change does not reach us -- so
+#: it is only ever used to WARN before a render, never to refuse one.
+#:
+#: Worth knowing before pressing render: one chunk is one request, and the
+#: thirteen-slide guide is thirty-three of them -- counted from the finished
+#: render's own cue list, not estimated. A hundred a day is three renders.
+DAILY_CALLS_TIER1 = 100
+
+#: Longest wait this will sit through by itself. A per-minute limit clears in
+#: under a minute and waiting is right; a per-day quota clears in hours and
+#: sleeping through it inside a render would hold a terminal open all night
+#: for something a person must decide about.
+MAX_UNATTENDED_WAIT_S = 90.0
+
+
+def _quota_from(detail: str) -> QuotaExceeded:
+    """A 429 body, read for the two things worth knowing.
+
+    Google states both in prose -- "limit: 100 requests per day on Tier 1.
+    Please retry in 11h51m44s" -- and sometimes as a `retryDelay` field in
+    the structured error details. Both are read; prose first, because that is
+    the shape the daily quota actually arrives in.
+    """
+    import re
+    wait = None
+    m = re.search(r"retry in\s+((?:\d+h)?(?:\d+m)?(?:[\d.]+s)?)", detail)
+    if m and m.group(1):
+        wait = 0.0
+        for value, unit in re.findall(r"([\d.]+)([hms])", m.group(1)):
+            wait += float(value) * {"h": 3600, "m": 60, "s": 1}[unit]
+    if wait is None:
+        m = re.search(r'"retryDelay"\s*:\s*"([\d.]+)s"', detail)
+        if m:
+            wait = float(m.group(1))
+    limit, period, tier = None, "", ""
+    m = re.search(r"limit:\s*(\d+)\s*requests?\s*per\s*(day|minute|min)",
+                  detail, re.I)
+    if m:
+        limit = int(m.group(1))
+        period = "day" if m.group(2).lower() == "day" else "minute"
+    m = re.search(r"on\s+(Tier\s*\d+|Free tier)", detail, re.I)
+    if m:
+        tier = m.group(1)
+    said = ["Gemini TTS has no requests left"]
+    if limit and period:
+        said[0] = (f"Gemini TTS has no requests left: {limit} a {period}"
+                   + (f" on {tier}" if tier else ""))
+    if wait:
+        said.append(f"  It clears in {_spell_wait(wait)}.")
+    said.append(f"  Google said: {detail.strip()[:300]}")
+    return QuotaExceeded("\n".join(said), retry_after_s=wait, limit=limit,
+                         period=period, tier=tier)
+
+
+def _usage_file() -> Path:
+    from realme.core.env import data_home
+    return data_home() / "gemini_calls.json"
+
+
+def record_call(when=None) -> int:
+    """Count one request against today, and return today's total.
+
+    Local, and openly approximate: the API reports no remaining balance, so
+    the only way to know you are near a hundred requests a day is to have
+    counted them. Kept per calendar date in the data directory, because what
+    the limit resets on is a date.
+
+    Never allowed to break a render -- a counter that fails is a counter, not
+    a dependency.
+    """
+    day = (when or _dtime.date.today()).isoformat()
+    f = _usage_file()
+    try:
+        state = json.loads(f.read_text(encoding="utf-8")) if f.is_file() else {}
+    except Exception:
+        state = {}
+    if not isinstance(state, dict):
+        state = {}
+    state[day] = int(state.get(day, 0)) + 1
+    # Only the last fortnight: this is for "am I near today's limit", and an
+    # unbounded file that nothing ever reads is just a file that grows.
+    recent = sorted(state)[-14:]
+    try:
+        f.parent.mkdir(parents=True, exist_ok=True)
+        f.write_text(json.dumps({k: state[k] for k in recent}, indent=2),
+                     encoding="utf-8")
+    except Exception:
+        pass
+    return state[day]
+
+
+def note_limit_reached(limit: int | None = None, when=None) -> None:
+    """Record that Google says today's allowance is gone.
+
+    The local count only sees calls made since it was added, so on the day it
+    starts it reads low -- and a warning that says "97 left" on a day with
+    none left is worse than no warning. A 429 is the authoritative answer, so
+    it is written down: from then on the pre-render note is right for the rest
+    of the day without anyone seeding a file by hand.
+
+    Self-correcting rather than clever. If the quota resets on a boundary that
+    is not this machine's midnight, the count is wrong for a few hours in the
+    safe direction -- it warns about a limit that has just lifted, and
+    Google's own refusal remains the thing that decides.
+    """
+    day = (when or _dtime.date.today()).isoformat()
+    f = _usage_file()
+    try:
+        state = json.loads(f.read_text(encoding="utf-8")) if f.is_file() else {}
+        if not isinstance(state, dict):
+            state = {}
+        state[day] = max(int(state.get(day, 0)), int(limit or DAILY_CALLS_TIER1))
+        f.parent.mkdir(parents=True, exist_ok=True)
+        f.write_text(json.dumps(state, indent=2), encoding="utf-8")
+    except Exception:
+        pass
+
+
+def calls_today(when=None) -> int:
+    """How many requests this installation has made today, as counted here."""
+    day = (when or _dtime.date.today()).isoformat()
+    try:
+        state = json.loads(_usage_file().read_text(encoding="utf-8"))
+        return int(state.get(day, 0))
+    except Exception:
+        return 0
+
+
+def budget_note(needed: int, *, limit: int = DAILY_CALLS_TIER1) -> str:
+    """What to say before a render that may not have the requests to finish.
+
+    Said beforehand because the alternative is finding out in the middle. A
+    render that stops at the limit loses nothing -- every take already made is
+    cached -- but it is a surprise, and a surprise at slide nine of thirteen
+    reads like a fault.
+    """
+    done = calls_today()
+    left = max(0, limit - done)
+    if needed <= 0:
+        return ""
+    said = (f"  {needed} Gemini call{'s' if needed != 1 else ''} to make; "
+            f"{done} made today, so about {left} of {limit} left on Tier 1")
+    if needed > left:
+        said += (f"\n  That is more than remains, so this will stop partway. "
+                 f"Nothing is lost when it does -- every take is cached, and "
+                 f"re-running continues from there. To finish it today, "
+                 f"render with --tts qwen3cpp instead, or raise the tier.")
+    return said
+
+
+def _spell_wait(seconds: float) -> str:
+    """A wait as a person would say it, with the clock time for a long one."""
+    seconds = max(0.0, float(seconds))
+    if seconds < 90:
+        return f"{seconds:.0f} seconds"
+    hours, minutes = int(seconds // 3600), int((seconds % 3600) // 60)
+    spelled = (f"{hours}h{minutes:02d}m" if hours else f"{minutes} minutes")
+    when = _dtime.datetime.now() + _dtime.timedelta(seconds=seconds)
+    return f"{spelled}, at about {when.strftime('%H:%M')} local time"
 
 #: Google requires this sentence, in the speaker's own voice, before it will
 #: create a replicated voice -- their wording, not ours, and it is rejected if
@@ -193,7 +357,25 @@ def _post(path: str, body: dict, key: str, *, timeout: int = 300,
         except urllib.error.HTTPError as e:
             detail = e.read().decode("utf-8", "replace")[:600]
             last = f"HTTP {e.code}: {detail}"
-            if e.code not in (429, 500, 502, 503, 504) or attempt == tries - 1:
+            if e.code == 429:
+                # A 429 is the account's quota, and every retry spends another
+                # unit of it. Waited through only when Google says the wait is
+                # short -- a per-minute limit -- and raised at once when it is
+                # the daily one, because sleeping twelve hours inside a render
+                # is not a decision a program should take.
+                quota = _quota_from(detail)
+                waited = quota.retry_after_s
+                if (waited is not None and waited <= MAX_UNATTENDED_WAIT_S
+                        and attempt < tries - 1):
+                    if log:
+                        log(f"  gemini: at the rate limit; waiting "
+                            f"{waited:.0f}s as Google asked")
+                    time.sleep(waited + 1.0)
+                    continue
+                if quota.per_day:
+                    note_limit_reached(quota.limit)
+                raise quota from e
+            if e.code not in (500, 502, 503, 504) or attempt == tries - 1:
                 raise AdapterUnavailable(f"Gemini TTS refused: {last}") from e
         except urllib.error.URLError as e:
             last = str(e.reason)
@@ -496,6 +678,70 @@ def create_voice(reference_wav: Path, consent_wav: Path, *,
             "raw": resp}
 
 
+def with_voice(g: dict, voice: str, **fields) -> dict:
+    """`g` speaking with `voice`, and nothing measured against the last one.
+
+    There are five ways the enrolled voice changes -- enrol and forget in the
+    Studio, enrol, adopt (`--use`) and forget on the command line -- and each
+    one invalidates the measured pace correction, because a correction is a
+    fact about one clone and one reference. Each of them used to update its
+    own set of fields, so "what a new voice invalidates" was a decision taken
+    five times, and the stale number that retimed a whole guide video 25%
+    fast was left behind by one of them.
+
+    `effective_rate_match` refuses to apply a correction it cannot tie to the
+    voice in use, so nothing renders wrong either way. This is about the file:
+    a wrong number sitting in a profile is an invitation to resurrect it by
+    hand or by migration.
+    """
+    out = dict(g)
+    out.update(fields)
+    out["voice"] = voice
+    out["rate_match"] = None
+    out["rate_match_for"] = None
+    return out
+
+
+def effective_rate_match(g: dict) -> tuple[float, str]:
+    """The stored pace correction, if it was measured for the voice in use.
+
+    A correction is a fact about one pair -- this clone, that reference -- and
+    nothing about re-enrolling invalidated it. Re-recording the reference and
+    building a new voice from it left the previous voice's number in place,
+    applied to every sentence of every render, and the only visible sign was a
+    badge in the Studio reading "pace retimed by 1.25" as though someone had
+    chosen it.
+
+    So the correction carries the voice it was measured for, and a correction
+    whose provenance does not match -- including one from before this field
+    existed, where it cannot be checked -- is not applied. Ignoring it is the
+    safe direction: an unretimed clone speaks at the pace of its reference,
+    which is wrong by a few per cent at worst, while a correction from another
+    recording is wrong by as much as the two recordings differ.
+
+    Returns the factor and, when something was ignored, the sentence that says
+    so. Never silent: `voice_fingerprint` keys on the factor, so a correction
+    that is dropped also invalidates the cached audio that used it.
+    """
+    stored = g.get("rate_match")
+    if not stored:
+        return 1.0, ""
+    stored = float(stored)
+    voice, measured_for = g.get("voice") or "", g.get("rate_match_for") or ""
+    if not measured_for:
+        return 1.0, (
+            f"Ignoring the stored pace correction ({stored:.3f}): it does not "
+            f"say which voice it was measured for, so it cannot be known to "
+            f"belong to this one. Measure it again with "
+            f"`realme voice gemini --pace`.")
+    if voice and measured_for != voice:
+        return 1.0, (
+            f"Ignoring the stored pace correction ({stored:.3f}): it was "
+            f"measured for {measured_for}, and this render uses {voice}. "
+            f"Measure it again with `realme voice gemini --pace`.")
+    return stored, ""
+
+
 def voice_from(resp: dict) -> dict:
     """The identifier out of a voices response, whatever shape it arrives in.
 
@@ -641,6 +887,10 @@ class GeminiTTS(BaseTTS):
         self.style = style or os.environ.get("REALME_GEMINI_STYLE", "")
         self.reference_wav = reference_wav
         self.log = log
+        #: Set when a stored pace correction was ignored, and why. Printed
+        #: before a render rather than kept to itself: a dropped correction
+        #: changes every sentence.
+        self.rate_note: str = ""
         #: What the last call cost, for the Studio's per-slide totals.
         self.last_usage: dict = {}
         #: Audio tokens billed so far by this adapter, and whether every one
@@ -668,7 +918,10 @@ class GeminiTTS(BaseTTS):
             if max_chars is None:
                 max_chars = g.get("max_chars")
             if rate_match is None:
-                rate_match = g.get("rate_match")
+                rate_match, note = effective_rate_match(g)
+                if note and log:
+                    log(f"  {note}")
+                self.rate_note = note
 
         #: A cloned voice speaks at the pace of the clip it was cloned from.
         #: Where that is not the pace you teach at, this is the measured
@@ -710,12 +963,34 @@ class GeminiTTS(BaseTTS):
         # and all three change the audio for identical text. Leaving the model
         # out would have served Flash-Lite audio for a Flash render after a
         # one-word config change, silently, and reported a clean run.
-        # The rate correction belongs here and not only in the pace argument:
-        # `speak.py` puts the requested pace in the key, but the correction is
-        # applied inside this adapter, so changing it would otherwise re-serve
-        # audio at the old speed and report a clean run.
-        return (f"{self.name}:{self.model}:{self.voice}:{self.style}"
-                f":r{self.rate_match:.3f}")
+        # The rate correction is NOT here any more, and that is the point.
+        # It no longer changes what Google is asked for or what Google sends
+        # back -- `speak.py` applies it afterwards and caches the stretched
+        # copy under its own key. Keeping it here made a paid take depend on
+        # a number that has nothing to do with the engine, so re-measuring a
+        # pace invalidated every utterance in every project.
+        #
+        # The thing that guarantee protected is still protected, one layer
+        # down: `_timed` keys on the factor, so audio at the old speed is
+        # never served at the new one.
+        return f"{self.name}:{self.model}:{self.voice}:{self.style}"
+
+    #: See `BaseTTS.retimes_after`. Gemini has no numeric rate field at all
+    #: -- only style words, which are not reproducible -- so every pace here
+    #: is ffmpeg, and ffmpeg can run later for nothing.
+    retimes_after = True
+
+    def budget_note(self, calls: int) -> str:
+        """See `BaseTTS.budget_note`. One chunk is one request."""
+        return budget_note(calls)
+
+    def timing_factor(self, pace: float = 1.0) -> float:
+        """The authored pace and the measured correction, multiplied.
+
+        Applied by the caller to the take this adapter returns. See
+        `BaseTTS.timing_factor`.
+        """
+        return float(pace) * self.rate_match
 
     def last_rush(self) -> float | None:
         """See `BaseTTS.last_rush`. Measured, and cleared as it is read."""
@@ -738,8 +1013,9 @@ class GeminiTTS(BaseTTS):
                  else "Google, expiring 7 days after it was made")
         rate = ("" if abs(self.rate_match - 1.0) < 1e-3 else
                 f", retimed to {self.rate_match:.3f} to match your own pace")
-        return (f"cloning from {self.voice} on {self.model}, hosted at "
+        said = (f"cloning from {self.voice} on {self.model}, hosted at "
                 f"{where}{rate}")
+        return f"{said}\n  {self.rate_note}" if self.rate_note else said
 
     # -- availability ------------------------------------------------------
 
@@ -793,9 +1069,15 @@ class GeminiTTS(BaseTTS):
         is done with ffmpeg afterwards. The one case where the style string
         has to help is a pace so far from 1.0 that retiming would be audible
         as an artefact rather than as a speed.
+
+        The AUTHORED pace only. The measured `rate_match` correction used to
+        be folded in here, which coupled it to the synthesis and therefore to
+        the paid cache key: changing a correction then re-charged for every
+        utterance. A correction that survives `calibrate_engine` is inside
+        0.55-1.25 and modest by construction, so it has no business reaching
+        for a style word.
         """
         parts = [p for p in (self.style,) if p]
-        pace = pace * self.rate_match
         if pace <= 0.78:
             parts.append("speaking slowly and deliberately")
         elif pace >= 1.28:
@@ -827,6 +1109,10 @@ class GeminiTTS(BaseTTS):
         }
         t0 = time.perf_counter()
         resp = _post("interactions", body, api_key(self._key), log=self.log)
+        # Counted after it succeeded, not before: a refused request does not
+        # spend a unit of the daily allowance, and a counter that drifts high
+        # would warn about a limit that is not there.
+        self.calls_today = record_call()
         audio = _audio_from(resp)
         usage = _usage_from(resp)
         self.last_usage = {**usage,
@@ -843,13 +1129,14 @@ class GeminiTTS(BaseTTS):
             from realme.core.media import write_wav
             write_wav(out_wav, audio, SAMPLE_RATE)
 
-        from realme.core.media import duration_of, probe, retime
+        from realme.core.media import probe
         probe(out_wav)                    # decodable, or we do not pretend
         self._bill(usage, out_wav)
         self._watch_pace(out_wav, said)
-        effective = pace * self.rate_match
-        if abs(effective - 1.0) >= 1e-3:
-            retime(out_wav, effective)
+        # Returned as Google sent it. The stretching that realises `pace` and
+        # the measured correction is the caller's step (`speak.apply_timing`),
+        # so that this file -- the one that cost money -- stays valid when
+        # either of those numbers changes. `retimes_after` says so.
         return out_wav
 
     def _bill(self, usage: dict, wav: Path) -> None:

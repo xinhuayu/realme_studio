@@ -19,7 +19,7 @@ Three of these exist because of faults this project has already had once:
     Qwen3 ever rendered.
 """
 from __future__ import annotations
-import base64, io, json, os, sys, tempfile, wave
+import base64, io, json, os, pathlib, sys, tempfile, wave
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
@@ -82,6 +82,18 @@ class FakeHTTP:
 
     def reply(self, obj):
         self.replies.append(obj)
+        return self
+
+    def fail(self, code: int, body: str = ""):
+        """Queue an HTTP error with a body, as the real API sends one.
+
+        A real `HTTPError` rather than a stand-in, because the adapter reads
+        the body off it (`e.read()`) and the whole quota message lives there.
+        """
+        import urllib.error
+        self.replies.append(urllib.error.HTTPError(
+            "https://generativelanguage.googleapis.com/x", code,
+            "Too Many Requests", {}, io.BytesIO(body.encode())))
         return self
 
     def __call__(self, req, timeout=None):
@@ -272,6 +284,8 @@ def main() -> int:
         print("\npace is a number, so it is applied as a number")
         # Gemini has no speaking-rate field. The project's pace is measured
         # and goes into the ledger key; a style string is not reproducible.
+        # The stretching itself is the CALLER's step -- see the section on
+        # the paid take below for why.
         net.replies.clear(); net.requests.clear()
         net.reply(audio_reply(wav_bytes(0.5)))
         import realme.core.media as M
@@ -284,7 +298,13 @@ def main() -> int:
         finally:
             M.retime = real_retime
         ann = net.requests[-1]["body"]["input"][0]["content"][0].get("annotations")
-        check(retimed == [0.9], "the pace is applied by retiming", str(retimed))
+        check(retimed == [],
+              "the engine does not stretch its own output", str(retimed))
+        check(abs(eng.timing_factor(0.9) - 0.9) < 1e-9,
+              "it reports the factor instead, for the caller to apply",
+              str(eng.timing_factor(0.9)))
+        check(eng.retimes_after is True,
+              "and says that is how its pace works")
         check(not ann,
               "and a normal pace adds no style instruction to drift on",
               str(ann))
@@ -300,6 +320,128 @@ def main() -> int:
         check(bool(ann) and "slow" in ann[0]["style"],
               "past what retiming does cleanly, the model is told too",
               str(ann))
+
+        print("\nrunning out of requests is a wait, not a fault")
+        # His 429, verbatim: "limit: 100 requests per day on Tier 1. Please
+        # retry in 11h51m44s". The old code retried it four times with
+        # exponential backoff -- spending four more of a hundred daily
+        # requests to learn the same thing twice -- and then reported the raw
+        # JSON.
+        daily = ('{"error":{"message":"Rate limit exceeded for model '
+                 'gemini-3.8-flash-tts (limit: 100 requests per day on Tier '
+                 '1). Please retry in 11h51m44s or upgrade your tier at '
+                 'https://ai.dev/rate-limit.","code":"too_many_requests"}}')
+        q = G._quota_from(daily)
+        check(isinstance(q, G.QuotaExceeded), "a 429 is its own kind of refusal")
+        check(abs(q.retry_after_s - (11 * 3600 + 51 * 60 + 44)) < 1,
+              "the wait is read out of the prose Google writes it in",
+              str(q.retry_after_s))
+        check(q.limit == 100 and q.period == "day" and q.tier == "Tier 1",
+              "so are the limit, the period and the tier",
+              f"{q.limit}/{q.period}/{q.tier}")
+        check(q.per_day, "and a twelve-hour wait is a daily quota")
+        check("100 a day on Tier 1" in str(q) and "11h51m" in str(q),
+              "the message leads with both, not with the JSON", str(q)[:90])
+
+        minute = ('{"error":{"message":"Rate limit exceeded (limit: 10 '
+                  'requests per minute). Please retry in 7.5s.","code":'
+                  '"too_many_requests"}}')
+        qm = G._quota_from(minute)
+        check(abs(qm.retry_after_s - 7.5) < 0.01 and qm.period == "minute",
+              "a per-minute limit is read the same way", str(qm.retry_after_s))
+        check(not qm.per_day, "and is not mistaken for the daily one")
+        structured = '{"error":{"details":[{"retryDelay":"33s"}]}}'
+        check(G._quota_from(structured).retry_after_s == 33.0,
+              "a retryDelay field is read when there is no prose")
+        check(G._quota_from('{"error":{"message":"slow down"}}').retry_after_s
+              is None,
+              "and a 429 that says nothing useful claims no wait it cannot "
+              "know")
+
+        # The behaviour that matters: a daily quota is raised at once, a
+        # short wait is waited through, and neither is retried blindly.
+        import time as _t
+        slept, real_sleep = [], _t.sleep
+        _t.sleep = lambda s: slept.append(round(s, 1))
+        try:
+            net.replies.clear(); net.requests.clear()
+            net.fail(429, daily)
+            net.fail(429, daily)
+            try:
+                eng.synthesize("Over the limit.", WORK / "q1.wav")
+                raised = None
+            except G.QuotaExceeded as e:
+                raised = e
+            check(raised is not None, "a daily quota stops the call")
+            check(len(net.requests) == 1,
+                  "after ONE request, not four -- each retry spends another",
+                  f"{len(net.requests)} requests")
+            check(slept == [], "and without sleeping on a twelve-hour wait",
+                  str(slept))
+
+            net.replies.clear(); net.requests.clear()
+            net.fail(429, minute)
+            net.reply(audio_reply(wav_bytes(0.3)))
+            eng.synthesize("Just a moment.", WORK / "q2.wav")
+            check(len(net.requests) == 2,
+                  "a per-minute limit is retried once the wait has passed",
+                  f"{len(net.requests)} requests")
+            check(slept and abs(slept[0] - 8.5) < 0.6,
+                  "waiting as long as Google asked, not an invented backoff",
+                  str(slept))
+        finally:
+            _t.sleep = real_sleep
+
+        print("\nand what it has spent today is counted, to warn beforehand")
+        before = G.calls_today()
+        net.replies.clear(); net.reply(audio_reply(wav_bytes(0.3)))
+        eng.synthesize("One more.", WORK / "q3.wav")
+        check(G.calls_today() == before + 1,
+              "a successful call is counted against today",
+              f"{before} -> {G.calls_today()}")
+        net.replies.clear(); net.fail(429, daily)
+        try:
+            eng.synthesize("Refused.", WORK / "q4.wav")
+        except G.QuotaExceeded:
+            pass
+        check(G.calls_today() == before + 1,
+              "a refused one is not -- a counter that drifts high warns "
+              "about a limit that is not there")
+        # The count only sees calls made since it existed, so on its first
+        # day it reads low -- and "97 left" on a day with none left is worse
+        # than saying nothing. Google's refusal is written down instead.
+        net.replies.clear(); net.fail(429, daily)
+        try:
+            eng.synthesize("At the wall.", WORK / "q5.wav")
+        except G.QuotaExceeded:
+            pass
+        check(G.calls_today() >= 100,
+              "a daily refusal records the day as spent, whatever was counted",
+              str(G.calls_today()))
+        check("0 of 100 left" in G.budget_note(10),
+              "so the next render is warned correctly without seeding a file",
+              G.budget_note(10))
+        at_wall = G.calls_today()
+        net.replies.clear(); net.fail(429, minute)
+        net.reply(audio_reply(wav_bytes(0.3)))
+        _t.sleep, real_again = lambda s: None, _t.sleep
+        try:
+            eng.synthesize("A moment later.", WORK / "q6.wav")
+        finally:
+            _t.sleep = real_again
+        check(G.calls_today() == at_wall + 1,
+              "while a per-minute limit adds nothing but the call that then "
+              "worked", f"{at_wall} -> {G.calls_today()}")
+
+        note = G.budget_note(5, limit=before + 3)
+        check("more than remains" in note,
+              "a render that cannot finish is said to be one, beforehand",
+              note)
+        check("cached" in note and "qwen3cpp" in note,
+              "with what that costs (nothing) and what to do instead")
+        check(G.budget_note(1, limit=before + 500) and
+              "more than remains" not in G.budget_note(1, limit=before + 500),
+              "while one that fits just reports the arithmetic")
 
         print("\na surprising response fails loudly, not quietly")
         net.replies.clear()
@@ -529,28 +671,64 @@ def main() -> int:
         # lecture and is inherited by every render from then on.
         plain = G.GeminiTTS(voice="voice_a")
         matched = G.GeminiTTS(voice="voice_a", rate_match=1.06)
-        check(plain.voice_fingerprint() != matched.voice_fingerprint(),
-              "the correction is in the cache key, not only in the argument",
-              matched.voice_fingerprint())
+        check(plain.voice_fingerprint() == matched.voice_fingerprint(),
+              "the correction is NOT in the paid key: it changes nothing "
+              "Google is asked for", matched.voice_fingerprint())
         check(plain.rate_match == 1.0, "and no correction means exactly 1.0")
+        check(abs(matched.timing_factor(0.9) - 0.9 * 1.06) < 1e-9,
+              "the render pace and the correction multiply",
+              str(matched.timing_factor(0.9)))
 
-        import realme.core.media as _M
-        asked = []
-        real_retime = _M.retime
-        _M.retime = lambda path, pace: asked.append(round(pace, 4)) or path
-        try:
-            net.replies.clear(); net.reply(audio_reply(wav_bytes(0.4)))
-            matched.synthesize("At the measured pace.", WORK / "r1.wav")
-            net.replies.clear(); net.reply(audio_reply(wav_bytes(0.4)))
-            matched.synthesize("Slower still.", WORK / "r2.wav", pace=0.9)
-            net.replies.clear(); net.reply(audio_reply(wav_bytes(0.4)))
-            plain.synthesize("Uncorrected.", WORK / "r3.wav")
-        finally:
-            _M.retime = real_retime
-        check(asked == [1.06, round(0.9 * 1.06, 4)],
-              "the render pace and the correction multiply", str(asked))
-        check(len(asked) == 2,
-              "and an uncorrected engine at pace 1.0 is not retimed at all")
+        # The whole point of moving the stretch out of the adapter: a pace
+        # correction can be re-measured without paying for the lecture again.
+        # Before this, the factor was inside `voice_fingerprint`, so changing
+        # it invalidated every utterance in every project -- which is how a
+        # corrected 1.25 cost a whole guide video to put right.
+        from realme.core.ledger import RenderLedger
+        from realme.core.media import duration_of
+        from realme.pipeline.speak import apply_timing
+        box = WORK / "timing"
+        box.mkdir(parents=True, exist_ok=True)
+        led = RenderLedger(box / "ledger.json")
+        take = box / "take.wav"
+        net.replies.clear(); net.requests.clear()
+        net.reply(audio_reply(wav_bytes(4.0)))
+        plain.synthesize("A whole sentence, for the ledger.", take)
+        raw = duration_of(take)
+        key = RenderLedger.key("utt", "a sentence", plain.voice_fingerprint())
+        led.put(key, take, raw)
+        paid = len(net.requests)
+
+        w1, d1 = apply_timing(matched, take, 1.0, duration=raw,
+                              workdir=box, ledger=led, take_key=key)
+        check(w1 != take, "the stretched copy is its own file", str(w1.name))
+        check(abs(duration_of(take) - raw) < 0.02,
+              "and the take that cost money is left exactly as it arrived",
+              f"{duration_of(take):.3f} vs {raw:.3f}")
+        check(abs(d1 - raw / 1.06) < 0.06,
+              "stretched by the factor it reported", f"{d1:.3f}")
+
+        more = G.GeminiTTS(voice="voice_a", rate_match=1.12)
+        w2, d2 = apply_timing(more, take, 1.0, duration=raw, workdir=box,
+                              ledger=led, take_key=key)
+        check(w2 != w1, "a re-measured correction is a new key, not the old "
+                        "audio served at the new number")
+        check(d2 < d1 - 0.1, "and the new audio really is faster",
+              f"{d2:.3f} vs {d1:.3f}")
+        check(led.get(key)["path"] == str(take.resolve()),
+              "while the paid take is still what the paid key points at")
+        check(len(net.requests) == paid,
+              "with nothing bought in between -- the whole point",
+              f"{len(net.requests)} calls, was {paid}")
+
+        w3, _ = apply_timing(more, take, 1.0, duration=raw, workdir=box,
+                             ledger=led, take_key=key)
+        check(w3 == w2, "asking for a factor twice reuses the stretch too")
+        w4, d4 = apply_timing(plain, take, 1.0, duration=raw, workdir=box,
+                              ledger=led, take_key=key)
+        check(w4 == take and d4 == raw,
+              "and an uncorrected engine at pace 1.0 is not stretched at all",
+              str(w4.name))
 
         print("\nand the correction is measured, not chosen by listening")
         from realme.enrollment import pace as PC
@@ -595,15 +773,105 @@ def main() -> int:
         _F.build = lambda name, **kw: SlowClone()
         try:
             r2 = PC.calibrate_engine("gemini-tts", ref_wav, words,
-                                     target_wpm=240.0, workdir=WORK,
+                                     target_wpm=200.0, workdir=WORK,
                                      log=lambda *_: None)
         finally:
             _F.build = real_build
-        check(r2["target_wpm"] == 240.0 and r2["pace"] > r["pace"],
+        check(r2["target_wpm"] == 200.0 and r2["pace"] > r["pace"],
               "and an explicit target beats the enrolment's own rate",
               str(r2["pace"]))
-        check(r2["clamped"] is False or r2["pace"] <= PC.MAX_SPEED,
-              "while a runaway correction is still clamped")
+
+        # A correction larger than retiming can carry is a failed
+        # measurement. Clamping it to MAX_SPEED and storing that is how 1.846
+        # became a 1.25 that looked like somebody's choice.
+        _F.build = lambda name, **kw: SlowClone()
+        try:
+            PC.calibrate_engine("gemini-tts", ref_wav, words,
+                                target_wpm=300.0, workdir=WORK,
+                                log=lambda *_: None)
+            runaway = "stored anyway"
+        except ValueError as e:
+            runaway = ""
+            why = str(e)
+        finally:
+            _F.build = real_build
+        check(not runaway, "a runaway correction is refused, not clamped",
+              runaway)
+        check("300" in why and "164" in why,
+              "and both measurements are in the refusal", why[:120])
+
+        print("\nand it belongs to the voice it was measured for")
+        # Re-recording the enrolment and building a new voice from it left
+        # the previous voice's correction in place, applied to every sentence
+        # of every render. The only visible sign was a Studio badge reading
+        # "pace retimed by 1.25" as though it had been chosen.
+        same = {"voice": "voice_new", "rate_match": 1.07,
+                "rate_match_for": "voice_new"}
+        check(G.effective_rate_match(same) == (1.07, ""),
+              "a correction measured for this voice is applied")
+        other = {"voice": "voice_new", "rate_match": 1.25,
+                 "rate_match_for": "voice_old"}
+        got, note = G.effective_rate_match(other)
+        check(got == 1.0, "one measured for another voice is not", str(got))
+        check("voice_old" in note and "voice_new" in note,
+              "and it names both, rather than going quiet", note[:120])
+        anon = {"voice": "voice_new", "rate_match": 1.25}
+        got, note = G.effective_rate_match(anon)
+        check(got == 1.0,
+              "a correction that cannot say what it was measured for is not "
+              "applied either", str(got))
+        check("--pace" in note, "with the command that fixes it", note[:140])
+        check(G.effective_rate_match({"voice": "voice_new"}) == (1.0, ""),
+              "and no correction at all is silent, because that is normal")
+
+        # Not applying it is not the same as not keeping it. A wrong number
+        # left in a profile is one hand-edited `rate_match_for` away from
+        # being live again, so the five ways the voice changes all drop it.
+        had = {"voice": "voice_old", "rate_match": 1.25,
+               "rate_match_for": "voice_old", "consent_recording": "c.wav",
+               "paid_tier_ack": True, "max_chars": 738}
+        now = G.with_voice(had, "voice_new", model="m", stored=True)
+        check(now["rate_match"] is None and now["rate_match_for"] is None,
+              "a voice change drops the correction measured for the last one")
+        check(now["voice"] == "voice_new" and now["model"] == "m",
+              "while setting what the caller asked it to")
+        check(now["consent_recording"] == "c.wav" and now["max_chars"] == 738
+              and now["paid_tier_ack"] is True,
+              "and keeping what a voice change does not invalidate -- the "
+              "consent clip is a recording of a person, not a Google artifact")
+        check(had["rate_match"] == 1.25,
+              "without mutating the block it was handed")
+        gone = G.with_voice(had, "")
+        check(gone["voice"] == "" and gone["rate_match"] is None,
+              "forgetting a voice drops it too")
+
+        import realme.app.server as SRV
+        import realme.cli as CLI
+        for mod, name in ((SRV, "server"), (CLI, "cli")):
+            src = pathlib.Path(mod.__file__).read_text(encoding="utf-8")
+            writes = [l for l in src.splitlines()
+                      if 'rate_match"]' in l and "=" in l
+                      and "rate_match_for" not in l]
+            check(all("r[\"pace\"]" in l or "r['pace']" in l for l in writes),
+                  f"and the only thing that writes a correction in {name} is "
+                  f"a measurement", "; ".join(w.strip() for w in writes))
+
+        class FakeProf:
+            def __init__(self, g): self.data = {"gemini_voice": g}
+        spoke = []
+        built = G.GeminiTTS(profile=FakeProf(other), log=spoke.append)
+        check(built.rate_match == 1.0,
+              "an engine built from such a profile renders uncorrected",
+              str(built.rate_match))
+        check(any("Ignoring" in m for m in spoke),
+              "and says so before the render, not after", str(spoke))
+        check(built.timing_factor(1.0)
+              != G.GeminiTTS(profile=FakeProf(same)).timing_factor(1.0),
+              "with a different timing factor, so the stretched audio is "
+              "rebuilt rather than re-served at the old speed")
+        check(built.voice_fingerprint()
+              == G.GeminiTTS(profile=FakeProf(same)).voice_fingerprint(),
+              "and the paid takes are untouched by any of it")
 
         print("\nre-recording slower is said out loud, when it happens")
         d = PC.reference_drift(ref_wav, words, 194.0)

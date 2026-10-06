@@ -204,7 +204,7 @@ def _voice_gemini(a) -> int:
         except AdapterUnavailable as e:
             print(f"Google does not recognise {v}: {e}")
             return 1
-        g.update({"voice": v, "stored": v.startswith("voice_")})
+        g = G.with_voice(g, v, stored=v.startswith("voice_"))
         if not g.get("created_at"):
             import datetime as _dt
             g["created_at"] = _dt.datetime.now().isoformat(timespec="seconds")
@@ -230,6 +230,10 @@ def _voice_gemini(a) -> int:
         if not g.get("voice"):
             print("No Gemini voice enrolled yet; there is nothing to measure.")
             return 1
+        if not a.target_wpm and not prof.transcript_matches_recording:
+            print(prof.transcript_note or
+                  "The transcript and the recording are not known to match.")
+            return 1
         print("Rendering a short sample through the cloned voice "
               "(about one cent)...\n")
         try:
@@ -240,12 +244,20 @@ def _voice_gemini(a) -> int:
             print(f"Could not measure it: {e}")
             return 1
         g["rate_match"] = r["pace"]
+        g["rate_match_for"] = g.get("voice")
         prof.update({"gemini_voice": g})
-        print(f"\n  stored: every Gemini render is now retimed by "
-              f"{r['pace']:.3f}")
-        if r["clamped"]:
-            print("  (clamped -- a correction that large usually means the "
-                  "transcript does not match the recording)")
+        if not a.target_wpm:
+            prof.note_transcript_pairing()
+        if r["pace"] == 1.0:
+            print(f"\n  stored: no correction. Your "
+                  f"{r['target_wpm']:.0f} words a minute of speech against "
+                  f"the clone's {r['engine_wpm']:.0f} is inside take-to-take "
+                  f"variation, so nothing is retimed.")
+        else:
+            print(f"\n  stored: every Gemini render is now retimed by "
+                  f"{r['pace']:.3f}, measured for {g.get('voice')}")
+            print(f"  (you {r['target_wpm']:.0f} words/min of speech, "
+                  f"the clone {r['engine_wpm']:.0f})")
         print(f"  listen to the sample: {r['sample_wav']}")
         print("\n  Audio already rendered keeps the pace it was made with; "
               "the key\n  carries this number, so the next render is a fresh "
@@ -289,8 +301,7 @@ def _voice_gemini(a) -> int:
         # not a Google artifact, and deleting a voice is not a reason to make
         # them record it again.
         if voice == g.get("voice"):
-            g.update({"voice": "", "created_at": None})
-            prof.update({"gemini_voice": g})
+            prof.update({"gemini_voice": G.with_voice(g, "", created_at=None)})
         return 0
 
     if a.enroll:
@@ -347,10 +358,10 @@ def _voice_gemini(a) -> int:
         except AdapterUnavailable as e:
             print(f"\nGoogle refused.\n\n{e}")
             return 1
-        g.update({"voice": made["voice"], "model": made["model"],
-                  "stored": made["stored"],
-                  "consent_recording": str(consent_wav),
-                  "created_at": datetime.datetime.now().isoformat(timespec="seconds")})
+        g = G.with_voice(
+            g, made["voice"], model=made["model"], stored=made["stored"],
+            consent_recording=str(consent_wav),
+            created_at=datetime.datetime.now().isoformat(timespec="seconds"))
         prof.update({"gemini_voice": g})
         print(f"\nEnrolled: {made['voice']}")
         print(f"  expires: {made['ttl']}")
@@ -379,6 +390,12 @@ def _voice_gemini(a) -> int:
           + (f"{mc}" if mc else
              (f"{G.MEASURED_MAX_CHARS} (the measured default)" if mc is None
               else "260 (the pipeline's own)")))
+    made = G.calls_today()
+    print(f"  requests today       : {made} of about "
+          f"{G.DAILY_CALLS_TIER1} (Tier 1), counted here")
+    if made >= G.DAILY_CALLS_TIER1:
+        print("    at the limit -- it resets on the calendar date, and a "
+              "render that stops\n    resumes from where it stopped")
     print(f"\n  Google's consent sentence, to record in your own voice:\n")
     print(f"    {G.CONSENT_SENTENCE}\n")
     if not g.get("paid_tier_ack"):
@@ -428,6 +445,29 @@ def _take_tuning_flags(argv: list[str]) -> list[str]:
 
 
 def main(argv=None):
+    """The entry point. `_main` does the work.
+
+    This exists to report the two failures that are the reader's to fix as
+    sentences instead of tracebacks. `MediaError` and `AdapterUnavailable` are
+    raised with a message written for a person -- "No deck at ...", "ffmpeg is
+    not on PATH" -- and a traceback around such a message buries it under
+    frames from pymupdf or httpx that have nothing to do with the fix. A deck
+    path that did not resolve surfaced as `pymupdf.FileNotFoundError` thirteen
+    lines down.
+
+    Only those two. Anything else is a fault in this program and keeps its
+    traceback, which is the thing that gets it fixed.
+    """
+    from realme.core.media import MediaError
+    from realme.adapters.base import AdapterUnavailable
+    try:
+        return _main(argv)
+    except (MediaError, AdapterUnavailable) as e:
+        print(f"\n{e}", file=sys.stderr)
+        return 1
+
+
+def _main(argv=None):
     argv = list(argv) if argv is not None else sys.argv[1:]
     argv = _take_tuning_flags(argv)
     _warn_if_update_pending()
@@ -1391,6 +1431,8 @@ def main(argv=None):
                 print(f"  transcript saved ({len(transcript.split())} words "
                       f"from {tsource})")
                 print(f"    -> {dst}")
+            if kind == "voice_reference" and prof.transcript_note:
+                print(f"\n  {prof.transcript_note}")
             # Judge it now. Enrolling a take without being told it is too quiet
             # is how you find out three lectures later.
             r = V.analyze(dst)

@@ -159,6 +159,73 @@ class Utterance:
     instructions: tuple = ()
 
 
+def plan_calls(texts, tts, *, mode: str = "natural") -> int:
+    """How many engine calls this narration will take.
+
+    Measured with the same splitter that will do the splitting, rather than
+    with an estimate from character counts: at a 738-character budget, clause
+    coalescing stops well short of it, so chars/budget put the guide deck at
+    14 calls where the real chunker makes 33 -- and an estimate wrong by a
+    factor of two is worse than no estimate. Checked against that render's
+    own cue list: 33 predicted, 33 made.
+
+    Takes no account of what is already cached, so it is an upper bound: a
+    re-run after a stoppage needs fewer. Said as "about" for that reason.
+    """
+    total = 0
+    target, hard = chunk_sizes(tts)
+    for text in texts:
+        for unit in parse_controls(text or "").units:
+            if unit.is_mask:
+                continue
+            total += len(split_utterances(unit.text, target, hard, mode=mode))
+    return total
+
+
+def apply_timing(tts, take: Path, pace: float, *, duration: float | None = None,
+                 workdir: Path | None = None, ledger=None, take_key: str = "",
+                 reuse: bool = True) -> tuple[Path, float]:
+    """The take at the pace the lecture wants, as (file, duration).
+
+    For an engine with no rate control of its own, `pace` is ffmpeg, and
+    ffmpeg is free. Doing it here rather than inside `synthesize` is what
+    makes a pace change cost seconds instead of the whole lecture again: the
+    paid take is cached under a key that knows nothing about pace, and the
+    stretched copy is cached beside it under a key that does.
+
+    Without a ledger it stretches in place and returns the same path -- for
+    one-off callers like `preview`, where there is nothing to cache against.
+    """
+    from realme.core.media import duration_of, retime
+    take = Path(take)
+    factor = tts.timing_factor(pace) if getattr(tts, "retimes_after", False) else 1.0
+    if abs(factor - 1.0) < 1e-3:
+        # The common case, and it must not cost an ffprobe per utterance: the
+        # caller already knows this duration, either from the ledger or from
+        # the render it just paid for.
+        return take, duration_of(take) if duration is None else duration
+    if ledger is None or workdir is None:
+        retime(take, factor)
+        return take, duration_of(take)
+
+    import shutil
+    from realme.core.ledger import RenderLedger
+    key = RenderLedger.key("timed", f"{take_key}|{factor:.4f}", "")
+    # `reuse=False` means a NEW take was just recorded into the same path --
+    # the paid key names the file, so the content changed while the name did
+    # not. Reading the stretched copy here would hand back a stretch of the
+    # take that was just replaced. Written, never read, as one level up.
+    hit = ledger.get(key) if reuse else None
+    if hit:
+        return Path(hit["path"]), hit["duration"]
+    out = Path(workdir) / f"{RenderLedger.stem(key)}.wav"
+    shutil.copy2(take, out)              # the paid take is never written over
+    retime(out, factor)
+    dur = duration_of(out)
+    ledger.put(key, out, dur)
+    return out, dur
+
+
 def speak_segment(text: str, tts, workdir: Path, seg_id: int, ledger,
                   *, lexicon: Lexicon | None = None, pace: float = 1.0,
                   rhythm: dict | None = None, mode: str = "natural",
@@ -218,6 +285,12 @@ def speak_segment(text: str, tts, workdir: Path, seg_id: int, ledger,
             # Everything the engine is actually given belongs in the key.
             # `pace` (the segment's prosody, or `narrate --pace`) was not, so
             # a pace edit re-served the old audio and reported a clean run.
+            #
+            # It stays in the key even for an engine that realises pace
+            # downstream, because it still reaches the engine as a manner word
+            # at the extremes ("speaking slowly and deliberately"). Keying on
+            # more than strictly changes the audio costs a re-render; keying
+            # on less serves the wrong audio.
             key = RenderLedger.key(
                 "utt",
                 f"{prepared.engine_text}|{pace * unit.speed:.3f}|{unit.language}",
@@ -287,6 +360,14 @@ def speak_segment(text: str, tts, workdir: Path, seg_id: int, ledger,
                         f"{(rush - 1) * 100:.0f}% fast and cannot be split "
                         f"further -- keeping it; worth a listen")
                 ledger.put(key, wav, dur)
+
+            # The paid take is what the ledger holds; this is the same take
+            # at the pace this lecture wants. Free, cached separately, and
+            # keyed on the factor -- so re-measuring a pace correction costs
+            # an ffmpeg pass per utterance and nothing at Google.
+            wav, dur = apply_timing(tts, wav, pace * unit.speed, duration=dur,
+                                    workdir=workdir, ledger=ledger,
+                                    take_key=key, reuse=reuse)
 
             # An authored [[pause]] beats the automatic rhythm: the author asked
             # for it explicitly, so it wins.
@@ -391,6 +472,11 @@ def preview(text: str, tts, out_wav: Path, *, lexicon: Lexicon | None = None,
     chunk = chunks[min(index, len(chunks) - 1)]
     prepared = prepare_for_speech(chunk, engine, lx)
     tts.synthesize(prepared.engine_text, out_wav)
+    # So that a preview is what the lecture will sound like. The engine no
+    # longer stretches its own output, and a preview at the engine's natural
+    # rate would be the one thing this loop exists to avoid: a cheap check
+    # that does not match the expensive result.
+    apply_timing(tts, out_wav, 1.0)
     return {"utterance": index, "of": len(chunks), "text": chunk,
             "normalized": prepared.normalized, "engine_text": prepared.engine_text,
             "lexicon_terms": prepared.lexicon_terms, "warnings": prepared.warnings,

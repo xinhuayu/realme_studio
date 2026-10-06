@@ -13,6 +13,22 @@ from datetime import datetime, timezone
 from pathlib import Path
 from realme.core.textio import read_text
 
+
+def audio_id(path: Path) -> str:
+    """A short digest of a recording's bytes: which clip this is, not where.
+
+    Content, never mtime or path. The baked file is always called
+    `voice_reference.wav` and is rewritten in place on every enrolment, so a
+    name tells you nothing about which recording it holds.
+    """
+    import hashlib
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for block in iter(lambda: f.read(1 << 20), b""):
+            h.update(block)
+    return h.hexdigest()[:16]
+
+
 DEFAULTS = {
     "profile_id": "instructor",
     "display_name": "",
@@ -61,6 +77,21 @@ DEFAULTS = {
     # transcript. Without the text the clone is measurably worse, so it
     # is part of the profile rather than an environment variable.
     "voice_reference_text": "",
+    #: Which recording the transcript describes.
+    #:
+    #: `reference_audio_id` is a digest of the enrolment recording now on
+    #: disk; `reference_text_id` is the digest of the recording that was on
+    #: disk when the transcript was last saved. Equal means the two describe
+    #: each other. Every pace measurement in the system is words of text
+    #: divided by seconds of speech, so when they disagree, every one of those
+    #: numbers is wrong -- and wrong quietly, as a plausible-looking rate.
+    #:
+    #: Written after a re-recorded enrolment of a SHORTER passage left the
+    #: August transcript in place: 163 words over 28.8 s of October speech
+    #: measured 323 words a minute, and the clone was retimed 25% fast to
+    #: "match" it.
+    "reference_audio_id": None,
+    "reference_text_id": None,
     #: register name -> treated .wav. Several takes of the same voice,
     #: levelled together so the difference between them is delivery.
     "voice_registers": {},
@@ -91,6 +122,11 @@ DEFAULTS = {
         #: clip it was cloned from, which is the pace of a recording session
         #: and not necessarily the pace of a lecture. None = no correction.
         "rate_match": None,
+        #: The voice id `rate_match` was measured for. A correction belongs to
+        #: one clone; applying the previous clone's number to a re-enrolled
+        #: voice retimed a whole course 25% fast. Unset means unverifiable,
+        #: which `tts_gemini.effective_rate_match` treats as "do not apply".
+        "rate_match_for": None,
         #: Characters per API call. None = the engine's own measured default
         #: (738, see adapters/tts_gemini.MEASURED_MAX_CHARS); 0 = fall back to
         #: the pipeline's 260. Any other number should be one that
@@ -228,6 +264,7 @@ class Profile:
             raw = self.root.parent / "voice" / "reference_raw.wav"
             raw.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(dst, raw)
+            self.data["reference_audio_id"] = audio_id(dst)
         if kind == "gemini_consent":
             # Lives inside the engine's own block rather than at the top
             # level: it is Google's wording, for Google, and it should not be
@@ -268,12 +305,78 @@ class Profile:
                 return text
         return (self.data.get("voice_reference_text") or "").strip()
 
+    @property
+    def transcript_matches_recording(self) -> bool:
+        """Can the transcript on file describe the recording on file?
+
+        Two ways to be satisfied, because there are two legitimate ways the
+        transcript gets written.
+
+        Through the app, `set_reference_text` records which recording was on
+        disk at the time, and the two digests settle it outright.
+
+        By hand is the other way, and it is not a workaround: the transcript
+        lives beside the audio as a plain .txt precisely so it can be opened
+        and corrected, and where the file and the JSON mirror disagree the
+        FILE wins. Nothing in the bytes of a text file can prove which clip it
+        belongs to, so what is checked is order -- a transcript last written
+        BEFORE the recording cannot be a transcript of it. That is the case
+        that actually went wrong, and it is the case this catches.
+
+        What neither way catches is a transcript of the right length and the
+        wrong words. That is what `pace.check_human_wpm` is for: it refuses an
+        implied rate no one speaks at, whatever the provenance.
+        """
+        a = self.data.get("reference_audio_id") or ""
+        t = self.data.get("reference_text_id") or ""
+        if a and t:
+            return a == t
+        txt = self.reference_text_path
+        wav = Path(self.data.get("voice_reference") or "")
+        if txt.is_file() and wav.is_file():
+            # One second of slack: the two are often written in the same
+            # action, and filesystem timestamps are not ordered more finely
+            # than that everywhere.
+            return txt.stat().st_mtime >= wav.stat().st_mtime - 1.0
+        return False
+
+    def note_transcript_pairing(self) -> None:
+        """Record that the transcript and the recording go together.
+
+        Called once a rate has been measured from the pair and found
+        plausible, so that the mtime reasoning above is needed only until the
+        first measurement. After that the pair is settled by content, and
+        re-recording breaks it again -- which is correct.
+        """
+        a = self.data.get("reference_audio_id")
+        if not a:
+            ref = self.data.get("voice_reference")
+            if not (ref and Path(ref).is_file()):
+                return
+            a = audio_id(Path(ref))
+        self.update({"reference_audio_id": a, "reference_text_id": a})
+
+    @property
+    def transcript_note(self) -> str:
+        """Empty when the pair checks out; otherwise what to do about it."""
+        if self.transcript_matches_recording or not self.reference_text:
+            return ""
+        return ("The transcript on file was last written before the enrolment "
+                "recording now on disk, so it describes an earlier take. "
+                "Every speaking rate in RealMe is words of text over seconds "
+                "of speech, so measuring from this pair would be arithmetic "
+                "on mismatched inputs. Put the text of the passage you "
+                "actually read in "
+                f"{self.reference_text_path.name} (Twin Setup, Notepad, or "
+                "`realme voice enroll <file> --transcript-file <txt>`).")
+
     def set_reference_text(self, text: str) -> Path:
         text = " ".join(str(text).split())
         f = self.reference_text_path
         f.parent.mkdir(parents=True, exist_ok=True)
         f.write_text(text + "\n", encoding="utf-8")
-        self.update({"voice_reference_text": text})
+        self.update({"voice_reference_text": text,
+                     "reference_text_id": self.data.get("reference_audio_id")})
         return f
 
     @property
