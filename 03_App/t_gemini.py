@@ -356,16 +356,45 @@ def main() -> int:
         check("consent audio did not match" in said,
               "a refusal is reported in Google's own words", said[:80])
 
-        bad = WORK / "phone.m4a"
-        bad.write_bytes(b"ftypM4A ")
+        # A phone recording is the normal input. Google documents WAV, so WAV
+        # is what gets sent -- but the converting is the adapter's job, not the
+        # user's. Refusing with instructions was the third time this project
+        # made someone convert a .m4a by hand.
+        phone = WORK / "phone.m4a"
+        from realme.core.media import require as _req, run as _run
+        _run([_req("ffmpeg"), "-y", "-f", "lavfi", "-t", "20", "-i",
+             "sine=frequency=180:sample_rate=44100", "-ac", "2", "-c:a", "aac",
+              str(phone)], "a phone recording")
+        net.replies.clear(); net.requests.clear()
+        net.reply({"replicated_voice": {"id": "voice_fromphone"}})
+        spoke = []
+        made = G.create_voice(phone, phone, log=spoke.append)
+        sent = base64.b64decode(
+            net.requests[-1]["body"]["voice"]["replicated"]["source_audio"]["data"])
+        check(made["voice"] == "voice_fromphone",
+              "an .m4a is accepted and enrolled")
+        check(sent[:4] == b"RIFF",
+              "and what Google receives is the WAV it documents")
+        (WORK / "sent_phone.wav").write_bytes(sent)
+        import wave as _w
+        with _w.open(str(WORK / "sent_phone.wav")) as _f:
+            rate, chans = _f.getframerate(), _f.getnchannels()
+        check(rate == 24000 and chans == 1,
+              "at 24 kHz mono, which is what their guidance asks for",
+              f"{rate} Hz, {chans} ch")
+        check(any("converted" in m for m in spoke),
+              "and it says so rather than converting silently", str(spoke))
+
+        broken = WORK / "notaudio.m4a"
+        broken.write_bytes(b"ftypM4A " + b"\x00" * 64)
         try:
-            G.create_voice(bad, con)
+            G.create_voice(broken, con)
             said = ""
         except AdapterUnavailable as e:
             said = str(e)
-        check("realme voice enroll" in said,
-              "and a phone recording is refused with the command that fixes it",
-              said[:90])
+        check("could not be converted" in said,
+              "while a file that is not audio at all still fails, clearly",
+              said[:100])
 
         print("\nthe clips are checked against Google's rules before upload")
         # The first real enrolment failed with an HTTP 500 whose readable sentence

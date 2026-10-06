@@ -184,6 +184,59 @@ def main() -> int:
     import shutil
     shutil.rmtree(tmp.parent, ignore_errors=True)
 
+    print("\na recording is whatever the phone produced, not whatever we hoped")
+    # `realme voice takes` is the first command anyone points at a fresh
+    # recording, and a fresh recording is .m4a. It died inside Python's `wave`
+    # with "file does not start with RIFF id" -- the format it wanted, not the
+    # format it got. The project had already learned this for the engines
+    # (`core.media.ensure_reference_wav` exists because of it); the analysis
+    # side had not.
+    import subprocess, tempfile
+    from realme.verify.acoustic import read_wav
+    from realme.enrollment.voice import clone_features, compare_takes, LOSSY
+    takes_dir = Path(tempfile.mkdtemp(prefix="t_takes_"))
+    src = takes_dir / "tone.wav"
+    subprocess.run(["ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-t", "12",
+                    "-i", "sine=frequency=180:sample_rate=24000", "-ac", "1",
+                    "-c:a", "pcm_s16le", str(src)], check=True)
+    made = {"wav": src}
+    for name, args in (("m4a", ["-c:a", "aac", "-b:a", "128k"]),
+                       ("mp3", ["-c:a", "libmp3lame"]),
+                       ("flac", ["-c:a", "flac"])):
+        dst = takes_dir / f"take.{name}"
+        subprocess.run(["ffmpeg", "-v", "error", "-y", "-i", str(src)] + args
+                       + [str(dst)], check=True)
+        made[name] = dst
+    for name, path in made.items():
+        try:
+            sig, sr = read_wav(path)
+            ok = sig.size > 1000 and sr > 0
+        except Exception as e:
+            ok = False
+            print(f"       {name}: {e}")
+        check(f"read_wav handles .{name}", ok)
+        f = clone_features(path)
+        check(f"and {name} gets measured rather than refused",
+              f.get("harmonic_noise_db") is not None, str(f))
+    check("the wav path is still the plain one, unconverted",
+          src.read_bytes()[:4] == b"RIFF")
+
+    out = []
+    compare_takes([made["wav"], made["m4a"]], log=out.append)
+    said = "\n".join(out)
+    check("the comparison names the codec of each take",
+          "aac" in said and "pcm_s16le" in said)
+    check("and warns when a lossy take is compared against an uncompressed one",
+          "not all in the same format" in said)
+    out = []
+    compare_takes([made["m4a"], made["mp3"]], log=out.append)
+    check("while two lossy takes together raise nothing",
+          "not all in the same format" not in "\n".join(out))
+    check("flac is not lossy, whatever its extension suggests",
+          "aac" in LOSSY and "mp3" in LOSSY and "flac" not in LOSSY)
+    import shutil as _sh
+    _sh.rmtree(takes_dir, ignore_errors=True)
+
     print()
     if FAILED:
         print(f"{len(FAILED)} FAILED: {', '.join(FAILED)}")

@@ -41,7 +41,44 @@ import numpy as np
 # --------------------------------------------------------------- audio I/O
 
 def read_wav(path: Path) -> tuple[np.ndarray, int]:
-    """Mono float32 in [-1, 1]. Handles 8/16/32-bit PCM."""
+    """Mono float32 in [-1, 1]. Handles 8/16/32-bit PCM, and anything else.
+
+    "Anything else" is not generosity. `core.media.ensure_reference_wav`
+    already exists because this exact thing happened to the engines: a phone
+    records .m4a, the C++ adapter parses RIFF headers by hand and said "Not a
+    RIFF file", and the fix was to convert once, in one place, so nothing
+    downstream has to care. This module then re-learned it the same way --
+    `realme voice takes` is the first command anyone points at a fresh
+    recording, and it died inside Python's `wave` with "file does not start
+    with RIFF id", which names the format it wanted and not the format it got.
+
+    A real WAV costs one extra `open` and four bytes read; anything else is
+    converted to a temporary 24 kHz mono WAV and read from there.
+    """
+    path = Path(path)
+    try:
+        with open(path, "rb") as fh:
+            riff = fh.read(4) == b"RIFF"
+    except OSError:
+        riff = True                      # let `wave` report it in its own words
+    if not riff:
+        import tempfile
+        from realme.core.media import to_reference_wav
+        tmp = Path(tempfile.mkdtemp(prefix="realme_read_")) / "audio.wav"
+        try:
+            to_reference_wav(path, tmp)
+        except Exception as e:
+            raise ValueError(
+                f"{path.name} is not a WAV and could not be converted: {e}"
+            ) from e
+        try:
+            return read_wav(tmp)
+        finally:
+            tmp.unlink(missing_ok=True)
+            try:
+                tmp.parent.rmdir()
+            except OSError:
+                pass
     with wave.open(str(path), "rb") as w:
         sr = w.getframerate()
         n = w.getnframes()

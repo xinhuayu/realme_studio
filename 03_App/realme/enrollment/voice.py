@@ -778,3 +778,128 @@ def steady_output(src: Path, dst: Path | None = None,
          "-af", chain, "-c:a", "pcm_s16le", str(tmp)], "steadying output")
     tmp.replace(out)
     return out
+
+
+# ------------------------------------------------- judging a take for cloning
+#
+# `analyze` answers "is this recording technically sound" -- level, clipping,
+# noise, length. That is necessary and it is not the whole question, because a
+# recording can pass every one of those checks and still make a clone that
+# sounds polished.
+#
+# Measured on one instructor's own material: his clone differed from him on
+# exactly one axis, harmonic-to-noise ratio, by 2.0 dB (n=25 utterances against
+# 8 slices of the enrolment, standard error 0.37). Everything else -- jitter,
+# shimmer, pitch spread, between-sentence variation -- sat inside the range
+# spanned by two recordings of the man himself. The clone had less breath in
+# it than he does, and that was audible as "over-smoothed" while every other
+# property was right.
+#
+# The lever is the reference. A clone inherits the aspiration and micro-noise
+# of the clip it was cloned from, so a very clean take tends to produce a very
+# clean voice. That is a real trade and not an obvious one: the recording that
+# scores best on SNR is not necessarily the one that clones best.
+#
+# So these are the numbers to compare takes on, and the honest framing is that
+# they are descriptive. Nothing here predicts what a given model will do; they
+# tell you how your takes differ from each other, before you spend a clone on
+# one of them.
+
+def clone_features(path: Path) -> dict:
+    """Descriptive features of a take, on the axes that separate clones."""
+    import numpy as np
+    from realme.verify.acoustic import read_wav
+    sig, sr = read_wav(Path(path))
+    sig = sig.astype(np.float64)
+    out = {"duration_s": round(len(sig) / sr, 1) if sr else 0.0}
+    if sig.size < sr:
+        return {**out, "harmonic_noise_db": None, "air_ratio": None,
+                "centroid_hz": None, "level_range_db": None}
+    n, hop = 1024, 256
+    frames = np.lib.stride_tricks.sliding_window_view(sig, n)[::hop]
+    spec = np.abs(np.fft.rfft(frames * np.hanning(n), axis=1)) + 1e-12
+    rms = np.sqrt((frames ** 2).mean(axis=1)) + 1e-12
+    voiced = rms > np.percentile(rms, 65)
+    f = np.fft.rfftfreq(n, 1 / sr)
+    power = spec[voiced] ** 2
+    if power.shape[0] < 20:
+        return {**out, "harmonic_noise_db": None, "air_ratio": None,
+                "centroid_hz": None, "level_range_db": None}
+    low = power[:, (f > 80) & (f < 2000)]
+    # Peak-to-median in the low spectrum: high when the harmonics stand clear
+    # of everything between them, which is what "clean" means here. A breathy,
+    # roomy, close-miked take scores LOWER, and that is not a fault.
+    hnr = float(np.mean(10 * np.log10(low.max(axis=1) /
+                                      (np.median(low, axis=1) + 1e-12))))
+    tot = power.sum(axis=1)
+    db = 20 * np.log10(rms / rms.max())
+    return {**out,
+            "harmonic_noise_db": round(hnr, 1),
+            "air_ratio": round(float((power[:, f > 4000].sum(axis=1) / tot).mean()), 4),
+            "centroid_hz": round(float(((f * power).sum(axis=1) / tot).mean())),
+            "level_range_db": round(float(np.percentile(db, 95) - np.percentile(db, 5)), 1)}
+
+
+def _codec_of(path: Path) -> str:
+    """The codec a take arrived in, because it changes what gets measured."""
+    try:
+        info = probe(Path(path))
+        for st in info.get("streams", []):
+            if st.get("codec_type") == "audio":
+                return str(st.get("codec_name", "?"))
+    except Exception:
+        pass
+    return "?"
+
+
+#: Codecs that throw away detail. Not a judgement about the take -- a phone
+#: recording is a perfectly good reference -- but a warning about COMPARING
+#: one against an uncompressed take, which compares the codecs as much as the
+#: recordings.
+LOSSY = {"aac", "mp3", "opus", "vorbis", "wmav2", "amr_nb", "amr_wb"}
+
+
+def compare_takes(paths: list[Path], log=print) -> list[dict]:
+    """Several candidate takes side by side, with what differs called out."""
+    rows = []
+    for p in paths:
+        r = analyze(Path(p))
+        rows.append({"path": str(p), "name": Path(p).name,
+                     "codec": _codec_of(Path(p)),
+                     **clone_features(Path(p)),
+                     "snr_db": r.snr_db, "peak_db": r.peak_db,
+                     "verdict": r.verdict, "problems": r.problems})
+    log(f"{'take':24s}{'codec':>7s}{'secs':>7s}{'SNR':>7s}{'peak':>7s}"
+        f"{'breath':>9s}{'air':>8s}{'centroid':>10s}")
+    for r in rows:
+        hnr = "-" if r["harmonic_noise_db"] is None else f"{r['harmonic_noise_db']:.1f}"
+        air = "-" if r["air_ratio"] is None else f"{r['air_ratio']:.4f}"
+        cen = "-" if r["centroid_hz"] is None else f"{r['centroid_hz']}"
+        log(f"{r['name'][:23]:24s}{r['codec']:>7s}{r['duration_s']:7.1f}"
+            f"{r['snr_db']:7.1f}{r['peak_db']:7.1f}{hnr:>9s}{air:>8s}{cen:>10s}")
+    log("")
+    kinds = {("lossy" if r["codec"] in LOSSY else "uncompressed") for r in rows}
+    if len(kinds) > 1:
+        log("  ! These takes are not all in the same format, and that alone")
+        log("    moves these numbers. The same 25 seconds measured 28.4 dB of")
+        log("    breath as WAV and 33.7 dB after AAC -- a bigger difference")
+        log("    than the one between a voice and its clone. Compare takes")
+        log("    recorded the same way, or export them all the same way first.")
+        log("")
+    log("  breath   harmonic-to-noise in dB. LOWER means more aspiration and")
+    log("           room in the take. A clone inherits it; the cleanest take")
+    log("           is the one most likely to come back sounding polished.")
+    log("  air      share of energy above 4 kHz. Falls with distance from the")
+    log("           microphone and with any noise reduction in the chain.")
+    log("  centroid where the energy sits, in Hz. Mostly a fact about the")
+    log("           microphone and the distance, not about the voice.")
+    for r in rows:
+        if not 10 <= r["duration_s"] <= 30:
+            log(f"\n  ! {r['name']} is {r['duration_s']:.0f}s. Google's voice "
+                f"replication wants 10-30s;")
+            log(f"    the local engine does not mind. A take of about 25s "
+                f"serves both without trimming.")
+    for r in rows:
+        for p_ in r["problems"]:
+            log(f"  ! {r['name']}: {p_}")
+    return rows

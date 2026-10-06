@@ -555,8 +555,13 @@ def main(argv=None):
     vo.add_argument("action", choices=["check", "analyze", "polish", "compare",
                                        "bake", "consent", "resemblance",
                                        "enroll", "show", "transcript", "pace", "registers",
-                                       "tau", "gemini"])
+                                       "tau", "gemini", "takes"])
     vo.add_argument("--against", type=Path, help="Second WAV, for resemblance")
+    vo.add_argument("--also", type=Path, action="append", default=[],
+                    metavar="WAV",
+                    help="For `takes`: another candidate recording. Repeat it. "
+                         "Compares them on the axes that separate one clone "
+                         "from another, before you spend a clone on one.")
     vo.add_argument("wav", nargs="?", type=Path)
     # `off` is the default: process only what a recording needs, and say what
     # that is rather than treating every take alike. A clean 56 dB enrolment
@@ -1403,6 +1408,20 @@ def main(argv=None):
                     print("\n  Add it with either of these:")
                     print('    realme voice enroll <file> --transcript "what you said"')
                     print("    realme voice enroll <file> --transcript my_script.txt")
+            return 0
+
+        if a.action == "takes":
+            cands = [c for c in ([a.wav] if a.wav else []) + list(a.also) if c]
+            if len(cands) < 1:
+                print("Point me at the takes:\n"
+                      "  realme voice takes take1.wav --also take2.wav "
+                      "--also take3.wav")
+                return 1
+            missing = [c for c in cands if not Path(c).is_file()]
+            if missing:
+                print("Not there: " + ", ".join(str(m) for m in missing))
+                return 1
+            V.compare_takes([Path(c) for c in cands])
             return 0
 
         if a.action == "gemini":

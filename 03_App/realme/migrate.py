@@ -183,9 +183,9 @@ does not have to match the path on the old machine.
 https://www.anaconda.com/download/success -- accept the defaults. Close and
 reopen any Command Prompt afterwards so it picks up the new PATH.
 
-**3. Run `RealMe\00_Windows\1_Install.bat`.** It creates the environment and
+**3. Run `RealMe\\00_Windows\\1_Install.bat`.** It creates the environment and
 installs the package. It finds ffmpeg and the voices already sitting in
-`tools\` and skips downloading them, so this is minutes rather than an evening.
+`tools\\` and skips downloading them, so this is minutes rather than an evening.
 
 It ends by running `realme setup`, which prints what this machine needs:
 
@@ -203,7 +203,7 @@ binary is actually executed and the GPU actually queried.
 
 Run it from the folder you unzipped into and it finds `profile_data` itself;
 give it the path if it cannot. Your reference recording, its transcript and your
-profile land in `%USERPROFILE%\RealMeStudio`, and the profile's stored path is
+profile land in `%USERPROFILE%\\RealMeStudio`, and the profile's stored path is
 rewritten to this machine. You do not record again.
 
 **5. Put the API key back**, if you want script writing here. It was left out of
@@ -217,13 +217,13 @@ the package on purpose -- a key in a zip travels further than you intend.
     realme voice show
 
 `setup` should show everything present, and `voice show` should point at
-`...\RealMeStudio\profile\baked_assets\voice_reference.wav`.
+`...\\RealMeStudio\\profile\\baked_assets\\voice_reference.wav`.
 
 
 ## Prove it works before you trust it
 
     realme bench --engines piper,qwen3cpp --lines 3 --mode sentence ^
-      --script RealMe\scripts\VR_Themes_test_script.txt --yes
+      --script RealMe\\scripts\\VR_Themes_test_script.txt --yes
 
 Three utterances on each engine: piper in seconds, qwen3cpp in a few minutes.
 Listen to the joined file it names. If that sounds like you, everything that
@@ -253,7 +253,7 @@ system memory are named as such rather than recommended.
 
 ## What was deliberately left out
 
-`tools\qwen3` (the PyTorch engine, ~4 GB) and `tools\vc` (voice conversion,
+`tools\\qwen3` (the PyTorch engine, ~4 GB) and `tools\\vc` (voice conversion,
 ~1.3 GB). Both were measured and set aside; their adapters travel, and
 `realme engine install` fetches the payload if it is ever wanted again.
 """

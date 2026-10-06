@@ -413,6 +413,41 @@ try:
 except Exception as e:
     check("text i/o names its encoding", False, str(e))
 
+# 5f. a Windows path inside an ordinary string literal must double its
+# backslashes.
+#
+# The README written into every update package contained
+# `RealMe\\00_Windows\\1_Install.bat`, spelled with single backslashes in a
+# plain triple-quoted string. Python read `\\0` as a NUL and `\\1` as a
+# control character, so the instruction a new user was handed had no path in
+# it at all. `profile\\baked_assets` lost a character to a backspace and
+# `tools\\vc` to a vertical tab, which split a line in two.
+#
+# Python warns about `\\q` but not about `\\0`, `\\b` or `\\v`, so the
+# compiler cannot be relied on here. Checked on the value, not the source:
+# any string literal that ends up holding a control character other than a
+# newline or a tab is a mistake, wherever it came from.
+try:
+    bad = []
+    for f in APP.rglob("*.py"):
+        if any(x in f.parts for x in ("qwen3cpp", "ov", "knnvc", "__pycache__")):
+            continue
+        try:
+            tree = ast.parse(f.read_text(encoding="utf-8"))
+        except SyntaxError:
+            continue
+        for n in ast.walk(tree):
+            if isinstance(n, ast.Constant) and isinstance(n.value, str):
+                stray = sorted({c for c in n.value
+                                if ord(c) < 32 and c not in "\n\t\r"})
+                if stray:
+                    bad.append(f"{f.relative_to(APP)}:{n.lineno} "
+                               + " ".join(hex(ord(c)) for c in stray))
+    check("string literals hold no stray control characters",
+          not bad, "; ".join(bad[:3]))
+except Exception as e:
+    check("string literals hold no stray control characters", False, str(e))
+
 # 6. launchers: no reference to a file that does not exist
 win = ROOT / "00_Windows"
 present = {p.name for p in win.iterdir()}

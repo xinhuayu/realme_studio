@@ -221,21 +221,40 @@ def _get(path: str, key: str, *, timeout: int = 60) -> dict:
             f"Could not reach the Gemini API: {e.reason}") from e
 
 
-def require_wav(path: Path) -> Path:
-    """Refuse anything that is not already a RIFF WAV, in RealMe's words.
+def require_wav(path: Path, log=None) -> Path:
+    """A RIFF WAV, converting the file if it is not one already.
 
-    Checked before the clip is measured or trimmed, not after. Trimming an
-    .m4a first meant ffprobe got there before this did, and the message a
-    phone recording produced was "moov atom not found" -- true, useless, and
-    about a file the Studio would have converted on the way in.
+    Google documents what it wants -- "resample input audio to 24kHz mono
+    16-bit PCM WAV before encoding" -- so WAV is what gets sent. It does not
+    follow that the person has to do the converting. A phone records .m4a;
+    that is the normal input, not an edge case, and this project has already
+    written that sentence twice (`core.media.ensure_reference_wav`, and again
+    in `verify.acoustic.read_wav`). Refusing with instructions was the third
+    time, and three is enough.
+
+    Converting costs nothing in quality. Whatever a lossy recorder discarded
+    was discarded at the microphone; this only changes the container. The
+    choice that matters is what the phone is set to record, not what gets
+    uploaded.
     """
     path = Path(path)
-    if path.read_bytes()[:4] != b"RIFF":
+    try:
+        if path.read_bytes()[:4] == b"RIFF":
+            return path
+    except OSError as e:
+        raise AdapterUnavailable(f"Could not read {path}: {e}") from e
+    import tempfile
+    from realme.core.media import to_reference_wav
+    out = Path(tempfile.mkdtemp(prefix="realme_upload_")) / f"{path.stem}.wav"
+    try:
+        to_reference_wav(path, out)
+    except Exception as e:
         raise AdapterUnavailable(
-            f"{path.name} is not a RIFF WAV. Enrol it through RealMe "
-            f"(`realme voice enroll <file>`), which converts to 24 kHz mono "
-            f"WAV first.")
-    return path
+            f"{path.name} is not a WAV and could not be converted to one: "
+            f"{e}") from e
+    if log:
+        log(f"  converted {path.name} to 24 kHz mono WAV for upload")
+    return out
 
 
 def _inline_audio(path: Path) -> dict:
@@ -436,8 +455,8 @@ def create_voice(reference_wav: Path, consent_wav: Path, *,
     exactly right for the local engine.
     """
     k = api_key(key)
-    reference_wav = require_wav(reference_wav)
-    require_wav(consent_wav)
+    reference_wav = require_wav(reference_wav, log=log)
+    consent_wav = require_wav(consent_wav, log=log)
     if trim:
         reference_wav = prepare_source(
             reference_wav,
