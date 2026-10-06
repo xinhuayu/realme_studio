@@ -68,7 +68,7 @@ version of sending someone your package where your API key belongs in it.
 | **piper** | the three draft voices the Studio offers: `en_US-amy-medium`, `en_US-ryan-medium`, `en_GB-cori-high` |
 | **ffmpeg** | `ffmpeg.exe` and `ffprobe.exe` — both, because every duration measurement uses ffprobe |
 | **RealMe** | the code and the launchers (`scripts\` travels only in a package that includes your voice) |
-| **The introduction** | `RealMe_Introduction.pdf` and the demo video `test_slides.mp4` it points at |
+| **The guide** | `RealMe_Guide_narrated_v2.pdf`, the script it was read from, and `RealMe_Guide_narrated_v2.mp4` — the twelve-minute narrated introduction, made by RealMe in a cloned voice. Checked as a pair: the README links to both |
 
 **A Gemini voice does not travel, and cannot.** `gemini-tts` keeps your clone
 in your Google project; a package carries the *setting* that names it, not the

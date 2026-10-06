@@ -43,12 +43,23 @@ HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 ROOT = HERE.parent
 
-from realme.core.build import SHIP_DIRS, SHIP_FILES, _excluded  # noqa: E402
+from realme.core.build import (GUIDE_VIDEO, SHIP_DIRS, SHIP_FILES,  # noqa: E402
+                                _excluded, ensure_guide_video)
 
-#: Big binaries that belong in a release and not in a repository. The deck and
-#: its demo video travel in the colleague package (`realme migrate --no-voice`),
-#: where the deck's "the video ships beside this file" is true.
+#: The superseded introduction: a deck and demo video describing a tool with
+#: one voice that ran only locally. Neither ships any more and neither belongs
+#: in a repository.
 NOT_IN_GIT = {"test_slides.mp4", "RealMe_Introduction.pdf"}
+
+#: The guide video DOES go in, by decision rather than by default, and it is
+#: worth being clear about the cost. It is ~26 MB of already-compressed
+#: binary: git cannot diff it, so every re-render adds another 26 MB to the
+#: history for ever, and every clone pays for all of them. The usual answer
+#: is to attach it to a GitHub Release instead and link that from the README,
+#: which keeps the repository small and the video one click away. `--no-video`
+#: does it that way; the default is to include it, because a reader who has to
+#: build the demo to see the demo usually does not.
+INCLUDE_VIDEO = True
 
 #: Files whose whole purpose is to look like a key.
 KEY_FIXTURES = {"example.env"}
@@ -220,12 +231,17 @@ def main() -> int:
     ap.add_argument("outdir", nargs="?", type=Path,
                     default=ROOT.parent / "RealMe_Source")
     ap.add_argument("--zip", action="store_true", help="also write a .zip beside it")
+    ap.add_argument("--no-video", dest="video", action="store_false",
+                    help="leave the ~26 MB guide video out, to be attached to "
+                         "a GitHub Release instead of committed")
     ap.add_argument("--force", action="store_true",
                     help="copy even though the scan found something. For when "
                          "you have READ each line it printed and each one is a "
                          "false positive.")
     a = ap.parse_args()
 
+    ensure_guide_video(ROOT, log=lambda m: print(f"  {m.strip()}"))
+    skip = set(NOT_IN_GIT) | ({GUIDE_VIDEO} if not a.video else set())
     files: list[Path] = []
     for d in SHIP_DIRS:
         base = ROOT / d
@@ -234,10 +250,10 @@ def main() -> int:
         for f in sorted(base.rglob("*")):
             if f.is_file():
                 rel = f.relative_to(ROOT)
-                if not _excluded(rel) and f.name not in NOT_IN_GIT:
+                if not _excluded(rel) and f.name not in skip:
                     files.append(rel)
     for name in SHIP_FILES:
-        if (ROOT / name).is_file() and name not in NOT_IN_GIT:
+        if (ROOT / name).is_file() and name not in skip:
             files.append(Path(name))
 
     print(f"  {len(files)} files from {ROOT}")
@@ -281,8 +297,12 @@ def main() -> int:
     total = sum((out / rel).stat().st_size for rel in files)
     print(f"\n  wrote {out}")
     print(f"  {len(files) + 1} files, {total / 1e6:.1f} MB")
-    print("\n  Nothing in it is a key, a voice, a model or a binary.")
+    print("\n  No key, no voice reference, no model and no compiled binary.")
     print("  INSTALL.md tells a reader how to fetch each of those.")
+    if a.video:
+        print(f"\n  {GUIDE_VIDEO} is in it (~26 MB). git cannot diff a video,")
+        print("  so each re-render adds that again to the history for ever.")
+        print("  --no-video leaves it out; attach it to a Release instead.")
 
     if a.zip:
         archive = out.with_suffix(".zip")

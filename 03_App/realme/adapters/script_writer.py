@@ -186,6 +186,11 @@ arguing, and the listener should be able to tell who is winning."""
 # without editing this line.
 DEFAULT_MODEL = "gemini-3.8-flash"
 
+#: Dollars per million tokens for drafting, input and output. Both double on
+#: 1 January 2027. Images are billed as tokens at the same rate, which is why
+#: a slide-image prompt is most of the input.
+DRAFT_PRICE_IN, DRAFT_PRICE_OUT = 0.75, 3.75
+
 
 def list_models(api_key: str | None = None) -> list[dict]:
     """
@@ -248,6 +253,23 @@ class GeminiScriptWriter(BaseScriptWriter):
         #: The last raw API response, kept so a caller can write it beside the
         #: manifest for inspection. Never logged in full (it holds the script).
         self.last_response: dict | None = None
+        #: Tokens this writer has spent, in and out. Drafting is cheap next to
+        #: speech, but it is not free, and a cost line that counts only the
+        #: speech is a cost line that will be short by the one amount nobody
+        #: remembers to add.
+        self.prompt_tokens = 0
+        self.output_tokens = 0
+
+    @property
+    def spend_usd(self) -> float:
+        """What drafting has cost so far. Metered by Google, still an estimate.
+
+        A deck is sent as images as well as text -- one 1280px render per
+        slide, which is where most of the input tokens go -- so this is not
+        negligible on a long deck even though it is small next to speech.
+        """
+        return (self.prompt_tokens / 1e6 * DRAFT_PRICE_IN
+                + self.output_tokens / 1e6 * DRAFT_PRICE_OUT)
 
     def preflight(self) -> None:
         if not self.api_key:
@@ -318,8 +340,11 @@ class GeminiScriptWriter(BaseScriptWriter):
         self.last_response = body
         usage = (body or {}).get("usageMetadata") or {}
         if usage:
+            self.prompt_tokens += int(usage.get("promptTokenCount") or 0)
+            self.output_tokens += int(usage.get("candidatesTokenCount") or 0)
             self.log(f"  [gemini] tokens: {usage.get('promptTokenCount', '?')} in, "
-                     f"{usage.get('candidatesTokenCount', '?')} out")
+                     f"{usage.get('candidatesTokenCount', '?')} out "
+                     f"(about ${self.spend_usd:.3f} so far)")
         block = ((body or {}).get("promptFeedback") or {}).get("blockReason")
         if block:
             raise RuntimeError(f"Gemini refused the request: {block}")

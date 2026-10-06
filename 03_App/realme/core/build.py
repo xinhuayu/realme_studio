@@ -35,17 +35,55 @@ from pathlib import Path
 # extracted still knows what it is.
 STAMP_REL = "03_App/realme/BUILD_ID"
 
+#: The narrated guide's video, at the root, beside the slides it was made
+#: from. A render leaves it inside its own project folder under the project's
+#: name; `ensure_guide_video` copies it here, because a package should not
+#: carry a folder that looks like a project and contains one file.
+GUIDE_VIDEO = "RealMe_Guide_narrated_v2.mp4"
+GUIDE_VIDEO_SOURCE = "realme_guide/realme_guide.mp4"
+
+
+def ensure_guide_video(root: Path, log=print) -> bool:
+    """Put the rendered guide video where a release expects it.
+
+    Called by both packagers rather than left as a step in a document,
+    because a step in a document is a step that gets skipped and the first
+    anyone knows is a release with a dead link in its README.
+    """
+    import shutil
+    dst, src = root / GUIDE_VIDEO, root / GUIDE_VIDEO_SOURCE
+    if dst.is_file() and (not src.is_file()
+                          or dst.stat().st_mtime >= src.stat().st_mtime):
+        return True
+    if not src.is_file():
+        log(f"  ! {GUIDE_VIDEO} is missing and {GUIDE_VIDEO_SOURCE} is not "
+            f"there to copy from.")
+        log(f"    Render it first:  realme lecture RealMe_Guide_narrated_v2.pdf "
+            f"--script imported -o realme_guide")
+        return False
+    shutil.copy2(src, dst)
+    log(f"  copied {GUIDE_VIDEO_SOURCE} -> {GUIDE_VIDEO} "
+        f"({dst.stat().st_size / 1e6:.1f} MB)")
+    return True
+
 # What a release consists of. One definition, used by the packager and by the
 # digest alike -- if these two ever disagreed, every install would report itself
 # out of date forever.
 SHIP_DIRS = ("00_Windows", "02_Research", "03_App")
 SHIP_FILES = (".gitignore", "README.md", "START_HERE.md", "HANDOVER.md",
               "realme.bat",
-              # The introduction deck and the demo video it points at. The
-              # deck says "the video ships beside this file", which is only
-              # true if it is listed here -- `shipped_files` walks the
-              # numbered folders, and the project root is this list alone.
-              "RealMe_Introduction.pdf", "test_slides.mp4")
+              # The narrated guide: the slides, the script they were read
+              # from, and the video itself. The README links to all three, and
+              # a link that only resolves on the machine it was written on is
+              # not a link. `shipped_files` walks the numbered folders; the
+              # project root is this list alone.
+              #
+              # It replaces the older `RealMe_Introduction.pdf` and
+              # `test_slides.mp4` pair, which described a tool with one voice
+              # that ran only locally. Those files are still in the working
+              # tree and no longer travel.
+              "RealMe_Guide_narrated_v2.pdf", "RealMe_Guide_notes_v2.txt",
+              GUIDE_VIDEO)
 
 # `_Archive` is deliberately absent. It holds the development history -- the
 # superseded architecture drafts, the design reviews, the working journal that

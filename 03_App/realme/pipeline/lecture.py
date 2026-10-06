@@ -137,6 +137,14 @@ def write_script(deck: Path, outdir: Path, writer, *, style="", course_context="
     top_up_short(manifest, slide_pngs, content, writer, style=style,
                  course_context=course_context, targets=targets, log=log,
                  seconds_per_slide=secs)
+    # Drafting is not free either. Said after the top-up, so it covers every
+    # call this step made rather than only the first one.
+    drafted = getattr(writer, "spend_usd", None)
+    if isinstance(drafted, (int, float)) and drafted >= 0.0005:
+        log(f"  drafting cost about ${drafted:.2f} "
+            f"({writer.prompt_tokens:,} tokens in, "
+            f"{writer.output_tokens:,} out)")
+        manifest.draft_cost_usd = round(float(drafted), 4)
     manifest.project_id = deck.stem
     (work / "manifest.json").write_text(manifest.model_dump_json(indent=2), encoding="utf-8")
     words = sum(len(s.spoken_text.split()) for s in manifest.segments)
@@ -319,6 +327,39 @@ def load_script(outdir: Path, path: Path | None = None) -> Manifest:
     folder is how the two would drift apart.
     """
     p = Path(path) if path else Path(outdir) / "_work" / "manifest.json"
+    if not p.is_file():
+        # `--script imported` with no imported script is a two-line mistake:
+        # the import went to one folder and the render was pointed at another.
+        # The raw FileNotFoundError from pathlib names the file that is absent
+        # and nothing about the file that exists, which is the one piece of
+        # information that ends it.
+        from realme.core.env import data_home
+        here = Path(outdir).resolve()
+        seen = []
+        for root in {here.parent, Path.cwd(), data_home() / "projects"}:
+            try:
+                seen += [m.parent.parent for m in root.glob("*/_work/manifest.json")]
+            except OSError:
+                continue
+        found = sorted({str(d) for d in seen})
+        msg = [f"No script in {here}.",
+               "",
+               "  `--script imported` reuses a script that `realme "
+               "import-script` has already",
+               "  written into the project. Nothing has been written into "
+               "this one."]
+        if found:
+            msg += ["", "  There is a script in:"]
+            msg += [f"      {d}" for d in found[:6]]
+            msg += ["", "  Either render into that folder with -o, or import "
+                    "the notes into this one:",
+                    f"      realme import-script <notes.txt> --project "
+                    f"{here.name}"]
+        else:
+            msg += ["", "  Import the notes first:",
+                    f"      realme import-script <notes.txt> --project "
+                    f"{here.name}"]
+        raise FileNotFoundError("\n".join(msg))
     return Manifest.model_validate_json(read_text(p))
 
 
@@ -657,6 +698,9 @@ def render(deck: Path, outdir: Path, manifest: Manifest, tts, *, layout="slide_o
     # good estimate of Google's published rate, and an estimate is what it
     # stays until an invoice says otherwise.
     spend_after = _spent(tts)
+    drafted = float(getattr(manifest, "draft_cost_usd", 0.0) or 0.0)
+    if drafted:
+        report["draft_cost_usd"] = round(drafted, 4)
     if spend_before is not None and spend_after is not None:
         total = spend_after - spend_before
         if total >= 0.0005:
@@ -672,6 +716,10 @@ def render(deck: Path, outdir: Path, manifest: Manifest, tts, *, layout="slide_o
                          else "estimated from the audio length")
             log(f"estimated cost of this render: about ${total:.2f} "
                 f"({how_known}; not an invoice)")
+            if drafted:
+                log(f"  plus about ${drafted:.2f} for the drafting, "
+                    f"so about ${total + drafted:.2f} for the whole project")
+                report["estimated_total_usd"] = round(total + drafted, 4)
     if all_cues:
         (outdir / f"{name}_cues.json").write_text(
             json.dumps(sig.cue_report(all_cues), indent=2), encoding="utf-8")

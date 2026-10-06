@@ -26,7 +26,8 @@ import zipfile
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from realme.core.build import STAMP_REL, compute_id, shipped_files  # noqa: E402
+from realme.core.build import (STAMP_REL, compute_id, ensure_guide_video,  # noqa: E402
+                                shipped_files)
 
 BACKDATE_HOURS = 24
 
@@ -35,6 +36,12 @@ out = Path(sys.argv[1]) if len(sys.argv) > 1 else root / "RealMe_Update.zip"
 
 # The stamp is written into the source tree and into the archive together, so a
 # working copy always knows which release it is, extracted or not.
+# The guide video lives in its own project folder after a render; a release
+# carries it at the root. Refusing here rather than shipping without it: the
+# README links to it, and a release whose first link is dead is worse than a
+# release that did not build.
+if not ensure_guide_video(root):
+    raise SystemExit(1)
 files = shipped_files(root)
 
 # Refuse to package a tree that does not compile.

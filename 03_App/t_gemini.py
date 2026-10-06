@@ -1006,6 +1006,78 @@ def main() -> int:
     cost, how = probe.money("gemini-3.8-flash-tts", 60.0, 1920)
     check(how == "metered", "and a metered token count is preferred when given")
 
+    print("\nthe bill counts the drafting too, and in the right unit")
+    # Two ways to under-report a cost, both of which happened here first.
+    from realme.adapters.script_writer import (GeminiScriptWriter,
+                                               DRAFT_PRICE_IN, DRAFT_PRICE_OUT)
+    w = GeminiScriptWriter(api_key="not-real")
+    check(w.spend_usd == 0.0, "a writer that has drafted nothing has spent nothing")
+    w.prompt_tokens, w.output_tokens = 1_000_000, 0
+    check(abs(w.spend_usd - DRAFT_PRICE_IN) < 1e-9,
+          "a million input tokens cost the input rate", f"{w.spend_usd}")
+    w.prompt_tokens, w.output_tokens = 0, 1_000_000
+    check(abs(w.spend_usd - DRAFT_PRICE_OUT) < 1e-9,
+          "and a million output tokens the output rate")
+    w.prompt_tokens, w.output_tokens = 18_400, 2_600
+    check(0.02 < w.spend_usd < 0.03,
+          "a 13-slide deck drafts for a couple of cents -- small, not zero",
+          f"${w.spend_usd:.3f}")
+    from realme.core.schema import Manifest
+    check("draft_cost_usd" in Manifest.model_fields,
+          "and the manifest carries it, because drafting and rendering are "
+          "different days")
+
+    # The unit, which is where the real mistake was: PRICE is dollars per
+    # million CHARACTERS, and a value in dollars per hour quoted a lecture at
+    # one cent.
+    from realme.app.server import PRICE
+    from realme.pipeline.lecture import estimate_cost
+
+    class _Seg:
+        def __init__(self, t): self.spoken_text = t
+
+    class _Man:
+        segments = [_Seg("x" * 45_000)]          # about a 50-minute lecture
+
+    quoted = estimate_cost(_Man(), PRICE["gemini-tts"])["estimated_usd"]
+    check(0.6 < quoted < 1.2,
+          "a 50-minute lecture is quoted near a dollar, not near a cent",
+          f"${quoted}")
+    check(PRICE["gemini-tts"] > 10,
+          "which only holds if the rate is per million characters")
+
+    print("\nthe guide travels, and travels whole")
+    from realme.core.build import (GUIDE_VIDEO, GUIDE_VIDEO_SOURCE, SHIP_FILES,
+                                   ensure_guide_video)
+    check(GUIDE_VIDEO in SHIP_FILES and
+          "RealMe_Guide_narrated_v2.pdf" in SHIP_FILES and
+          "RealMe_Guide_notes_v2.txt" in SHIP_FILES,
+          "the slides, the script and the video are all in a release",
+          str([f for f in SHIP_FILES if "Guide" in f]))
+    check("test_slides.mp4" not in SHIP_FILES
+          and "RealMe_Introduction.pdf" not in SHIP_FILES,
+          "and the superseded introduction is not")
+
+    # A release whose README links to a video it does not contain is worse
+    # than a release that refused to build, so the packagers collect it and
+    # say so when they cannot.
+    tree = Path(os.environ["REALME_HOME"]) / "ship"
+    (tree / Path(GUIDE_VIDEO_SOURCE).parent).mkdir(parents=True, exist_ok=True)
+    said = []
+    check(not ensure_guide_video(tree, log=said.append),
+          "with neither copy present it refuses")
+    check(any("realme lecture" in m for m in said),
+          "naming the command that produces it", " | ".join(said)[:110])
+    (tree / GUIDE_VIDEO_SOURCE).write_bytes(b"\x00" * 2048)
+    said.clear()
+    check(ensure_guide_video(tree, log=said.append),
+          "and with a rendered video in its project folder it collects it")
+    check((tree / GUIDE_VIDEO).is_file(),
+          "to the root, under the name the README links to")
+    from realme.core.build import shipped_files
+    check(Path(GUIDE_VIDEO) in shipped_files(tree),
+          "where shipped_files then finds it")
+
     print("\nthe documents say what the code does")
     # Documentation drifts silently and a privacy claim that drifts is worse
     # than no claim. These are the sentences that would be WRONG, not merely
@@ -1024,6 +1096,8 @@ def main() -> int:
         check("paid" in doc.lower(),
               f"{name} says the hosted engine wants a paid project")
     check("738" in start, "START_HERE gives the measured chunk size")
+    check("realme lecture" in readme and "realme_guide" in readme,
+          "the README says how to rebuild the introduction video")
     ui = read_text(HERE / "realme" / "app" / "ui.html")
     check("piper" in ui and "Free, local" in ui,
           "the Help tab still offers the free local draft voice first")

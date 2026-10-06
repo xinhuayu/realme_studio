@@ -72,6 +72,11 @@ class Manifest(BaseModel):
     mode: Literal["lecture", "podcast", "debate"] = "lecture"
     # Provenance: which model wrote this script, or whether a human/placeholder did.
     script_source: str = "unknown"
+    #: What the drafting call cost, in dollars, when a paid model wrote it.
+    #: Carried on the manifest rather than recomputed at render time because
+    #: drafting and rendering are separate steps, often days apart, and the
+    #: only place that knows what the draft cost is the step that paid for it.
+    draft_cost_usd: Optional[float] = None
     segments: list[Segment]
 
     def total_measured_s(self) -> Optional[float]:

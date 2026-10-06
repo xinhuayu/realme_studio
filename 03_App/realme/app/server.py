@@ -65,14 +65,23 @@ runner = JobRunner(state_path=DATA / "jobs.json")
 profile = Profile(DATA / "profile")
 
 # TTS price per million characters, for the pre-render estimate.
-#: Dollars per hour of finished audio, for the estimate under the Render
-#: button. Local engines are absent and cost nothing.
+#: Dollars per million CHARACTERS of narration -- which is the unit
+#: `lec.estimate_cost` divides by, and the unit the other entries here were
+#: always in. Local engines are absent and cost nothing.
 #:
-#: gemini-tts: $9 per million audio tokens at ~32 tokens a second is $1.04 an
-#: hour. Both halves of that double on 1 January 2027, and this line is where
-#: to change it.
+#: gemini-tts is billed per audio token, not per character, so it has to be
+#: converted: $9 per million audio tokens at ~32 tokens a second is $1.04 an
+#: hour of speech, and this prose runs at about 15 characters a second
+#: (measured on the probe's own calibration clips), so a million characters is
+#: 18.5 hours and about $19.30. Both halves of the Google price double on
+#: 1 January 2027.
+#:
+#: Written out because the first version of this line said "$1.04" with a
+#: comment calling it dollars per hour -- a number that was right about the
+#: world and wrong about this dictionary, and would have quoted a 10,000
+#: character lecture at one cent.
 PRICE = {"espeak": 0.0, "google_chirp3": 60.0, "elevenlabs": 165.0,
-         "chatterbox": 0.0, "gemini-tts": 1.04}
+         "chatterbox": 0.0, "gemini-tts": 19.30}
 
 
 #: What a slide added by a revision carries until narration is written for it.

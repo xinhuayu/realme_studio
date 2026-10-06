@@ -22,6 +22,29 @@ you read and edit that draft before a word is spoken.
 **New here? Open [START_HERE.md](START_HERE.md).** It is the whole guide:
 install, record your voice, and a first lecture.
 
+## See it work
+
+There is a twelve-minute introduction to RealMe, narrated by RealMe in a cloned
+voice. It is the honest demonstration: if the tool cannot explain itself in the
+voice it clones, nothing else here is worth reading.
+
+- **The slides** — [`RealMe_Guide_narrated_v2.pdf`](RealMe_Guide_narrated_v2.pdf),
+  thirteen of them, including what the three voices are for.
+- **The narration** — [`RealMe_Guide_notes_v2.txt`](RealMe_Guide_notes_v2.txt),
+  the script as written, delivery markers and all.
+- **The video** — [`RealMe_Guide_narrated_v2.mp4`](RealMe_Guide_narrated_v2.mp4),
+  twelve and a half minutes, with captions and chapter marks.
+
+To rebuild it after changing the script or the slides:
+
+```
+realme import-script RealMe_Guide_notes_v2.txt --project realme_guide
+realme lecture RealMe_Guide_narrated_v2.pdf --script imported -o realme_guide --tts gemini-tts
+```
+
+That costs about 20 cents of Gemini and takes a few minutes; `--tts qwen3cpp`
+renders it free and takes a few hours.
+
 ## What is in this folder
 
 ```

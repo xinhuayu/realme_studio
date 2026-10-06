@@ -541,11 +541,13 @@ def personal_entries(zip_path: Path) -> list:
                                   ".opus", ".aac")):
             return True
         # Video is deliberately NOT on that list. The one video that ships,
-        # `test_slides.mp4`, is narrated in the author's cloned voice and
-        # travels in every package on purpose: it is the demo a recipient
-        # checks their install against, and `RealMe_Introduction.pdf` links
-        # to it (preflight checks the pair). Decided 19 September 2026; if a
-        # second video ever ships, decide again here rather than by omission.
+        # `RealMe_Guide_narrated_v2.mp4`, is narrated in the author's cloned
+        # voice and travels in every package on purpose: it is the demo a
+        # recipient checks their install against, and the README links to it
+        # (preflight checks the pair). Decided 19 September 2026 for the
+        # earlier `test_slides.mp4`, and kept when the narrated guide replaced
+        # it in October. If a second video ever ships, decide again here
+        # rather than by omission.
         return False
 
     return sorted(n for n in names if personal(n))
@@ -740,14 +742,15 @@ def preflight(root: Path, data: Path, groups: dict) -> list[tuple[bool, str]]:
                 f"{len(binaries)} binar{'y' if len(binaries) == 1 else 'ies'}"
                 + ("" if gguf and binaries else " -- INCOMPLETE, it will not speak")))
 
-    # The introduction deck links to the demo video beside it. One without
-    # the other is a broken link in the first thing a recipient opens, so
-    # they are checked as a pair -- in every package, --no-voice included.
+    # The guide's slides and the video made from them are a pair: the README
+    # links to both, and one without the other is a broken link in the first
+    # thing a recipient opens. Checked in every package, --no-voice included.
     code_names = {Path(arc).name for _, arc in groups.get("code", [])}
-    deck, demo = "RealMe_Introduction.pdf", "test_slides.mp4"
+    from realme.core.build import GUIDE_VIDEO
+    deck, demo = "RealMe_Guide_narrated_v2.pdf", GUIDE_VIDEO
     if deck in code_names or demo in code_names:
         both = deck in code_names and demo in code_names
-        out.append((both, "introduction deck and its demo video both travel"
+        out.append((both, "the guide's slides and its video both travel"
                     if both else
                     f"{deck if deck in code_names else demo} travels without "
                     f"{demo if deck in code_names else deck} -- the deck's "
