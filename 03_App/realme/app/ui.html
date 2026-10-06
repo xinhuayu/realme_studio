@@ -1,0 +1,2425 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>RealMe Studio</title>
+<style>
+:root{
+  --bg:#F6F7F9;--panel:#fff;--panel2:#EEF1F5;--sunk:#E4E8EE;
+  --ink:#151A22;--ink2:#414B59;--ink3:#6B7688;--rule:#D6DCE5;
+  --accent:#2B44B8;--accent-soft:#E7EAFA;
+  --ok:#0E6B52;--ok-soft:#DDEFE8;--warn:#8A5A06;--warn-soft:#F7ECD6;
+  --bad:#A8321F;--bad-soft:#F8E4DF;
+}
+@media(prefers-color-scheme:dark){:root{
+  --bg:#0E1116;--panel:#161B23;--panel2:#1D242E;--sunk:#0A0D11;
+  --ink:#E6EAF0;--ink2:#AEB8C6;--ink3:#7C879A;--rule:#2A323E;
+  --accent:#8FA2FF;--accent-soft:#1C2340;
+  --ok:#5CC9A3;--ok-soft:#102A24;--warn:#E0AE55;--warn-soft:#2C2415;
+  --bad:#F08A72;--bad-soft:#301A16;}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);
+  font:15px/1.55 ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif}
+.mono,code{font-family:ui-monospace,"SF Mono",Menlo,Consolas,monospace;font-variant-numeric:tabular-nums}
+header{background:var(--panel);border-bottom:1px solid var(--rule);position:sticky;top:0;z-index:20}
+.hbar{max-width:1180px;margin:0 auto;padding:12px 20px;display:flex;gap:16px;align-items:center;flex-wrap:wrap}
+.brand{font-weight:700;letter-spacing:-.02em;font-size:1.05rem}
+.brand span{color:var(--accent)}
+.pills{display:flex;gap:6px;flex-wrap:wrap;margin-left:auto}
+.pill{font-size:.68rem;font-weight:600;letter-spacing:.04em;text-transform:uppercase;
+  padding:.24em .6em;border-radius:3px;background:var(--panel2);color:var(--ink3);white-space:nowrap}
+.pill.ok{background:var(--ok-soft);color:var(--ok)}
+.pill.bad{background:var(--bad-soft);color:var(--bad)}
+.pill.warn{background:var(--warn-soft);color:var(--warn)}
+nav{max-width:1180px;margin:0 auto;padding:0 20px;display:flex;gap:2px}
+nav button{background:none;border:none;border-bottom:2px solid transparent;color:var(--ink3);
+  font:inherit;font-weight:600;font-size:.92rem;padding:9px 14px;cursor:pointer}
+nav button[aria-selected=true]{color:var(--ink);border-bottom-color:var(--accent)}
+nav button:focus-visible{outline:2px solid var(--accent);outline-offset:-2px}
+main{max-width:1180px;margin:0 auto;padding:24px 20px 80px;display:grid;
+  grid-template-columns:minmax(0,1fr) 320px;gap:22px;align-items:start}
+@media(max-width:900px){main{grid-template-columns:1fr}}
+.panel{background:var(--panel);border:1px solid var(--rule);border-radius:8px;padding:20px;
+  display:flex;flex-direction:column;gap:14px;margin-bottom:18px}
+h2{margin:0;font-size:1.1rem;letter-spacing:-.01em}
+h3{margin:0;font-size:.95rem}
+/* 66ch is the rule for a page of prose. These are two- and three-line notes
+   sitting under a full-width panel, and the cap left them ending halfway
+   across with a column of empty space beside every one. They now run the width
+   of the controls they explain; the slightly looser line height keeps the
+   longer measure readable. */
+.hint{font-size:.85rem;line-height:1.55;color:var(--ink3);margin:0;max-width:none}
+label{display:flex;flex-direction:column;gap:5px;font-size:.82rem;font-weight:600;color:var(--ink2)}
+input,select,textarea{font:inherit;background:var(--bg);color:var(--ink);
+  border:1px solid var(--rule);border-radius:6px;padding:8px 10px;width:100%}
+textarea{resize:vertical;line-height:1.5}
+input:focus,select:focus,textarea:focus{outline:2px solid var(--accent);outline-offset:-1px;border-color:transparent}
+.row{display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:12px}
+button.act{background:var(--accent);color:#fff;border:none;border-radius:6px;padding:9px 16px;
+  font:inherit;font-weight:600;cursor:pointer}
+button.act:disabled{opacity:.45;cursor:not-allowed}
+button.ghost{background:var(--panel2);color:var(--ink);border:1px solid var(--rule);
+  border-radius:6px;padding:8px 14px;font:inherit;font-weight:600;cursor:pointer}
+.actions{display:flex;gap:10px;flex-wrap:wrap;align-items:center}
+.seg{display:grid;grid-template-columns:132px 1fr;gap:14px;padding:14px 0;border-top:1px solid var(--rule)}
+.seg img{width:132px;border-radius:4px;border:1px solid var(--rule);display:block}
+.seg .meta{font-size:.72rem;color:var(--ink3);margin-top:6px}
+.seg textarea{min-height:110px;font-size:.9rem}
+.uttbar{display:flex;gap:10px;align-items:center;margin-top:6px;flex-wrap:wrap}
+.playing{margin-top:12px;padding:8px 12px;border-radius:6px;
+  background:var(--panel2);border:1px solid var(--rule);font-size:13px;
+  color:var(--accent)}
+button.stopping{border-color:var(--accent);color:var(--accent)}
+button.mini{background:var(--panel2);color:var(--ink);border:1px solid var(--rule);
+  border-radius:5px;padding:4px 10px;font:inherit;font-size:.78rem;font-weight:600;cursor:pointer}
+button.mini:disabled{opacity:.5;cursor:progress}
+.mkbar{display:flex;gap:6px;flex-wrap:wrap;margin:2px 0 6px}
+.mkbar button{background:var(--panel2);color:var(--ink);border:1px solid var(--rule);
+  border-radius:5px;padding:4px 9px;font-size:.76rem;cursor:pointer;font-weight:600}
+.mkbar button:hover{border-color:var(--accent);color:var(--accent)}
+.mkbar .sep{width:1px;background:var(--rule);margin:2px 3px}
+#p-help h3{margin:22px 0 6px;font-size:.95rem}
+#p-help table{border-collapse:collapse;width:100%;margin:8px 0;font-size:.84rem}
+table.lex{border-collapse:collapse;width:100%;margin:10px 0;font-size:.88rem}
+table.lex td,table.lex th{padding:6px 8px;border-bottom:1px solid var(--line);
+  text-align:left;vertical-align:top}
+table.lex th{font-size:.74rem;letter-spacing:.06em;text-transform:uppercase;
+  color:var(--ink3)}
+table.lex td.t{font-weight:600;white-space:nowrap}
+table.lex td.s{color:var(--ink2)}
+table.lex .own{font-size:.72rem;color:var(--ink3)}
+table.lex button{font-size:.78rem;padding:2px 8px}
+#p-help th,#p-help td{text-align:left;padding:6px 10px 6px 0;
+  border-bottom:1px solid var(--rule);vertical-align:top}
+#p-help th{color:var(--ink2);font-weight:600;white-space:nowrap}
+#p-help td code,#p-help li code{background:var(--panel2);padding:1px 5px;
+  border-radius:3px;font-size:.92em}
+#p-help li{margin:4px 0}
+.rev{margin-top:4px;padding:2px 7px;border-radius:3px;display:inline-block;
+  font-weight:600;font-size:.68rem;letter-spacing:.02em}
+#pendbar{background:#FEF3C7;border:1px solid #F0C36D;border-radius:6px;
+  padding:12px 14px;font-size:.85rem;line-height:1.55;color:#6B4A0B}
+#pendbar b{color:#5A3D07}
+.splitrow{display:grid;grid-template-columns:62px 74px 1fr;gap:10px;align-items:center;
+  padding:5px 8px;border-top:1px solid var(--rule);font-size:.82rem}
+.splitrow:hover{background:var(--panel2)}
+.splitrow .tm{font-variant-numeric:tabular-nums;color:var(--ink3)}
+.splitrow.starts{background:#EEF4FF}
+.splitrow.starts .tm{color:var(--ink)}
+.splitrow input[type=text]{padding:4px 7px;font-size:.8rem}
+.splithead{display:grid;grid-template-columns:62px 74px 1fr;gap:10px;padding:0 8px 4px;
+  font-size:.72rem;font-weight:600;color:var(--ink3);letter-spacing:.02em}
+.revnote{font-size:.7rem;color:var(--ink3);line-height:1.4;margin-top:3px}
+.rev-added{background:#FDECEC;color:#9B1C1C}
+.rev-edited{background:#FEF3C7;color:#92400E}
+.rev-moved{background:#E8EEFB;color:#1E3A8A}
+.rev-same{background:var(--panel2);color:var(--ink3)}
+/* Shown on EVERY slide, ticked and disabled where there is nothing to keep.
+   It used to be omitted entirely for those, which reads as a missing control
+   rather than as an answered question -- and the answer ("this one has to be
+   recorded, there is no earlier take") is worth saying. */
+.redo-off{opacity:.55;cursor:default}
+.redo{display:flex;align-items:center;gap:6px;margin-top:6px;cursor:pointer;
+  font-size:.72rem;color:var(--ink2);font-weight:600}
+.redo input{accent-color:var(--accent);cursor:pointer;
+  width:auto;flex:0 0 auto;margin:0}
+/* A checkbox with its own words beside it, rather than above them.
+   Two global rules have to be beaten here and both are right where they
+   apply: `label` is a COLUMN flex, so a caption sits above the control it
+   names, and `input` is width:100%, so a text box fills its cell. A
+   checkbox wants neither -- it wants to be its own size with the sentence
+   next to it. inline-flex also keeps the label as narrow as its text, so
+   the pointer toggles on the words and not across the empty half of the
+   row. */
+label.check{display:inline-flex;flex-direction:row;align-items:center;
+  gap:8px;font-size:.85rem;font-weight:600;color:var(--ink2);
+  cursor:pointer;line-height:1.4;align-self:flex-start}
+label.check input[type=checkbox]{width:auto;flex:0 0 auto;margin:0;
+  accent-color:var(--accent);cursor:pointer}
+.warn{color:var(--warn);font-size:.78rem}
+.good{color:var(--ok);font-weight:600}
+.tunehead{cursor:pointer;font-weight:600;font-size:.88rem;color:var(--accent);
+  padding:6px 0;list-style:none}
+.tunehead::-webkit-details-marker{display:none}
+.tunehead::before{content:"▸ ";font-size:.8em}
+details[open] .tunehead::before{content:"▾ "}
+.slider{display:grid;grid-template-columns:104px 1fr 62px;gap:10px;align-items:center;
+  padding:7px 0;border-bottom:1px solid var(--rule)}
+.slider:last-child{border-bottom:none}
+.slider label{font-size:.83rem;font-weight:600;color:var(--ink2);cursor:help}
+.slider input[type=range]{width:100%;accent-color:var(--accent)}
+.slider .val{font-family:ui-monospace,monospace;font-size:.78rem;text-align:right;
+  color:var(--ink3);font-variant-numeric:tabular-nums}
+.slider .val.changed{color:var(--accent);font-weight:600}
+.bar{height:5px;background:var(--sunk);border-radius:3px;overflow:hidden}
+.bar i{display:block;height:100%;background:var(--accent);width:0;transition:width .3s}
+pre.log{margin:0;background:var(--sunk);border:1px solid var(--rule);border-radius:6px;
+  padding:10px 12px;font-size:.74rem;line-height:1.6;max-height:260px;overflow:auto;color:var(--ink2)}
+.files{display:flex;flex-wrap:wrap;gap:8px}
+.files a{font-size:.8rem;font-weight:600;text-decoration:none;color:var(--accent);
+  background:var(--accent-soft);padding:6px 11px;border-radius:5px}
+.kv{display:grid;grid-template-columns:auto 1fr;gap:4px 14px;font-size:.82rem}
+.kv dt{color:var(--ink3)}
+.kv dd{margin:0;font-family:ui-monospace,monospace}
+.verdict{padding:10px 12px;border-radius:6px;font-size:.85rem;font-weight:600}
+.verdict.pass{background:var(--ok-soft);color:var(--ok)}
+.verdict.warn{background:var(--warn-soft);color:var(--warn)}
+.verdict.fail{background:var(--bad-soft);color:var(--bad)}
+.side{position:sticky;top:70px;display:flex;flex-direction:column;gap:0}
+.hidden{display:none!important}
+.note{border-left:3px solid var(--accent);background:var(--accent-soft);padding:10px 12px;
+  border-radius:0 6px 6px 0;font-size:.83rem;color:var(--ink2)}
+.err{border-left-color:var(--bad);background:var(--bad-soft);color:var(--bad);font-weight:600}
+</style>
+</head>
+<body>
+<header>
+  <div class="hbar">
+    <div class="brand">RealMe <span>Studio</span></div>
+    <div class="pills" id="pills"></div>
+  </div>
+  <nav>
+    <button id="t-lecture" aria-selected="true" onclick="tab('lecture')">Lecture</button>
+    <button id="t-narrate" aria-selected="false" onclick="tab('narrate')">Narrate Text</button>
+    <button id="t-dialogue" aria-selected="false" onclick="tab('dialogue')">Podcast &amp; Debate</button>
+    <button id="t-setup" aria-selected="false" onclick="tab('setup')">Twin Setup</button>
+    <button id="t-tools" aria-selected="false" onclick="tab('tools')">Tools</button>
+    <button id="t-help" aria-selected="false" onclick="tab('help')">Help</button>
+  </nav>
+</header>
+
+<main>
+<div>
+  <!-- ============ LECTURE ============ -->
+  <div id="p-lecture">
+    <div class="panel">
+      <h2>1 · Draft the narration</h2>
+      <p class="hint">Nothing is synthesized in this step, so it costs one cheap model call.
+        The two context boxes matter more than the model you pick — they are what makes the
+        script sound like you rather than like a textbook.</p>
+      <label>Slide deck (PDF, PPTX or ODP)
+        <input type="file" id="deck" accept=".pdf,.pptx,.ppt,.odp">
+      </label>
+      <label>Course context
+        <textarea id="ctx" rows="2" placeholder="PUBH 6002, second-year MPH. They know DAGs but not IPTW. Week 4 of 14."></textarea>
+      </label>
+      <label>Your teaching voice
+        <textarea id="style" rows="2" placeholder="Dry and precise. Worked examples over abstraction. I say 'notice that' a lot and I never read a bullet aloud."></textarea>
+      </label>
+      <div class="row">
+        <label>Script writer<select id="writer"><option value="gemini">Gemini</option><option value="placeholder">Placeholder (pipeline test)</option></select></label>
+        <label>Model<select id="gmodel">
+          <option value="">loading…</option>
+        </select></label>
+      </div>
+      <div class="row">
+        <label>Narration per slide<select id="gsecs">
+          <option value="70">Brief — most slides 50–70 words</option>
+          <option value="110" selected>Standard — most slides 100–150 words</option>
+          <option value="150">Full — most slides 160–200 words</option>
+        </select></label>
+      </div>
+      <p class="hint">Where an <em>ordinary</em> slide should land. A section
+        divider or title slide should get far less — ten or twenty words is a
+        finished title slide — and a dense slide may run to the ceiling
+        (160 / 256 / 350 words).</p>
+      <p class="hint">Logos and template art are found in the deck and the model
+        is told to pass over them — a mark that repeats in the same spot on most
+        pages, or a small one out at the edge, is branding rather than content.
+        Without that it writes a sentence about the magnifying glass. Real
+        figures, charts and diagrams are still narrated, and a section divider
+        carrying nothing but a logo is no longer mistaken for one.</p>
+      <p class="hint">Each slide then gets its own band, measured from the
+        slide: a section divider is owed nothing, a simple one-claim slide
+        finishes comfortably under a hundred words, a dense table or derivation
+        is owed more than the setting's middle, and a full-page figure is owed
+        real narration however little text it carries — the picture does not
+        read itself.</p>
+      <p class="hint">The draft is measured against those bands, not just asked
+        for them, because a model settles at about a hundred words a slide
+        whatever you request. Slides that came in under <em>their own</em> band
+        are sent back once with their words shown to them — asked for the step
+        that was skipped or the number never read out, never for padding, and a
+        rewrite that came back no longer is discarded. The log says which slides
+        moved and what each was owed.</p>
+      <p class="hint" id="gmodel-note">checking which models your key can call…</p>
+      <div class="actions"><button class="act" id="btn-script" onclick="draftScript()">Draft narration</button></div>
+    </div>
+
+    <div class="panel">
+      <h2>…or bring your own notes</h2>
+      <p class="hint">Already written the narration? Import it instead of having a
+        model write it — no API key needed, nothing rewritten. One text file for
+        the whole deck, with a line marking each slide:</p>
+      <pre class="hint" style="white-space:pre-wrap">[[slide 1: Why confounding is structural]]
+Confounding is not a statistical problem that appears at the analysis stage…
+
+[[slide 2]]
+Consider a cohort where 15.3 percent received the intervention…</pre>
+      <p class="hint"><code>## Slide 1</code> and <code>## Slide 1 - Title</code>
+        work too. Slide numbers must run 1…N with none skipped or repeated: a
+        script that does not is refused rather than mapped onto the wrong
+        slides.</p>
+      <label>Slide deck (PDF, PPTX or ODP)
+        <input type="file" id="ideck" accept=".pdf,.pptx,.ppt,.odp">
+      </label>
+      <label>Your narration (.txt or .md)
+        <input type="file" id="inotes" accept=".txt,.md">
+      </label>
+      <div class="actions"><button class="act" id="btn-import" onclick="importScript()">Import notes</button></div>
+    </div>
+
+    <div class="panel">
+      <h2>…or reopen a lecture to read or re-record it</h2>
+      <p class="hint">The notes you already approved are saved with the project.
+        Reopen it to read them, edit them, or record the whole thing again —
+        after changing the voice, the pause scale, the layout, or nothing at
+        all. No model call, and no need to import anything: re-rendering reads
+        the script that is already there.</p>
+      <p class="hint">Speech whose words, voice and pace have not changed is
+        reused from the ledger, so a re-record is usually a few minutes rather
+        than the original hour. <b>Record every utterance again</b> ignores
+        that and speaks the whole lecture from scratch — the way to get a
+        different take from the same words.</p>
+      <div class="row">
+        <label>Project<select id="opproj"></select></label>
+      </div>
+      <div class="actions">
+        <button class="act" id="btn-open" onclick="openProject()">Open this project</button>
+      </div>
+      <p class="hint" id="op-out"></p>
+    </div>
+
+    <div class="panel">
+      <h2>…or revise a lecture you have already made</h2>
+      <p class="hint">Changed a figure, corrected a definition, inserted two slides?
+        Upload the new deck against the project you rendered before. Slides are
+        matched by what they SAY — not by position, and not by pixels — so
+        re-exporting the deck with a different theme moves no notes, and
+        inserting one slide at the front does not make the other forty count as
+        new. Narration and cue words follow their slide, and each one is marked
+        in the editor below as new, edited, moved or unchanged.</p>
+      <div class="row">
+        <label>Project<select id="rvproj"></select></label>
+        <label>New version of the deck<input type="file" id="rvdeck" accept=".pdf,.pptx,.ppt,.odp"></label>
+      </div>
+      <div class="actions"><button class="act" id="btn-revise" onclick="reviseDeck()">Compare and update</button></div>
+      <pre class="hint" id="rv-out" style="white-space:pre-wrap"></pre>
+    </div>
+
+    <div class="panel hidden" id="editor">
+      <h2>2 · Read it. Fix it. Then render.</h2>
+      <div class="hidden" id="pendbar">
+        <b>This is a proposed revision. Nothing in your project has changed yet.</b>
+        <span id="pend-sum"></span>
+        Your old deck, its slides and its notes are all still in place. Read the
+        slides below, fix what needs fixing, then <b>Save and apply</b> — that is
+        the moment the new deck replaces the old one. <b>Discard</b> throws the
+        comparison away and leaves everything as it was.
+        <div class="actions" style="margin-top:10px">
+          <button class="ghost" id="btn-discard" onclick="discardRevision()">Discard this revision</button>
+        </div>
+      </div>
+      <p class="hint">Every edit here is free; every word below this point costs money and
+        minutes. Fix acronyms, cut padding, add the aside you always make in class.</p>
+      <p class="hint">After a revision each slide is marked, and the tick decides
+        what is actually remade. A slide flagged as changed because a logo moved
+        or a theme changed is one tick away from reusing its existing frame and
+        audio — untick it and that slide costs nothing. A slide you really did
+        edit should stay ticked.</p>
+      <p class="hint">Cue words are proposed with the notes and are yours to change.
+        Each one must appear both on the slide and in that slide's narration —
+        the render says so if one does not, rather than quietly showing nothing.</p>
+      <div class="panel hidden" id="addbar" style="margin:0 0 14px">
+        <div class="actions">
+          <button class="act" id="btn-additions" onclick="draftAdditions()">
+            Draft notes for the new slides</button>
+          <span class="hint" id="add-out"></span>
+        </div>
+        <p class="hint">Only the slides marked NEW are written, and they are
+          written into this lecture: the model is shown the narration on either
+          side, so the new slide picks up where the one before it stopped
+          instead of opening as though the lecture had just begun.</p>
+        <p class="hint">Slides marked EDITED are left alone — a slide that
+          gained a bullet or lost a logo usually still reads correctly. Where
+          one does need a change, <b>✎ Update these notes</b> on that slide
+          asks for the smallest edit that fits the new slide and keeps the
+          rest of your wording. Read whatever comes back before you render.</p>
+      </div>
+      <div id="segs"></div>
+      <div class="row" style="margin-top:14px">
+        <label>Recording<select id="rvoice" onchange="renderModeChanged()"></select></label>
+      </div>
+      <p class="hint" id="rvoice-note"></p>
+      <p class="hint" id="overwrite"></p>
+      <label class="check"><input type="checkbox" id="rfresh"> Record every
+        utterance again (ignore the saved audio)</label>
+      <div class="actions">
+        <button class="ghost" id="btn-save" onclick="saveScript()">Save edits</button>
+        <button class="act" id="btn-render" onclick="renderLecture()">Render video</button>
+        <span class="hint" id="cost"></span>
+      </div>
+    </div>
+
+    <div class="panel hidden" id="lec-out">
+      <h2>3 · Output</h2>
+      <div id="lec-verdict"></div>
+      <dl class="kv" id="lec-kv"></dl>
+      <div class="files" id="lec-files"></div>
+    </div>
+  </div>
+
+  <!-- ============ DIALOGUE ============ -->
+  <!-- ============ NARRATE ============ -->
+  <div id="p-narrate" class="hidden">
+    <div class="panel">
+      <h2>Read a text aloud</h2>
+      <p class="hint">No deck, no script writer, no model call — text in, your voice
+        out. This is the loop for checking a pronunciation, hearing how a paragraph
+        lands, or testing a new reference clip. Blank lines separate paragraphs and
+        get a longer breath; <code>[[pause]]</code>, <code>[[slow]]</code> and
+        <code>[[emphasis]]…[[/emphasis]]</code> work exactly as they do in a lecture.</p>
+      <div class="mkbar" id="nmarks"></div>
+      <label>Paste the text
+        <textarea id="ntext" rows="9" placeholder="Only 15.3 percent of the cohort completed Pre-ETS services.&#10;&#10;That matters because the comparison group was not randomly assigned."></textarea>
+      </label>
+      <p class="hint">Select words first and a delivery marker wraps them; with
+        nothing selected it applies from that point to the end of the paragraph.
+        Markers are instructions to the engine — they are never spoken, and they
+        do not appear in the captions.</p>
+      <label>…or choose a file (.txt, .md, .docx)
+        <input type="file" id="nfile" accept=".txt,.md,.docx">
+      </label>
+      <div class="row">
+        <label>Voice<select id="ntts"></select></label>
+        <label>Split<select id="nmode">
+          <option value="natural">Natural — at clauses</option>
+          <option value="sentence">Sentence — at full stops only</option>
+        </select></label>
+        <label>Pace<select id="npace">
+          <option value="0.85">Much slower</option>
+          <option value="0.92">Slower</option>
+          <option value="1.0" selected>As recorded</option>
+          <option value="1.08">Quicker</option>
+        </select></label>
+      </div>
+      <div class="row">
+        <label title="Higher is more expressive and more likely to drift; lower is flatter and, past a point, slower and duller.">Expression<select id="ntemp">
+          <option value="0.7">Steady (0.7)</option>
+          <option value="0" selected>Default (0.9)</option>
+          <option value="1.05">Lively (1.05)</option>
+        </select></label>
+        <label>Between paragraphs<select id="ngap">
+          <option value="0.4">Tight (0.4s)</option>
+          <option value="0.7" selected>Natural (0.7s)</option>
+          <option value="1.1">Considered (1.1s)</option>
+        </select></label>
+        <label title="Initialisms are spelled out unless the lexicon says otherwise.">Acronyms<select id="nacr">
+          <option value="" selected>Spell out (default)</option>
+          <option value="known">Skip common ones</option>
+          <option value="off">Never spell</option>
+        </select></label>
+        <label>Captions<select id="ncap">
+          <option value="1" selected>Write an .srt</option>
+          <option value="0">Audio only</option>
+        </select></label>
+      </div>
+      <p class="hint">Expression only affects the cloning engines — the draft voice
+        does not sample. Pace is deterministic: it is the right control for speed,
+        unlike expression, which changes speed only as a side effect.</p>
+      <div class="actions"><button class="act" id="btn-narr" onclick="makeNarration()">Read it aloud</button></div>
+    </div>
+    <div class="panel hidden" id="narr-out">
+      <h2>Output</h2>
+      <div id="narr-verdict"></div>
+      <audio id="narr-audio" controls style="width:100%;margin:10px 0"></audio>
+      <div class="files" id="narr-files"></div>
+      <pre id="narr-warn" class="hint" style="white-space:pre-wrap"></pre>
+    </div>
+  </div>
+
+  <div id="p-dialogue" class="hidden">
+    <div class="panel">
+      <h2>Podcast &amp; debate</h2>
+      <p class="hint">Two voices, rendered turn by turn — your clone for the instructor, any
+        other voice for the interlocutor. Debate mode over a paper you disagree with is the
+        one I'd try first: hearing your own argument answered tends to expose the weak link.</p>
+      <label>Topic or question
+        <input id="topic" placeholder="Does target trial emulation actually solve immortal time bias?">
+      </label>
+      <label>Source paper or notes (optional)
+        <input type="file" id="dsrc" accept=".pdf,.md,.txt">
+      </label>
+      <div class="row">
+        <label>Mode<select id="dmode">
+          <option value="debate">Academic debate</option>
+          <option value="socratic">Socratic dialogue</option>
+          <option value="interview">Expert interview</option>
+        </select></label>
+        <label>Turns<input type="number" id="dturns" value="16" min="2" max="60"></label>
+        <label>Your voice<select id="dtts"></select></label>
+        <label>Interlocutor<select id="dguest"></select></label>
+      </div>
+      <div class="row">
+        <label>Pace<select id="dspeed">
+          <option value="0.64">Slower</option>
+          <option value="0.72" selected>Conversational</option>
+          <option value="0.8">Lecture pace</option>
+          <option value="0.9">Brisk</option>
+        </select></label>
+        <label>Between turns<select id="dgap">
+          <option value="0.4">Tight (0.4s)</option>
+          <option value="0.6" selected>Natural (0.6s)</option>
+          <option value="0.9">Considered (0.9s)</option>
+        </select></label>
+        <label>Open and close
+          <select id="dbook">
+            <option value="1" selected>Greeting, topic, sign-off</option>
+            <option value="0">Straight into the argument</option>
+          </select></label>
+      </div>
+      <p class="hint">The interlocutor list offers each draft voice separately —
+        Amy and Cori are female, Ryan male, and Cori is English rather than
+        American — so a debate against your own clone has two distinguishable
+        speakers, and you can pick how different you want them to sound. Your
+        name in Twin Setup is the one spoken in the greeting.</p>
+      <div class="actions"><button class="act" id="btn-dlg" onclick="makeDialogue()">Generate</button></div>
+    </div>
+    <div class="panel hidden" id="dlg-out">
+      <h2>Output</h2>
+      <div id="dlg-verdict"></div>
+      <div class="files" id="dlg-files"></div>
+    </div>
+  </div>
+
+  <!-- ============ SETUP ============ -->
+  <!-- ============ HELP ============ -->
+  <div id="p-tools" class="hidden">
+    <div class="panel">
+      <h2>Split a video into parts</h2>
+      <p class="hint">A long lecture cut into sections, at exact slide
+        boundaries. Every render writes a cut list beside the video with each
+        slide's measured start time, so "begin part two at slide 21" is a
+        lookup rather than a hunt for the right frame. Only videos RealMe
+        rendered appear here; without that cut list there is nothing that says
+        where a slide begins.</p>
+      <div class="row">
+        <label>Video<select id="sp-video" onchange="loadSplitSlides()"></select></label>
+        <label>Cutting<select id="sp-mode">
+          <option value="auto" selected>Automatic — copy where exact, re-encode where not</option>
+          <option value="copy">Copy only — instant, needs a keyframe at each cut</option>
+          <option value="encode">Re-encode — exact anywhere, slower</option>
+        </select></label>
+      </div>
+      <p class="hint" id="sp-note"></p>
+      <div id="sp-slides"></div>
+      <label class="meta redo" style="margin:0"><input type="checkbox"
+        id="sp-projects" checked> make each part a lecture of its own — its
+        slides, notes, captions and a deck, so it can be edited and
+        re-recorded</label>
+      <div class="actions">
+        <button class="act" id="btn-split" onclick="runSplit()">Split into parts</button>
+        <span class="hint" id="sp-out"></span>
+      </div>
+    </div>
+    <div class="panel hidden" id="sp-result"></div>
+
+    <div class="panel">
+      <h2>Join videos into one</h2>
+      <p class="hint">The other direction: several videos played end to end.
+        Where every input shares the same size, codec and frame rate — which is
+        true of parts cut from one lecture — they are joined without
+        re-encoding, so nothing is lost and it takes seconds. Where they
+        differ, they are re-encoded to match, because copying mismatched files
+        produces something that plays the first video and then goes black.</p>
+      <p class="hint">The inputs may come from different projects. Two sections
+        taken from two lectures become a <b>new lecture</b>: the narration, the
+        cue words and the slide images follow their video into the new order, a
+        deck is built from them, and the result opens in the Lecture tab where
+        you can fix a sentence and record it again. Captions are merged and
+        shifted to follow, and the joined video gets its own cut list, so it can
+        be split again.</p>
+      <div class="row">
+        <label>Add a video<select id="mg-pick"></select></label>
+        <label>Name for the new lecture<input type="text" id="mg-name"
+               placeholder="confounding_and_design"></label>
+      </div>
+      <label class="meta redo" style="margin:0"><input type="checkbox"
+        id="mg-project" checked onchange="mergeModeChanged()"> also assemble it
+        as an editable lecture — notes, slides and a deck, not just a
+        video</label>
+      <label class="meta redo" style="margin:0"><input type="checkbox"
+        id="mg-force" onchange="mergeModeChanged()"> just append them — for old
+        recordings or video made elsewhere, where there are no notes or slides
+        to carry</label>
+      <p class="hint" id="mg-forcenote"></p>
+      <div class="actions">
+        <button class="ghost" onclick="mergeAdd()">Add to the list</button>
+        <button class="ghost" onclick="mergeClear()">Clear</button>
+      </div>
+      <div id="mg-list"></div>
+      <p class="hint" id="mg-check"></p>
+      <div class="row">
+        <label>Joining<select id="mg-mode">
+          <option value="auto" selected>Automatic — copy when they match, re-encode when they do not</option>
+          <option value="copy">Copy only — instant, breaks on mismatched inputs</option>
+          <option value="encode">Re-encode — always, slower</option>
+        </select></label>
+      </div>
+      <div class="actions">
+        <button class="act" id="btn-merge" onclick="runMerge()">Join them</button>
+        <span class="hint" id="mg-out"></span>
+      </div>
+    </div>
+    <div class="panel hidden" id="mg-result"></div>
+
+    <div class="panel">
+      <h2>Pronunciations</h2>
+      <p class="hint">A term on the left, how it should sound on the right,
+        written in ordinary letters — <span class="mono">en-haynes</span>,
+        <span class="mono">why-oh-uh</span>. Every engine understands a
+        respelling, which is why it is the column that matters.</p>
+      <p class="hint"><b>Leave the pronunciation blank</b> to stop a term being
+        spelled out letter by letter without claiming to know how it sounds.
+        That is the right entry for something like NHANES, which the engine
+        already says correctly but the acronym speller would otherwise turn
+        into “N H A N E S”.</p>
+      <div class="row">
+        <label style="flex:1">Term<input id="lx-term" placeholder="NHANES"></label>
+        <label style="flex:2">Pronunciation<input id="lx-say"
+          placeholder="en-haynes — or leave blank to stop it being spelled"></label>
+        <button class="act" onclick="lexAdd()" style="align-self:flex-end">Add</button>
+      </div>
+      <p class="hint" id="lx-note"></p>
+      <table id="lx-table" class="lex"></table>
+      <p class="hint" id="lx-where"></p>
+    </div>
+  </div>
+
+  <div id="p-help" class="hidden">
+    <div class="panel">
+      <h2>How this works</h2>
+      <p class="hint">Two voices and one rule. <b>Piper</b> is the draft voice —
+        fast, not yours, for getting the words and the slide timing right.
+        <b>qwen3cpp</b> is your own cloned voice and records the final audio on
+        this machine; nothing about your voice leaves it. The rule: iterate with
+        the draft, record once with your own.</p>
+      <p class="hint">Three voices now, and the rule has not changed — only
+        which one records the final audio by default.</p>
+      <table>
+        <tr><th>piper</th><td><b>Free, local, not your voice.</b> The draft
+          voice, and the second speaker in a podcast. Iterate here: getting
+          the words and the slide timing right costs nothing and takes
+          minutes. You can use the whole system this way and never spend
+          anything.</td></tr>
+        <tr><th>gemini-tts</th><td><b>Your voice, hosted, about a dollar an
+          hour of audio.</b> The default for a new lecture since October 2026:
+          closer to you than the local clone, no GPU, minutes rather than
+          hours, 130 languages. Your reference clip and every sentence you
+          render are sent to Google, so it wants a paid project. The render
+          log says what each slide cost as it goes.</td></tr>
+        <tr><th>qwen3cpp</th><td><b>Your voice, here, free.</b> Nothing about
+          your voice leaves the machine and it works with the network
+          unplugged. Slower — about six times slower than real time on a
+          laptop CPU — and it is the one that will still render this lecture
+          identically in five years. Pick it in Twin Setup, or per render in
+          the Lecture tab.</td></tr>
+      </table>
+
+      <h3>The tabs</h3>
+      <table>
+        <tr><th>Lecture</th><td>A deck becomes a narrated video. Draft the
+          narration with a model, or import notes you already wrote, edit them,
+          then render — as a draft or in your voice.</td></tr>
+        <tr><th>Narrate Text</th><td>Any text read aloud, with captions. The
+          fastest loop in the system: check a pronunciation, hear how a
+          paragraph lands, test a new reference recording.</td></tr>
+        <tr><th>Podcast &amp; Debate</th><td>A topic or a paper becomes an
+          exchange between you and a second voice, with a greeting and a
+          sign-off.</td></tr>
+        <tr><th>Tools</th><td>Whole lectures, rather than single slides —
+          the Lecture tab compares and edits a deck slide by slide, and this
+          moves sections around. <b>Split a video</b>
+          cuts a long lecture into sections at exact slide boundaries, using the
+          cut list written beside it; each part gets its own captions and its
+          own cut list, so a part can be split again. <b>Join videos</b> is the
+          other direction, and it will take sections from <i>different</i>
+          lectures: the notes, cue words and slide images follow their video
+          into the new order and the result becomes an editable lecture of its
+          own. Each part of a split becomes a lecture too, so a section can
+          be corrected and re-recorded on its own and put back afterwards.
+          Both copy rather than re-encode wherever that is exact — for parts of
+          one lecture it always is — so splitting a lecture and rejoining it
+          gives back the same video, with the same slide times. There is also a
+          plain append, for an old recording or video made elsewhere: that one
+          makes a video and claims nothing about its contents.</td></tr>
+        <tr><th>Twin Setup</th><td>Your voice reference, consent recording,
+          course context and teaching-voice notes. Done once.</td></tr>
+      </table>
+    </div>
+
+    <div class="panel">
+      <h2>Editing the notes</h2>
+      <p class="hint">Everything in the editor is free. Every word below it costs
+        minutes of compute, so fix things here first.</p>
+      <ul class="hint">
+        <li><b>Say the numbers you mean.</b> "15.3 percent" is read as one
+          number; "15.3%" is too, but writing the word is safer in a sentence
+          that also uses a percent sign for something else.</li>
+        <li><b>Acronyms are spelled out by default.</b> <code>AUC</code> becomes
+          "A U C". A term that is genuinely a word — NHANES, NASA — needs a
+          lexicon entry: <code>realme lexicon add NHANES --respelling
+          "en-haynes"</code>, or <code>--no-spell</code> to stop it being
+          spelled without asserting a pronunciation.</li>
+        <li><b>LaTeX is converted</b>, and you can check it before rendering:
+          <code>realme math '\hat{\beta}_1 \pm 1.96\,\mathrm{SE}'</code>.</li>
+        <li><b>Cue words</b> sit under each slide's notes, semicolons between
+          them. Each must appear both on the slide and in that slide's narration
+          — the render says which one failed rather than quietly showing
+          nothing.</li>
+        <li><b>Hear one line</b> before committing to a whole render. The button
+          under each slide synthesizes the first utterance in seconds.</li>
+      </ul>
+    </div>
+
+    <div class="panel">
+      <h2>Delivery markers</h2>
+      <p class="hint">Instructions to the engine, written inline. They are never
+        spoken and never appear in the captions, and they work in slide notes,
+        narration text and podcast scripts alike. The Narrate tab has a button
+        for each.</p>
+      <table>
+        <tr><th><code>[[pause]]</code></th><td>Silence. 350 ms by default;
+          <code>[[pause:900]]</code> for longer, 2 s maximum.</td></tr>
+        <tr><th><code>[[breath]]</code></th><td>A 180 ms catch of breath.</td></tr>
+        <tr><th><code>[[hedging]]</code></th><td>Prefixes the next phrase with a
+          spoken "erh…".</td></tr>
+        <tr><th><code>[[mask]]</code></th><td>A 450 ms tone instead of the words.
+          <code>[[mask]]…[[/mask]]</code> masks a span.</td></tr>
+        <tr><th><code>[[unmask]]</code></th><td>Ends a masked span; the same as
+          <code>[[/mask]]</code>.</td></tr>
+        <tr><th><code>[[slow]]</code> <code>[[fast]]</code></th><td>8% slower or
+          quicker.</td></tr>
+        <tr><th><code>[[soft]]</code> <code>[[clear]]</code></th><td>Quieter, or
+          especially deliberate articulation.</td></tr>
+        <tr><th><code>[[emphasis]]…[[/emphasis]]</code></th><td>Modest stress on
+          the marked phrase.</td></tr>
+        <tr><th><code>[[normal]]</code></th><td>Closes every delivery marker still
+          open.</td></tr>
+      </table>
+      <p class="hint">The delivery markers are <b>scoped</b>: wrap a phrase with a
+        closing tag, or write one on its own and it runs to the end of the
+        paragraph. A mistyped marker is reported before anything is synthesized —
+        you cannot hear the difference between a marker that worked and one that
+        was ignored.</p>
+
+      <h3>Other languages</h3>
+      <p class="hint">Your cloned voice speaks ten:
+        <b>English, German, Spanish, Chinese, Japanese, French, Korean, Russian,
+        Italian, Portuguese</b>. Mark a phrase and it is spoken with that
+        language's phonetics, in your voice:</p>
+      <pre class="hint" style="white-space:pre-wrap">The French call it [[fr-FR]]biais de confusion[[/fr-FR]], which is apt.</pre>
+      <p class="hint">Regional tags work — <code>fr-CA</code>, <code>pt-BR</code>,
+        <code>zh-TW</code> all reach the voice for that language. The draft voice
+        is English only and will say so rather than mispronounce a block it
+        cannot speak.</p>
+    </div>
+
+    <div class="panel">
+      <h2>Recording the slides</h2>
+      <ul class="hint">
+        <li><b>Draft first.</b> Pick a draft voice in step 2 and render — minutes
+          instead of an hour, saved as <code>&lt;project&gt;_draft.mp4</code> so it
+          cannot overwrite a finished recording. Check the words, the pacing and
+          the slide timing, then re-render in your own voice.</li>
+        <li><b>Expect roughly 3–5 minutes of compute per minute of audio</b> for
+          your own voice on a CPU. A twenty-minute lecture is about an hour. It
+          runs unattended.</li>
+        <li><b>Narration length: a band for ordinary slides, and a ceiling
+          nobody has to reach.</b> Brief, Standard and Full say where a slide of
+          ordinary weight should land — about 50–70, 100–150 or 160–200 words.
+          A section divider or title slide should fall far below its band; ten
+          words can be a finished title slide. A dense slide may run up to the
+          ceiling (160, 256 or 350 words). If every slide comes out the same
+          length, or the deck's median sits well under its band, the draft says
+          so — the first is narration written to a quota, the second means the
+          setting never reached the model.</li>
+        <li><b>Revising later is cheap.</b> Upload a new version of the deck
+          against the same project: slides are matched by what they say, so a
+          re-theme moves no notes and inserting one slide does not re-record
+          the other forty.</li>
+        <li><b>A comparison is a proposal until you save it.</b> Comparing a
+          new deck against a project changes nothing on disk: your old deck,
+          its slides and its notes all stay where they are, and the new deck
+          waits in the project's working folder. The editor shows the proposed
+          result with a banner above it. <i>Save and apply</i> is the moment
+          the new deck becomes the project's deck; <i>Discard this revision</i>
+          leaves everything exactly as it was. Rendering is refused while a
+          proposal is open, rather than guessing which deck you meant.</li>
+        <li><b>"Edited" is exact, and it shows its working.</b> Whether the
+          wording changed is decided by comparing the words themselves, not by
+          a similarity score — a score cannot tell six changed words on a long
+          slide from none, and once reported such a slide as unchanged. Each
+          edited slide carries the change underneath its badge
+          ("6 words added, 1 removed: added &ldquo;and figures&rdquo;"), so a
+          flag you disagree with can be dismissed on sight. A difference that
+          is only the printed page number is not an edit.</li>
+        <li><b>New slides can be drafted into the lecture you already have.</b>
+          After a comparison, <i>Draft notes for the new slides</i> sends only
+          the slides marked NEW to the model, together with the narration on
+          either side of them, so what comes back picks up from the previous
+          slide instead of opening a lecture that is already half over. Slides
+          marked EDITED keep the notes you wrote; where one genuinely needs a
+          change, <i>✎ Update these notes</i> on that slide asks for the
+          smallest edit that fits it and leaves the rest of your wording alone.
+          Both are drafts — read them before rendering.</li>
+        <li><b>You decide what gets remade.</b> Each slide carries a
+          <i>re-record this slide</i> tick, set from what actually differs.
+          A comparison cannot tell "the logo moved" from "the figure is wrong";
+          untick the first and that slide keeps its existing frame and audio at
+          no cost. Editing its narration overrides the tick — new words need new
+          audio, so the slide is rendered whatever the box says, and the render
+          log tells you it happened.</li>
+      </ul>
+    </div>
+
+    <div class="panel">
+      <h2>Where the files are</h2>
+      <p class="hint">Everything lives in your data folder, <span id="help-data">
+        …</span> — outside the application, so an update never touches it.</p>
+      <table>
+        <tr><th>profile/</th><td>Your voice reference, consent recording,
+          transcript and settings. <code>baked_assets/voice_reference.wav</code>
+          is the clip every engine clones from.</td></tr>
+        <tr><th>lexicon.json</th><td>Your own pronunciations. Survives updates;
+          the built-in list does not.</td></tr>
+        <tr><th>.env</th><td>Your API key and settings. Never uploaded.</td></tr>
+        <tr><th>projects/&lt;deck&gt;/</th><td>One folder per lecture, described
+          below.</td></tr>
+      </table>
+
+      <h3>Inside a project</h3>
+      <table>
+        <tr><th>_work/manifest.json</th><td><b>The notes you edit.</b> Narration,
+          cue words, slide mapping and measured durations. This is the file to
+          back up.</td></tr>
+        <tr><th>&lt;deck&gt;.mp4</th><td>The video, with subtitles muxed in as a
+          selectable track.</td></tr>
+        <tr><th>&lt;deck&gt;.srt</th><td>Subtitles for YouTube, Canvas, Panopto —
+          the format nearly everything ingests.</td></tr>
+        <tr><th>&lt;deck&gt;.vtt</th><td>The same captions for HTML5 video and web
+          players.</td></tr>
+        <tr><th>&lt;deck&gt;_chapters.txt</th><td>Per-slide timestamps. Paste into a
+          YouTube description and it becomes a clickable chapter list. Rounded to
+          whole seconds, which is right for navigation and wrong for cutting.</td></tr>
+        <tr><th>&lt;deck&gt;_segments.json</th><td>Exact slide boundaries to three
+          decimals, for splicing a revised version later. Written for every
+          render.</td></tr>
+        <tr><th>&lt;deck&gt;_cues.json</th><td>Where each highlight was drawn and
+          when — for checking the signalling, not for publishing.</td></tr>
+        <tr><th>&lt;deck&gt;_verification.json</th><td>Duration, drift, streams, the
+          pronunciation check, and which voice made the file.</td></tr>
+      </table>
+      <p class="hint"><code>.srt</code> and <code>.vtt</code> are the same captions
+        in two dialects — use whichever your platform accepts. The chapters file
+        is the one that makes a forty-minute lecture navigable.</p>
+    </div>
+
+    <div class="panel">
+      <h2>When something is wrong</h2>
+      <ul class="hint">
+        <li><b>A voice that is not yours.</b> Every run prints which voice it
+          built — <code>cloning from voice_reference.wav</code>, or a warning that
+          no reference is enrolled. Check it in the job log before a long render.</li>
+        <li><b>A word mispronounced.</b> Add a lexicon entry and render again;
+          only the changed lines are re-synthesized.</li>
+        <li><b>Anything else.</b> <code>realme doctor</code> builds every engine
+          the way a render builds it and reports what is missing, with the command
+          that fixes each one.</li>
+      </ul>
+      <p class="hint">Diagnostics for this machine are on the Twin Setup tab.</p>
+    </div>
+  </div>
+
+  <div id="p-setup" class="hidden">
+    <div class="panel">
+      <h2>Twin setup</h2>
+      <p class="hint">Captured once, reused all term. Everything here stays in your local
+        data directory; it is uploaded only by the voice adapter you explicitly choose.</p>
+      <div class="row">
+        <label>Display name<input id="pname"></label>
+        <label>Voice for lectures<select id="ptts"></select></label>
+        <label>Draft voice<select id="pdraft"></select></label>
+      </div>
+      <p class="hint mono" id="pdraft-note"></p>
+      <p class="hint">The draft voice is piper: fast, not you. Use it to settle the
+        words, the pacing and the slide timing, then render for real with the cloned
+        engine above. Which draft voice is easier to work against is taste, so pick one.</p>
+      <label>Default course context<textarea id="pctx" rows="2"></textarea></label>
+      <label>Default teaching-voice notes<textarea id="pstyle" rows="2"></textarea></label>
+      <label>Spoken disclosure (say this in the first ten seconds)
+        <textarea id="pdisc" rows="2"></textarea></label>
+      <div class="row">
+        <label>Signalling<select id="psig">
+          <option value="highlight">Highlight the region being discussed</option>
+          <option value="underline">Underline it</option>
+          <option value="focus">Dim everything else</option>
+          <option value="off">Off</option>
+        </select></label>
+        <label>Layout<select id="playout">
+          <option value="slide_only">Slides only</option>
+          <option value="pip">Picture-in-picture (needs avatar)</option>
+          <option value="side_by_side">Side by side (needs avatar)</option>
+        </select></label>
+        <label>Width<input type="number" id="pw" step="2"></label>
+        <label>Height<input type="number" id="ph" step="2"></label>
+        <label>FPS<input type="number" id="pfps"></label>
+      </div>
+      <div class="actions"><button class="act" onclick="saveProfile()">Save profile</button><span class="hint" id="psaved"></span></div>
+    </div>
+
+    <div class="panel">
+      <h3>Your voice</h3>
+      <p class="hint">Record 30–60 seconds of normal speech — read something you
+        would actually say in a lecture, not a word list. Quiet room, consistent
+        distance from the mic. This gets checked, polished once, and then every
+        lecture inherits the result.</p>
+      <label>Reference recording<input type="file" id="vref" accept="audio/*"></label>
+      <div id="vreport"></div>
+      <div id="vpresets" class="hidden">
+        <p class="hint">Start from a preset, then adjust if you want to. Be
+          conservative — a clone trained on an over-processed reference sounds
+          processed in every lecture you make, and that cannot be undone later.</p>
+        <div id="vplist"></div>
+
+        <details id="vtune" style="margin-top:14px">
+          <summary class="tunehead">Fine tuning — warmth, pitch, energy…</summary>
+          <p class="hint" style="margin-top:10px">Move a slider, press
+            <strong>Hear this</strong>. Ranges are deliberately narrow: these
+            shade your voice, they do not replace it.</p>
+          <div id="vsliders"></div>
+          <div class="actions" style="margin-top:12px">
+            <button class="mini" id="btn-hear" onclick="tunePreview()">▶ Hear this</button>
+            <button class="mini" id="btn-orig" onclick="hearOriginal(this)">▶ Original</button>
+            <button class="ghost" onclick="resetTune()">Reset</button>
+            <span class="hint" id="vtunemsg"></span>
+          </div>
+          <p class="hint" style="margin-top:8px">Adjust, hear, adjust again.
+            Nothing is committed until you press <strong>Save this
+            voice</strong> below — and <strong>Original</strong> plays your
+            untouched recording, which is the only honest reference for whether
+            a change helped.</p>
+        </details>
+
+        <div id="vplaying" class="playing hidden"></div>
+
+        <div class="actions" style="margin-top:14px">
+          <button class="act" onclick="bakeVoice()">Save this voice</button>
+          <button class="ghost" onclick="PLAYER.stop()">■ Stop audio</button>
+          <span class="hint" id="vbaked"></span>
+        </div>
+        <p class="hint" style="margin-top:8px">Saving makes this the voice every
+          lecture inherits. Your original recording is kept, so you can come
+          back and save a different setting later — but audio already rendered
+          keeps the voice it was made with.</p>
+      </div>
+    </div>
+
+    <div class="panel">
+      <h3>Gemini cloned voice <span class="pill" id="gem-pill">not set up</span></h3>
+      <p class="hint"><b>This is the voice a new lecture uses.</b> It is
+        hosted: your clone lives in a Google project, and everything it says —
+        along with the clip it was cloned from — leaves this computer. It is
+        faster and closer to you than the local engine, it needs no GPU, and a
+        fifty-minute lecture costs about a dollar.</p>
+      <p class="hint">The local engine (<b>qwen3cpp</b>) is still there and
+        still works with the network unplugged, at no cost and no upload. Pick
+        it under <i>Voice for lectures</i> above, or per render in the Lecture
+        tab. If you were already using it, this update did not move you.</p>
+      <p class="hint"><b>Before anything is uploaded.</b> On Google's free
+        tier, their API terms say human reviewers may read API input and
+        output, that the content is used to improve Google products, and that
+        you should not submit personal information — and your voice is
+        personal information. On the paid tier they state the opposite: not
+        used for improvement, logged only briefly for abuse detection. No API
+        reports which tier a key is on, so this is the one question only you
+        can answer.</p>
+      <label class="check"><input type="checkbox" id="gem-paid"> This API key
+        bills to a <b>paid</b> Google project, and I have read what that
+        changes</label>
+      <p class="hint">Google requires this exact sentence, in your own voice.
+        A paraphrase is rejected. It is a different recording from the consent
+        clip above, which is in RealMe's wording and stays for your
+        institution.</p>
+      <p class="hint"><b>Record it on the same microphone, in the same room,
+        as your voice reference</b> — ideally in the same sitting. Google
+        compares the two recordings and refuses the pair if its speaker check
+        says they are different people. A good desk mic for one and a phone
+        for the other fails that check even though both are plainly you: it is
+        comparing the spectral envelope, and a different capsule at a
+        different distance changes it more than two speakers' voices do. Aim
+        for 10–30 seconds; read the sentence slowly, or twice.</p>
+      <pre class="log" id="gem-consent-text" style="max-height:none"></pre>
+      <label>Google consent recording<input type="file" id="gemaud" accept="audio/*"></label>
+      <div class="actions">
+        <button class="act" id="gem-enroll" onclick="gemEnroll()">Create the cloned voice</button>
+        <button class="ghost" id="gem-forget" onclick="gemForget()">Delete it from Google</button>
+        <span class="hint" id="gem-status"></span>
+      </div>
+      <p class="hint" id="gem-detail"></p>
+      <p class="hint" id="gem-check"></p>
+      <div id="gem-existing" class="hidden">
+        <p class="hint">Voices that already exist in your Google project. A
+          voice is created the moment Google accepts the two clips, so one can
+          be sitting there even if RealMe did not record it — adopting costs
+          nothing and uploads nothing.</p>
+        <div class="row">
+          <label>Use an existing voice<select id="gem-pick"></select></label>
+        </div>
+        <div class="actions">
+          <button class="ghost" onclick="gemUse()">Use this one</button>
+          <button class="ghost" onclick="gemDrop()">Delete this one at Google</button>
+          <span class="hint" id="gem-use-status"></span>
+        </div>
+      </div>
+      <p class="hint">A stored voice lives in your Google project for a year
+        from its last use. It is not yours the way the Qwen3 weights on this
+        disk are yours.</p>
+      <p class="hint"><b>Speaking pace.</b> A cloned voice speaks at the pace
+        of the clip it was cloned from — a reference read carefully for the
+        microphone makes a clone that lectures carefully, every time. This
+        renders one short sample, measures its words per minute of speech
+        against your enrolment recording's, and stores the correction. About a
+        cent. Give a target rate if the enrolment itself is slower than you
+        actually teach.</p>
+      <div class="row">
+        <label>Match pace to (words/min, optional)<input type="number"
+               id="gem-wpm" min="80" max="260" step="1"
+               placeholder="your enrolment recording's own rate"></label>
+      </div>
+      <div class="actions">
+        <button class="ghost" onclick="gemPace()">Measure and match the pace</button>
+        <span class="hint" id="gem-pace-status"></span>
+      </div>
+      <div class="row">
+        <label>Characters sent per call<input type="number" id="gem-chars"
+               min="0" max="8000" step="20" placeholder="738 (measured default)"></label>
+      </div>
+      <p class="hint">Leave it empty to use <b>738</b>, which is measured:
+        a ladder of calls from 113 to 1345 characters found nothing ever
+        dropped, but everything above about 800 said at 8–9% faster — audible
+        as muddiness, not as missing words. 738 is the last size that is not
+        hurried. Measure your own with <code>_Probe_Gemini_TTS.bat</code>,
+        which synthesizes each sentence alone, then the same sentences
+        together, and compares speaking time and syllable count. Enter 0 to
+        fall back to the pipeline's 260, which is smaller than this engine
+        needs but never hurried.</p>
+      <div class="actions">
+        <button class="ghost" onclick="gemChunk()">Save chunk size</button>
+        <span class="hint" id="gem-chunk-status"></span>
+      </div>
+    </div>
+
+    <div class="panel">
+      <h3>Consent recording <span class="pill">for your institution</span></h3>
+      <p class="hint">Separate from the Google one above, and in RealMe's own
+        wording rather than a vendor's. Cloning services want a short, clean reference plus a recording of you
+        consenting in your own voice. Record both in the same quiet room, same distance from
+        the mic. The consent clip is worth keeping regardless of vendor — it is the artifact
+        that answers an institutional question later.</p>
+      <p class="hint">Read this aloud in the same room, at the same distance,
+        and keep the file. Google's Chirp 3 requires its own exact wording and
+        will reject anything else; this version is for your own records and for
+        anyone at your institution who asks later.</p>
+      <pre class="log" id="consent-text" style="max-height:none"></pre>
+      <label>Consent recording<input type="file" id="conaud" accept="audio/*"></label>
+      <p class="hint" id="consent-status"></p>
+    </div>
+
+
+    <div class="panel">
+      <h3>Environment</h3>
+      <pre class="log" id="doctor"></pre>
+    </div>
+  </div>
+</div>
+
+<!-- ============ SIDEBAR ============ -->
+<aside class="side">
+  <div class="panel">
+    <h3 id="job-title">Activity</h3>
+    <div class="bar"><i id="job-bar"></i></div>
+    <pre class="log" id="job-log">Idle.</pre>
+  </div>
+</aside>
+</main>
+
+<script>
+const $ = id => document.getElementById(id);
+let PROJECT = null, POLL = null, PROFILE = null, PENDING = false;
+
+/* ------------------------------------------------------------------- tools */
+let SPLIT = null, JOIN = [];
+
+function fmt(t){
+  const m = Math.floor(t / 60), sec = t - m * 60;
+  return `${m}:${sec.toFixed(2).padStart(5,'0')}`;
+}
+
+async function loadSplittable(){
+  try{
+    const r = await (await fetch('/api/tools/splittable')).json();
+    const v = r.videos || [];
+    $('sp-video').innerHTML = v.length
+      ? v.map(x=>`<option value="${esc(x.project_id)}|${esc(x.video)}">${
+          esc(x.video)} — ${x.slides} slides, ${(x.total_s/60).toFixed(1)} min</option>`).join('')
+      : '<option value="">no rendered videos yet</option>';
+    if(v.length) loadSplitSlides();
+    else { $('sp-slides').innerHTML = ''; $('sp-note').textContent =
+      'Render a lecture first — a video only becomes splittable by slide when '
+      + 'RealMe writes its cut list beside it.'; }
+  }catch(e){ $('sp-video').innerHTML = '<option value="">unavailable</option>'; }
+}
+
+async function loadSplitSlides(){
+  const val = $('sp-video').value;
+  $('sp-result').classList.add('hidden');
+  $('sp-out').textContent = '';
+  if(!val){ $('sp-slides').innerHTML=''; return; }
+  const [pid, video] = val.split('|');
+  const r = await (await fetch(
+    `/api/tools/slides/${encodeURIComponent(pid)}/${encodeURIComponent(video)}`)).json();
+  if(r.detail){ $('sp-slides').innerHTML=''; $('sp-note').textContent = r.detail; return; }
+  SPLIT = {pid, video, slides: r.slides};
+  $('sp-note').innerHTML = `Tick the slide where each new part should begin. `
+    + `Slide 1 always begins the first part. `
+    + `<b>${r.slides.length} slides, ${(r.total_s/60).toFixed(1)} minutes.</b>`;
+  $('sp-slides').innerHTML =
+    `<div class="splithead"><div>starts a part</div><div>at</div><div>slide</div></div>`
+    + r.slides.map((c,i)=>`
+      <label class="splitrow${i===0?' starts':''}" id="sprow${c.slide}">
+        <input type="checkbox" data-start="${c.slide}" ${i===0?'checked disabled':''}
+               onchange="splitRowChanged(${c.slide})">
+        <span class="tm">${fmt(c.start_s)}</span>
+        <span><b>${c.slide}</b> ${esc(c.opening || '')}</span>
+      </label>`).join('')
+    + `<div id="sp-titles"></div>`;
+  renderPartTitles();
+}
+
+function chosenStarts(){
+  return [...document.querySelectorAll('#sp-slides input[data-start]')]
+    .filter(t=>t.checked).map(t=>+t.dataset.start).sort((a,b)=>a-b);
+}
+
+function splitRowChanged(slide){
+  const row = $('sprow'+slide);
+  const box = row.querySelector('input[data-start]');
+  row.classList.toggle('starts', box.checked);
+  renderPartTitles();
+}
+
+function renderPartTitles(){
+  if(!SPLIT) return;
+  const starts = chosenStarts(), last = SPLIT.slides[SPLIT.slides.length-1].slide;
+  // Titles are kept by the slide the part STARTS at, not by position, so
+  // ticking a new boundary does not shuffle names already typed onto the
+  // parts below it.
+  const kept = {};
+  document.querySelectorAll('#sp-titles input[data-title]').forEach(t=>{
+    kept[t.dataset.title] = t.value;
+  });
+  $('sp-titles').innerHTML = `<div style="margin-top:14px">`
+    + starts.map((s,i)=>{
+        const end = (i+1 < starts.length) ? starts[i+1]-1 : last;
+        return `<label style="margin-top:8px;font-size:.78rem">Part ${i+1} —
+          slides ${s}–${end}
+          <input type="text" data-title="${s}" value="${esc(kept[s]||'')}"
+                 placeholder="a title for this part (optional)"></label>`;
+      }).join('') + `</div>`;
+}
+
+async function runSplit(){
+  if(!SPLIT){ alert('Choose a video first.'); return; }
+  const starts = chosenStarts();
+  if(starts.length < 2){
+    alert('Tick at least one more slide — a single part is the video you '
+        + 'already have.');
+    return;
+  }
+  const titles = starts.map(s=>{
+    const box = document.querySelector(`#sp-titles input[data-title="${s}"]`);
+    return box ? box.value : '';
+  });
+  $('btn-split').disabled = true;
+  $('sp-out').textContent = 'cutting…';
+  const r = await (await fetch('/api/tools/split',{method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({project_id: SPLIT.pid, video: SPLIT.video,
+                          starts, titles, mode: $('sp-mode').value,
+                          as_projects: $('sp-projects').checked})})).json();
+  if(r.detail){ $('btn-split').disabled=false;
+    $('sp-out').innerHTML = `<span class="warn">${esc(r.detail)}</span>`; return; }
+  watch(r.job_id, 'Splitting', j=>{
+    $('btn-split').disabled = false;
+    if(j.status==='error'){ $('sp-out').innerHTML =
+      `<span class="warn">${esc(j.error)}</span>`; return; }
+    const res = j.result || {};
+    $('sp-out').textContent = res.summary || 'done';
+    $('sp-result').classList.remove('hidden');
+    const made = {};
+    (res.projects||[]).forEach(x=>{ made[x.part] = x; });
+    $('sp-result').innerHTML = `<h2>Parts</h2>`
+      + (res.projects
+          ? `<p class="hint">Each part is now a lecture of its own — open the
+             Lecture tab to edit or re-record any of them.</p>`
+          : `<p class="hint">In <code>${esc(res.outdir||'')}</code></p>`)
+      + (res.parts||[]).map(x=>`
+          <p class="hint"><b>${esc(x.filename)}</b> — slides ${x.first_slide}–${
+            x.last_slide}, ${(x.measured_s||0/1).toFixed(1)}s, ${
+            x.how === 'copy' ? 'copied without re-encoding'
+                             : 're-encoded for an exact boundary'}${
+            x.captions ? ' · captions ' + esc(x.captions) : ''}${
+            made[x.index] && made[x.index].project_id
+              ? ' · lecture <b>' + esc(made[x.index].project_id) + '</b>' : ''}${
+            made[x.index] && made[x.index].error
+              ? ' · <span class="warn">' + esc(made[x.index].error) + '</span>' : ''}${
+            x.note ? ' · <span class="warn">' + esc(x.note) + '</span>' : ''}</p>`).join('');
+    loadProjects();
+  });
+}
+
+async function loadJoinable(){
+  try{
+    const r = await (await fetch('/api/tools/joinable')).json();
+    const v = r.videos || [];
+    $('mg-pick').innerHTML = v.length
+      ? v.map(x=>`<option value="${esc(x.project_id)}|${esc(x.rel)}">${
+          esc(x.project_id)}/${esc(x.rel)} — ${x.size_mb} MB</option>`).join('')
+      : '<option value="">no videos yet</option>';
+  }catch(e){ $('mg-pick').innerHTML = '<option value="">unavailable</option>'; }
+}
+
+function mergeAdd(){
+  const v = $('mg-pick').value;
+  if(!v) return;
+  const [project_id, rel] = v.split('|');
+  // The same file twice is allowed on purpose — an intro clip may legitimately
+  // top and tail a lecture — so this does not deduplicate.
+  JOIN.push({project_id, rel});
+  renderJoinList();
+}
+function mergeClear(){ JOIN = []; renderJoinList(); }
+function mergeRemove(i){ JOIN.splice(i,1); renderJoinList(); }
+function mergeMove(i, by){
+  const j = i + by;
+  if(j < 0 || j >= JOIN.length) return;
+  [JOIN[i], JOIN[j]] = [JOIN[j], JOIN[i]];
+  renderJoinList();
+}
+
+function renderJoinList(){
+  $('mg-result').classList.add('hidden');
+  $('mg-out').textContent = '';
+  if(!JOIN.length){
+    $('mg-list').innerHTML = '<p class="hint">Nothing added yet. They will play '
+      + 'in the order listed here.</p>';
+    $('mg-check').textContent = '';
+    return;
+  }
+  $('mg-list').innerHTML = JOIN.map((v,i)=>`
+    <div class="splitrow" style="grid-template-columns:34px 1fr 118px">
+      <span class="tm">${i+1}</span>
+      <span>${esc(v.project_id)}/${esc(v.rel)}</span>
+      <span>
+        <button class="mini" onclick="mergeMove(${i},-1)" ${i===0?'disabled':''}
+                title="move earlier">↑</button>
+        <button class="mini" onclick="mergeMove(${i},1)" ${i===JOIN.length-1?'disabled':''}>↓</button>
+        <button class="mini" onclick="mergeRemove(${i})">✕</button>
+      </span>
+    </div>`).join('');
+  checkJoin();
+}
+
+function mergeModeChanged(){
+  const forced = $('mg-force').checked;
+  $('mg-project').disabled = forced;
+  $('mg-forcenote').innerHTML = forced
+    ? 'The result will be a project holding a <b>video only</b>: no narration '
+      + 'and no slides, so it cannot be edited or re-recorded until notes are '
+      + 'imported or drafted. A <code>join_report.json</code> beside it records '
+      + 'what each input was missing.'
+    : '';
+}
+
+async function checkJoin(){
+  if(JOIN.length < 2){
+    $('mg-check').textContent = 'Add at least two.';
+    return;
+  }
+  $('mg-check').textContent = 'checking…';
+  const r = await (await fetch('/api/tools/merge/check',{method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({videos: JOIN})})).json();
+  if(r.detail){ $('mg-check').innerHTML = `<span class="warn">${esc(r.detail)}</span>`; return; }
+  // Said before anything is written, because "will this be lossless" is the
+  // question worth answering while it can still change what you pick.
+  $('mg-check').innerHTML = esc(r.summary)
+    + (r.compatible ? '' : '<br>' + r.reasons.slice(0,3).map(esc).join('<br>'));
+}
+
+async function runMerge(){
+  if(JOIN.length < 2){ alert('Add at least two videos.'); return; }
+  $('btn-merge').disabled = true;
+  $('mg-out').textContent = 'joining…';
+  const r = await (await fetch('/api/tools/merge',{method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({videos: JOIN, mode: $('mg-mode').value,
+                          as_project: $('mg-project').checked,
+                          force: $('mg-force').checked,
+                          name: $('mg-name').value || 'joined'})})).json();
+  if(r.detail){ $('btn-merge').disabled=false;
+    $('mg-out').innerHTML = `<span class="warn">${esc(r.detail)}</span>`; return; }
+  watch(r.job_id, 'Joining', j=>{
+    $('btn-merge').disabled = false;
+    if(j.status==='error'){ $('mg-out').innerHTML =
+      `<span class="warn">${esc(j.error)}</span>`; return; }
+    const res = j.result || {};
+    $('mg-out').textContent = res.summary || 'done';
+    $('mg-result').classList.remove('hidden');
+    $('mg-result').innerHTML = `<h2>Joined</h2>`
+      + `<p class="hint"><b>${esc(res.name||'')}</b> — ${
+          (res.measured_s||0).toFixed(1)}s, ${
+          res.how === 'copy' ? 'joined without re-encoding'
+                             : 're-encoded so the inputs would match'}${
+          res.captions ? ' · captions ' + esc(res.captions) : ''}${
+          res.cut_list ? ' · cut list ' + esc(res.cut_list)
+                         + ' (it can be split again)' : ''}</p>`
+      + (res.note ? `<p class="hint warn">${esc(res.note)}</p>` : '')
+      + (res.project && res.project.project_id
+          ? `<p class="hint"><b>Assembled as the lecture “${
+              esc(res.project.project_id)}”</b> — ${res.project.slides} slides
+             with their notes and cue words, and a deck (${
+              esc(res.project.deck)}) built from them. Open the Lecture tab and
+             revise it there, or render it again in your own voice.</p>`
+          : '')
+      + (res.project && res.project.forced
+          ? `<p class="hint">Appended as files. This project holds a video and
+             whatever captions its inputs carried — no narration and no slides.
+             ${(res.project.missing||[]).map(esc).join('<br>')}</p>`
+          : '')
+      + (res.project && res.project.error
+          ? `<p class="hint warn">The video is joined and correct, but no
+             editable lecture could be assembled:<br>${
+             esc(res.project.error).replace(/\n/g, '<br>')}</p>`
+          : '')
+      + `<p class="hint"><code>${esc(res.out||'')}</code></p>`;
+    loadSplittable(); loadJoinable(); loadProjects();
+  });
+}
+
+function tab(n){
+  if(n === 'tools'){ loadSplittable(); loadJoinable(); renderJoinList();
+                     loadLexicon(); }
+  for(const k of ['lecture','narrate','dialogue','setup','tools','help']){
+    $('p-'+k).classList.toggle('hidden', k!==n);
+    $('t-'+k).setAttribute('aria-selected', String(k===n));
+  }
+}
+/* ------------------------------------------------------------------ audio
+ *
+ * ONE audio element for the whole page.
+ *
+ * Every play used to be `new Audio(url).play()` -- a fresh object, no handle
+ * kept. Nothing could stop it, and pressing a second button layered a second
+ * voice over the first. For a tuning loop that is not a small annoyance: the
+ * whole point is to hear one version, judge it, change something, hear it
+ * again, and you cannot judge two takes playing at once.
+ */
+const PLAYER = {
+  el: null,
+  btn: null,
+  label: '',
+  audio(){
+    if(!this.el){
+      this.el = new Audio();
+      this.el.addEventListener('ended', () => PLAYER.clear());
+      this.el.addEventListener('error', () => PLAYER.clear());
+    }
+    return this.el;
+  },
+  play(url, label, btn){
+    this.stop();                       // never two at once
+    this.btn = btn || null; this.label = label || '';
+    if(this.btn){ this.btn.dataset.was = this.btn.textContent;
+                  this.btn.textContent = '■ Stop'; this.btn.classList.add('stopping'); }
+    const bar = $('vplaying');
+    if(bar){ bar.textContent = '♪ ' + this.label; bar.classList.remove('hidden'); }
+    const a = this.audio();
+    a.src = url;
+    a.play().catch(() => this.clear());
+  },
+  stop(){
+    if(this.el){ this.el.pause(); try{ this.el.currentTime = 0; }catch(e){} }
+    this.clear();
+  },
+  clear(){
+    if(this.btn){ if(this.btn.dataset.was) this.btn.textContent = this.btn.dataset.was;
+                  this.btn.classList.remove('stopping'); this.btn = null; }
+    const bar = $('vplaying');
+    if(bar){ bar.classList.add('hidden'); bar.textContent = ''; }
+  },
+  get playing(){ return !!(this.el && !this.el.paused); },
+  /* A button that starts playback should stop it when pressed again. */
+  toggle(url, label, btn){
+    if(this.playing && this.btn === btn){ this.stop(); return false; }
+    this.play(url, label, btn); return true;
+  },
+};
+
+let WARM_POLL = null;
+function paintWarm(w){
+  const el = $('warm-pill');
+  if(!el) return;
+  if(w.state === 'loading'){
+    el.className = 'pill warn';
+    el.textContent = `voice engine loading — ${esc(w.engine)}`;
+    if(!WARM_POLL) WARM_POLL = setInterval(async ()=>{
+      try{
+        const r = await (await fetch('/api/engine/warm')).json();
+        if(r.state !== 'loading'){ clearInterval(WARM_POLL); WARM_POLL = null; }
+        paintWarm(r);
+      }catch(e){ clearInterval(WARM_POLL); WARM_POLL = null; }
+    }, 2000);
+  } else if(w.state === 'ready'){
+    el.className = 'pill ok';
+    el.textContent = `voice engine ready (${w.seconds}s)`;
+  } else if(w.state === 'failed'){
+    el.className = 'pill warn';
+    el.textContent = `voice engine did not load — ${esc(w.detail)}`;
+  } else {
+    el.className = 'pill';
+    el.textContent = 'voice engine loads on first use';
+  }
+}
+
+function esc(s){return String(s==null?'':s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]))}
+// A 422 from FastAPI carries `detail` as an array of {loc,msg}; a 400 carries
+// a string. Either way, something readable.
+function detailText(r){
+  const d = r && r.detail;
+  if(Array.isArray(d)) return d.map(x=>(x.loc||[]).slice(-1)[0]+': '+x.msg).join('; ');
+  return d ? String(d) : 'The server did not start the job.';
+}
+
+async function boot(){
+  const d = await (await fetch('/api/doctor')).json();
+  PROFILE = await (await fetch('/api/profile')).json();
+
+  const pills = [];
+  const missBin = Object.entries(d.binaries).filter(([,v])=>!v).map(([k])=>k);
+  pills.push(missBin.length ? `<span class="pill bad">missing: ${missBin.join(', ')}</span>`
+                            : `<span class="pill ok">media tools ready</span>`);
+  // Say what to do, not just that something is wrong. "no gemini key" with no
+  // next step is where people get stuck -- especially since the .env lives in
+  // the DATA folder, which is not the project folder and has a similar name.
+  pills.push(d.writers.gemini.ok ? `<span class="pill ok">gemini ready</span>`
+                                 : `<span class="pill warn">no gemini key — run 2_Set_Key.bat</span>`);
+  // Three distinct states, because "cloning: qwen3cpp" while it is actually
+  // speaking in the default speaker is a lie the pill should not tell.
+  const yours   = Object.entries(d.voices).filter(([,v])=>v.ok && v.cloning_you).map(([k])=>k);
+  const capable = Object.entries(d.voices).filter(([,v])=>v.ok && v.clone).map(([k])=>k);
+  if (yours.length)
+    pills.push(`<span class="pill ok">your voice: ${yours.join(', ')}</span>`);
+  else if (capable.length)
+    pills.push(`<span class="pill warn">engine ready, no voice enrolled — Twin Setup → Your voice</span>`);
+  else
+    pills.push(`<span class="pill warn">no voice engine — run 3_Get_Voice_Engine.bat</span>`);
+  // The engine loads in the background from the moment the Studio starts, so
+  // the first Preview does not pay for it. Say so while it happens: a page
+  // that looks idle during a 30-second model load is how "it is slow" starts.
+  pills.push(`<span class="pill" id="warm-pill"></span>`);
+  $('pills').innerHTML = pills.join('');
+  paintWarm(d.engine_warm || {state: 'idle'});
+
+  const opts = Object.entries(d.voices).map(([k,v])=>
+    `<option value="${k}"${v.ok?'':' disabled'}>${k}${v.ok?'':' — unavailable'}${v.placeholder?' (placeholder)':''}</option>`).join('');
+  for(const id of ['dtts','ptts']) $(id).innerHTML = opts;
+  // The interlocutor gets one entry PER DRAFT VOICE, not one for "piper".
+  // "piper" alone cannot express "the female one", which is the whole
+  // question when the instructor is a cloned male voice.
+  let DRAFT = [], DRAFT_WHERE = null;
+  try{
+    DRAFT_WHERE = await (await fetch('/api/voices/draft')).json();
+    DRAFT = DRAFT_WHERE.voices;
+  }catch(e){}
+  const guestOpts = Object.entries(d.voices).flatMap(([k,v])=>{
+    if(k === 'piper' && DRAFT.length)
+      return DRAFT.map(dv =>
+        `<option value="piper:${dv.name}"${v.ok&&dv.installed?'':' disabled'}>`
+        + `${dv.label}${dv.installed?'':' — not installed'}</option>`);
+    return [`<option value="${k}"${v.ok?'':' disabled'}>${k}`
+            + `${v.ok?'':' — unavailable'}${v.placeholder?' (placeholder)':''}</option>`];
+  }).join('');
+  $('dguest').innerHTML = guestOpts;
+  // The lecture's own voice switch: the cloning engines first, then each
+  // draft voice by name. A draft render is the whole point of having a draft
+  // voice, and until now the lecture page offered no way to ask for one --
+  // the only route was the command line.
+  const clones = Object.entries(d.voices)
+    .filter(([k, v]) => v.clone && !v.placeholder)
+    .map(([k, v]) => `<option value="${k}"${v.ok ? '' : ' disabled'}>`
+      + `Final — ${k}, your voice${v.ok ? '' : ' (unavailable)'}</option>`);
+  const drafts = DRAFT.map(dv =>
+    `<option value="piper:${dv.name}"${dv.installed ? '' : ' disabled'}>`
+    + `Draft — ${dv.label}, NOT your voice`
+    + `${dv.installed ? '' : ' (not installed)'}</option>`);
+  $('rvoice').innerHTML = clones.concat(drafts).join('')
+    || '<option value="">no voice available</option>';
+  // Narration gets the same per-voice list: picking "the female draft voice"
+  // is as reasonable here as it is for an interlocutor.
+  $('ntts').innerHTML = guestOpts;
+  loadDraftVoices();
+  loadModels();
+  markerBar();
+  loadProjects();
+
+  if($('help-data')) $('help-data').textContent = d.data_dir || '';
+  $('doctor').textContent = Object.entries(d.binaries).map(([k,v])=>`${v?'ok  ':'MISS'}  ${k}`).join('\n')
+    + '\n\n' + Object.entries(d.writers).map(([k,v])=>`${v.ok?'ok  ':'MISS'}  ${k}: ${v.detail}`).join('\n')
+    + '\n\n' + Object.entries(d.voices).map(([k,v])=>`${v.ok?'ok  ':'MISS'}  ${k}: ${v.detail}`).join('\n')
+    + '\n\nnot set up here, and not checked (usable from the command line):\n'
+    + Object.entries(d.other_engines||{}).map(([k,why])=>`      ${k}: ${why}`).join('\n')
+    + '\n\n' + (d.key_search||[]).map(k=>
+        `${k.has_gemini?'key ':(k.exists?'--  ':'--  ')}  ${k.path}`
+        + (k.exists ? (k.has_gemini?'  (GEMINI_API_KEY found here)':'  (exists, no GEMINI_API_KEY)')
+                    : '  (no .env here)')).join('\n')
+    + `\n\nnew keys are written to: ${d.key_write_to}`
+    + `\n\nthe app  : ${d.app_dir}`
+    + `\nyour data: ${d.data_dir}   <- .env, profile and renders live HERE`;
+
+  $('pname').value=PROFILE.display_name; $('pctx').value=PROFILE.course_context;
+  $('pstyle').value=PROFILE.style_notes; $('pdisc').value=PROFILE.disclosure;
+  $('ptts').value=PROFILE.adapters.tts; $('dtts').value=PROFILE.adapters.tts;
+  $('rvoice').value=PROFILE.adapters.tts;
+  if(!$('rvoice').value){
+    const first = [...$('rvoice').options].find(o=>!o.disabled);
+    if(first) $('rvoice').value = first.value;
+  }
+  renderModeChanged();
+  $('ntts').value=PROFILE.adapters.tts;
+  if(!$('ntts').value){
+    const first = [...$('ntts').options].find(o=>!o.disabled);
+    if(first) $('ntts').value = first.value;
+  }
+  // A saved plain "piper" no longer matches any option value, so fall back to
+  // the first enabled one rather than leaving the select blank.
+  $('dguest').value=PROFILE.adapters.guest_tts;
+  if(!$('dguest').value){
+    const first = [...$('dguest').options].find(o=>!o.disabled);
+    if(first) $('dguest').value = first.value;
+  }
+  $('psig').value=PROFILE.signalling||'highlight';
+  $('playout').value=PROFILE.video.layout; $('pw').value=PROFILE.video.width;
+  $('ph').value=PROFILE.video.height; $('pfps').value=PROFILE.video.fps;
+  $('ctx').value=PROFILE.course_context; $('style').value=PROFILE.style_notes;
+  $('consent-status').textContent = PROFILE.ready_for_cloning
+    ? `Reference and consent on file (consent recorded ${PROFILE.consent_recorded_at||'—'}).`
+    : 'Not yet complete — cloning adapters that need a local reference will stay unavailable.';
+}
+
+function watch(jobId, title, onDone){
+  $('job-title').textContent = title;
+  clearInterval(POLL);
+  POLL = setInterval(async ()=>{
+    const j = await (await fetch('/api/jobs/'+encodeURIComponent(jobId))).json();
+    if(!j || !Array.isArray(j.log)){
+      // A 404 or an error body: stop polling instead of throwing every 700 ms
+      // with the button left disabled.
+      clearInterval(POLL);
+      $('job-title').textContent = title + ' — failed';
+      onDone({status:'error', error:(j && j.detail) ? String(j.detail) : 'job not found', log:[]});
+      return;
+    }
+    $('job-log').textContent = j.log.join('\n') || 'Starting…';
+    $('job-log').scrollTop = 1e6;
+    $('job-bar').style.width = (j.status==='done'?100:j.progress*100)+'%';
+    if(j.status==='done'||j.status==='error'){
+      clearInterval(POLL);
+      $('job-title').textContent = title + (j.status==='error'?' — failed':' — done');
+      onDone(j);
+    }
+  }, 700);
+}
+
+async function openProject(){
+  const pid = $('opproj').value;
+  if(!pid){ alert('No project to open.'); return; }
+  PROJECT = pid;
+  $('op-out').textContent = '';
+  try{
+    await loadEditor();
+    $('op-out').textContent = 'Opened. The notes are below.';
+    $('editor').scrollIntoView({behavior:'smooth', block:'start'});
+  }catch(e){
+    $('op-out').textContent = 'Could not open it: ' + e;
+  }
+}
+
+async function loadProjects(){
+  try{
+    const r = await (await fetch('/api/projects')).json();
+    $('opproj').innerHTML = (r.projects||[]).map(p=>
+      `<option value="${esc(p)}">${esc(p)}</option>`).join('')
+      || '<option value="">no lecture with saved notes yet</option>';
+    $('rvproj').innerHTML = (r.projects||[]).map(p=>
+      `<option value="${esc(p)}">${esc(p)}</option>`).join('')
+      || '<option value="">no rendered projects yet</option>';
+  }catch(e){ $('rvproj').innerHTML = '<option value="">unavailable</option>'; }
+}
+
+async function reviseDeck(){
+  const pid = $('rvproj').value, deck = $('rvdeck').files[0];
+  if(!pid){ alert('No earlier project to revise.'); return; }
+  if(!deck){ alert('Choose the new version of the deck.'); return; }
+  const fd = new FormData();
+  fd.append('file', deck); fd.append('width', $('pw').value || 1920);
+  $('btn-revise').disabled = true;
+  const r = await (await fetch(`/api/lecture/${encodeURIComponent(pid)}/revise`,
+    {method:'POST',body:fd})).json();
+  if(r.detail){ $('btn-revise').disabled = false; $('rv-out').textContent = r.detail; return; }
+  PROJECT = r.project_id;
+  watch(r.job_id, 'Comparing decks', j=>{
+    $('btn-revise').disabled = false;
+    if(j.status==='error'){ $('rv-out').textContent = j.error; return; }
+    const res = j.result;
+    $('rv-out').textContent = res.summary + '\n'
+      + ((res.to_write && res.to_write.length)
+          ? 'Narration to write or check: ' + res.to_write.join(', ') + '\n'
+          : 'No narration needs rewriting.\n')
+      + (res.to_render.length
+          ? 'Frames to re-render: ' + res.to_render.join(', ')
+          : 'No frame needs re-rendering.')
+      + (res.removed.length ? '\nGone from the old deck: ' + res.removed.join(', ') : '')
+      + '\n\nNothing has changed in your project yet. Every slide is marked '
+      + 'in the editor below; Save there applies the revision, Discard drops it.';
+    loadEditor();
+  });
+}
+
+async function importScript(){
+  const deck = $('ideck').files[0], notes = $('inotes').files[0];
+  if(!deck || !notes){ alert('Choose both the deck and your notes file.'); return; }
+  const fd = new FormData();
+  fd.append('file', deck); fd.append('notes', notes);
+  fd.append('width', $('pw').value || 1920);
+  $('btn-import').disabled = true;
+  const r = await (await fetch('/api/lecture/script/import',{method:'POST',body:fd})).json();
+  if(r.detail){ $('btn-import').disabled = false; showError('editor', r.detail); return; }
+  PROJECT = r.project_id;
+  watch(r.job_id, 'Importing notes', j=>{
+    $('btn-import').disabled = false;
+    if(j.status==='error'){ showError('editor', j.error); return; }
+    loadEditor();
+  });
+}
+
+async function draftScript(){
+  const f = $('deck').files[0];
+  if(!f){ alert('Choose a slide deck first.'); return; }
+  const fd = new FormData();
+  fd.append('file', f); fd.append('script_writer', $('writer').value);
+  fd.append('gemini_model', $('gmodel').value);
+  fd.append('seconds_per_slide', $('gsecs').value);
+  fd.append('course_context', $('ctx').value); fd.append('style_notes', $('style').value);
+  fd.append('width', $('pw').value || 1920);
+  $('btn-script').disabled = true;
+  const r = await (await fetch('/api/lecture/script',{method:'POST',body:fd})).json();
+  if(r.detail || !r.job_id){ $('btn-script').disabled = false; showError('editor', detailText(r)); return; }
+  PROJECT = r.project_id;
+  watch(r.job_id, 'Drafting narration', j=>{
+    $('btn-script').disabled = false;
+    if(j.status==='error'){ showError('editor', j.error); return; }
+    loadEditor();
+  });
+}
+
+async function draftOne(slideNumber){
+  // One edited slide, revised in place: the model is shown these exact words
+  // and asked for the smallest change that fits the slide as it now stands.
+  const btn = event.target; btn.disabled = true;
+  const was = btn.textContent; btn.textContent = 'asking the model…';
+  // No `finally` that re-enables: the editor is rebuilt when this finishes and
+  // this button no longer exists, so restoring it would be restoring a button
+  // nobody can see. It is restored only when the call fails and the page stays.
+  const ok = await draftAdditions(String(slideNumber));
+  if(!ok){ btn.disabled = false; btn.textContent = was; }
+}
+
+async function draftAdditions(slides){
+  // Save first -- the notes above may already have been edited by hand, and
+  // reloading the editor afterwards would throw those edits away -- but do NOT
+  // accept a pending revision by doing so.
+  await saveScript(false);
+  const fd = new FormData();
+  fd.append('script_writer', $('writer').value);
+  fd.append('gemini_model', $('gmodel').value);
+  fd.append('seconds_per_slide', $('gsecs').value);
+  fd.append('course_context', $('ctx').value);
+  fd.append('style_notes', $('style').value);
+  if(slides) fd.append('slides', slides);
+  $('btn-additions').disabled = true;
+  if(!slides) $('add-out').textContent = 'asking the model…';
+  const r = await (await fetch(`/api/lecture/${encodeURIComponent(PROJECT)}/draft-additions`,
+    {method:'POST', body:fd})).json();
+  if(r.detail){
+    $('btn-additions').disabled = false;
+    $('add-out').innerHTML = `<span class="warn">${esc(r.detail)}</span>`;
+    showError('editor', r.detail);
+    return false;
+  }
+  // Resolves when the job finishes, so a caller that disabled a button knows
+  // when it is over.
+  return await new Promise(resolve=>{
+    watch(r.job_id, 'Drafting slide notes', j=>{
+      $('btn-additions').disabled = false;
+      if(j.status==='error'){ showError('editor', j.error); resolve(false); return; }
+      const res = j.result || {};
+      const skipped = (res.skipped||[]).length
+        ? ` · nothing came back for ${res.skipped.join(', ')}` : '';
+      // Reload FIRST: loadEditor clears this line, so writing it before the
+      // reload would leave the user with no idea whether anything happened.
+      loadEditor().then(()=>{
+        $('add-out').textContent =
+          `written: slide ${(res.written||[]).join(', ') || 'none'}${skipped}`
+          + ' — read them before rendering.';
+        $('btn-additions').textContent = 'Draft these slides again';
+        resolve(true);
+      });
+    });
+  });
+}
+
+async function loadEditor(){
+  const r = await (await fetch(`/api/lecture/${encodeURIComponent(PROJECT)}/script`)).json();
+  const m = r.manifest;
+  // Declared before the slide list is built, not after it. `const` in the same
+  // function is in the temporal dead zone until its line runs, so computing
+  // this below the template that reads it threw on every load and left an
+  // empty editor.
+  const notes = {};
+  ((r.plan && r.plan.changes) || []).forEach(c=>{ if(c.note) notes[c.slide] = c.note; });
+  $('segs').innerHTML = m.segments.map((s,i)=>`
+    <div class="seg">
+      <div>
+        <img src="/api/slides/${encodeURIComponent(PROJECT)}/${s.slide_index}" alt="Slide ${s.slide_index+1}">
+        <div class="meta">Slide ${s.slide_index+1} · <span id="wc${i}"></span></div>
+        ${s.revision ? `<div class="meta rev rev-${esc(s.revision)}">${
+          {added: (s.spoken_text||'').trim().startsWith('(new slide')
+                    ? 'NEW — write the narration' : 'NEW — narration drafted',
+           edited:'EDITED — check the narration',
+           moved:'moved — narration carried over',
+           same:'unchanged'}[s.revision] || esc(s.revision)}</div>` : ''}
+        ${notes[s.slide_index+1] ? `<div class="meta revnote">${
+          esc(notes[s.slide_index+1])}</div>` : ''}
+        <label class="meta redo${s.slide_digest ? '' : ' redo-off'}" title="${
+          s.slide_digest
+            ? 'Untick to keep the frame and audio already recorded for this slide.'
+            : 'Nothing has been recorded for this slide yet, so it cannot be kept.'
+        }"><input type="checkbox" data-redo="${i}"${
+          s.slide_digest ? (s.rerender === false ? '' : ' checked')
+                         : ' checked disabled'}> re-record this slide${
+          s.slide_digest ? '' : ' — never recorded'}</label>
+      </div>
+      <div>
+        <textarea data-i="${i}" oninput="recount(${i})">${esc(s.spoken_text)}</textarea>
+        <label style="margin-top:8px;font-size:.76rem">Cue words — highlighted on
+          the slide as you say them; semicolons between them
+          <input type="text" data-cue="${i}" placeholder="confounding; immortal time bias"
+                 value="${esc((s.cues||[]).join('; '))}">
+        </label>
+        <div class="uttbar">
+          <button class="mini" onclick="hear(${i})">▶ Hear first line</button>
+          ${s.revision === 'edited' ? `<button class="mini"
+            onclick="draftOne(${s.slide_index+1})">✎ Update these notes</button>` : ''}
+          <span class="hint" id="pv${i}"></span>
+        </div>
+      </div>
+    </div>`).join('');
+  m.segments.forEach((s,i)=>recount(i));
+  window.MANIFEST = m;
+  PENDING = !!r.pending;
+  $('pendbar').classList.toggle('hidden', !PENDING);
+  // What Render will replace. Re-recording overwrites in place, so the only
+  // honest thing is to name the file and its date before the button is
+  // pressed rather than after.
+  const had = r.existing || [];
+  $('overwrite').innerHTML = had.length
+    ? 'Rendering replaces ' + had.map(f =>
+        `<b>${esc(f.name)}</b> (${f.mb} MB, ${esc(f.when)})`).join(' and ')
+      + '. The captions and chapters beside it are replaced too.'
+    : 'Nothing rendered for this project yet.';
+  $('pend-sum').textContent = (PENDING && r.plan && r.plan.summary)
+    ? ' (' + r.plan.summary + ')' : '';
+  $('btn-save').textContent = PENDING ? 'Save and apply revision' : 'Save edits';
+  // Rendering is refused while a revision is open, so the button says why
+  // rather than letting the press fail.
+  $('btn-render').title = PENDING
+    ? 'Save and apply the revision first, or discard it.' : '';
+  const newSlides = m.segments.filter(s=>s.revision==='added').map(s=>s.slide_index+1);
+  $('addbar').classList.toggle('hidden', newSlides.length===0);
+  if(newSlides.length){
+    $('btn-additions').textContent = newSlides.length===1
+      ? `Draft notes for slide ${newSlides[0]}`
+      : `Draft notes for the ${newSlides.length} new slides (${newSlides.join(', ')})`;
+    $('add-out').textContent = '';
+  }
+  $('cost').textContent = costLine(r.cost, r.voice);
+  $('editor').classList.remove('hidden');
+  $('editor').scrollIntoView({behavior:'smooth',block:'start'});
+}
+function recount(i){
+  const t = document.querySelector(`textarea[data-i="${i}"]`);
+  const w = t.value.trim().split(/\s+/).filter(Boolean).length;
+  $('wc'+i).textContent = `${w} words · ~${Math.round(w/140*60)}s`;
+}
+async function hear(i){
+  const t = document.querySelector(`textarea[data-i="${i}"]`).value;
+  const btn = event.target; btn.disabled = true;
+  $('pv'+i).textContent = 'synthesizing…';
+  try{
+    const r = await fetch('/api/preview',{method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({text:t, index:0})});
+    const j = await r.json();
+    if(!r.ok){ $('pv'+i).innerHTML = `<span class="warn">${esc(j.detail||'failed')}</span>`; return; }
+    PLAYER.play('/api/preview/audio?t='+Date.now(), 'script preview');
+    const warn = (j.warnings&&j.warnings.length)
+      ? ` · <span class="warn">${esc(j.warnings[0])}</span>` : '';
+    const lex = (j.lexicon_terms&&j.lexicon_terms.length)
+      ? ` · lexicon: ${j.lexicon_terms.join(', ')}` : '';
+    $('pv'+i).innerHTML = `${j.duration_s}s${lex}${warn}`;
+  } finally { btn.disabled = false; }
+}
+
+function costLine(c, voice){
+  return c.estimated_usd > 0
+    ? `${c.characters.toLocaleString()} characters · about $${c.estimated_usd.toFixed(2)} on ${voice}`
+    : `${c.characters.toLocaleString()} characters · no per-character cost on ${voice}`;
+}
+function collect(){
+  document.querySelectorAll('#segs textarea').forEach(t=>{
+    window.MANIFEST.segments[+t.dataset.i].spoken_text = t.value;
+  });
+  document.querySelectorAll('#segs input[data-redo]').forEach(t=>{
+    // Unticked means "the picture changed and I do not care" — the render
+    // keys the cache on the old frame and returns it, audio and all.
+    window.MANIFEST.segments[+t.dataset.redo].rerender = t.checked;
+  });
+  document.querySelectorAll('#segs input[data-cue]').forEach(t=>{
+    // Semicolons, like keywords on a paper. An empty box means "none for this
+    // slide", not "derive some" -- the model already proposed cues while it
+    // wrote the notes, so clearing the box is a decision.
+    window.MANIFEST.segments[+t.dataset.cue].cues =
+      t.value.split(';').map(x=>x.trim()).filter(Boolean);
+  });
+  return window.MANIFEST;
+}
+async function saveScript(commit){
+  // commit defaults to true: pressing Save is how a proposed revision is
+  // accepted. The Studio's own mid-task saves pass false, so that drafting
+  // notes does not quietly decide you approved the new deck.
+  const applying = (commit !== false) && PENDING;
+  const r = await (await fetch(`/api/lecture/${encodeURIComponent(PROJECT)}/script`,{method:'PUT',
+    headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({manifest: collect(), commit: commit !== false})})).json();
+  if(r.detail){ showError('editor', r.detail); return r; }
+  // Reload before reporting: loadEditor rewrites this same line, so saying it
+  // first would leave no trace that the revision had been applied.
+  if(applying) await loadEditor();
+  $('cost').textContent = costLine(r.cost, $('ptts').value)
+    + (r.applied ? ` · saved — ${r.applied.deck} is now this project's deck` : ' · saved');
+  return r;
+}
+
+async function discardRevision(){
+  if(!confirm('Throw away this comparison? Your project keeps its current '
+            + 'deck and notes, and nothing is lost.')) return;
+  $('btn-discard').disabled = true;
+  const r = await (await fetch(`/api/lecture/${encodeURIComponent(PROJECT)}/discard-revision`,
+    {method:'POST'})).json();
+  $('btn-discard').disabled = false;
+  if(r.detail){ showError('editor', r.detail); return; }
+  // Close the editor rather than reloading it. It was opened BY the
+  // comparison; discarding undoes the comparison, so leaving a slide list
+  // behind invites editing notes you only came here to compare.
+  PENDING = false;
+  $('segs').innerHTML = '';
+  ['editor','addbar','pendbar','lec-out'].forEach(id=>$(id).classList.add('hidden'));
+  $('rv-out').textContent = 'Revision discarded. The project keeps its own '
+    + 'deck, slides and notes — nothing was changed.';
+  $('rv-out').scrollIntoView({behavior:'smooth',block:'center'});
+}
+function renderModeChanged(){
+  const draft = ($('rvoice').value || '').startsWith('piper');
+  // Say it on the page, not only in the dropdown. Someone who has spent an
+  // hour editing a script is not reading the option text again before they
+  // press the button.
+  $('rvoice-note').innerHTML = draft
+    ? '<b>A draft: this is not your voice.</b> A stock voice reads the script so '
+      + 'you can check the words, the pacing and the slide timing — minutes '
+      + 'rather than an hour. It is saved separately as '
+      + '<code>&lt;project&gt;_draft.mp4</code>, so it cannot overwrite a '
+      + 'finished recording. Re-render with your own voice when the script is '
+      + 'settled.'
+    : '<b>Your cloned voice</b>, rendered on the CPU at roughly three to five '
+      + 'minutes of compute per minute of audio. Worth doing once the words are '
+      + 'right — try a draft first if they are not.';
+  $('btn-render').textContent = draft ? 'Render draft' : 'Render video';
+}
+
+async function renderLecture(){
+  await saveScript();
+  const voice = $('rvoice').value;
+  $('btn-render').disabled = true;
+  const r = await (await fetch(`/api/lecture/${encodeURIComponent(PROJECT)}/render`,{method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({signalling:$('psig').value, tts:voice,
+                         fresh: $('rfresh').checked})})).json();
+  if(r.detail){ $('btn-render').disabled = false; showError('lec-out', r.detail); return; }
+  watch(r.job_id, (voice||'').startsWith('piper') ? 'Rendering draft' : 'Rendering lecture', j=>{
+    $('btn-render').disabled = false;
+    if(j.status==='error'){ showError('lec-out', j.error); return; }
+    const rep = j.result.report;
+    const cls = rep.verdict.startsWith('PASS (place') ? 'warn' : rep.verdict.startsWith('PASS') ? 'pass' : 'fail';
+    $('lec-verdict').innerHTML = `<div class="verdict ${cls}">${esc(rep.verdict)}</div>`;
+    $('lec-kv').innerHTML = `
+      <dt>Duration</dt><dd>${rep.actual_duration_s}s</dd>
+      <dt>Drift</dt><dd>${rep.drift_s >= 0 ? '+' : ''}${rep.drift_s}s</dd>
+      <dt>Size</dt><dd>${rep.size_mb} MB</dd>
+      <dt>Streams</dt><dd>${rep.streams.join(', ')}</dd>
+      <dt>Script</dt><dd>${esc(rep.script_source)}</dd>
+      <dt>Voice</dt><dd>${esc(rep.voice || '')}${rep.is_draft ? ' — DRAFT, not your voice' : ''}</dd>
+      <dt>Cues</dt><dd>${rep.cues ?? 0}</dd>`;
+    $('lec-files').innerHTML = Object.values(j.result.files)
+      .map(n=>`<a href="/api/files/${encodeURIComponent(PROJECT)}/${encodeURIComponent(n)}">${esc(n)}</a>`).join('');
+    $('lec-out').classList.remove('hidden');
+  });
+}
+function showError(panel, msg){
+  $(panel).classList.remove('hidden');
+  $(panel).insertAdjacentHTML('afterbegin', `<div class="note err">${esc(msg)}</div>`);
+}
+
+// One table, because the marker vocabulary is defined in
+// realme/text/controls.py and a second list here would drift from it. `wrap`
+// means the marker has a closing form; `point` means it happens at a spot.
+const MARKERS = [
+  {label:'Pause',     ins:'[[pause]]',    kind:'point',
+   tip:'350 ms. [[pause:800]] for longer, up to 2 s.'},
+  {label:'Breath',    ins:'[[breath]]',   kind:'point',
+   tip:'A short 180 ms catch of breath.'},
+  {label:'Hedge',     ins:'[[hedging]]',  kind:'point',
+   tip:'Prefixes the next phrase with a spoken "erh…".'},
+  {label:'Bleep',     ins:'[[mask]]',     kind:'point',
+   tip:'A 450 ms tone in place of words. [[mask]]…[[/mask]] masks a span.'},
+  {sep:true},
+  {label:'Slow',      ins:'slow',         kind:'wrap',
+   tip:'8% slower. Wraps a selection, or runs to the end of the paragraph.'},
+  {label:'Fast',      ins:'fast',         kind:'wrap',  tip:'8% quicker.'},
+  {label:'Emphasis',  ins:'emphasis',     kind:'wrap',
+   tip:'Modest stress on the marked phrase.'},
+  {label:'Soft',      ins:'soft',         kind:'wrap',  tip:'Quieter, closer delivery.'},
+  {label:'Clear',     ins:'clear',        kind:'wrap',
+   tip:'Deliberate articulation — for a term that must land.'},
+  {label:'Normal',    ins:'[[normal]]',   kind:'point',
+   tip:'Closes every delivery marker still open.'},
+];
+
+function markerBar(){
+  $('nmarks').innerHTML = MARKERS.map((m,i)=> m.sep
+    ? '<div class="sep"></div>'
+    : `<button type="button" title="${esc(m.tip)}" onclick="insertMarker(${i})">`
+      + `${esc(m.label)}</button>`).join('');
+}
+
+function insertMarker(i){
+  const m = MARKERS[i], t = $('ntext');
+  const a = t.selectionStart, b = t.selectionEnd, v = t.value;
+  let out, caret;
+  if(m.kind === 'wrap' && b > a){
+    // Wrap the selection. This is the form that needs no thought from the
+    // author: highlight the phrase, press the button.
+    const open = `[[${m.ins}]]`, close = `[[/${m.ins}]]`;
+    out = v.slice(0,a) + open + v.slice(a,b) + close + v.slice(b);
+    caret = b + open.length + close.length;
+  }else{
+    const ins = m.kind === 'wrap' ? `[[${m.ins}]]` : m.ins;
+    // A space before, unless we are at a boundary already: "word[[pause]]" is
+    // legal but "word [[pause]]" is what people mean and what reads back.
+    const pad = (a > 0 && !/\s$/.test(v.slice(0,a))) ? ' ' : '';
+    out = v.slice(0,a) + pad + ins + v.slice(b);
+    caret = a + pad.length + ins.length;
+  }
+  t.value = out;
+  t.focus();
+  t.setSelectionRange(caret, caret);
+}
+
+async function makeNarration(){
+  const hasFile = !!$('nfile').files[0];
+  if(!hasFile && !$('ntext').value.trim()){
+    alert('Paste some text or choose a file.'); return;
+  }
+  const fd = new FormData();
+  fd.append('text', $('ntext').value);
+  fd.append('tts', $('ntts').value);
+  fd.append('mode', $('nmode').value);
+  fd.append('pace', $('npace').value);
+  fd.append('temperature', $('ntemp').value);
+  fd.append('paragraph_gap', $('ngap').value);
+  fd.append('spell_acronyms', $('nacr').value);
+  fd.append('captions', $('ncap').value === '1' ? 'true' : 'false');
+  if(hasFile) fd.append('file', $('nfile').files[0]);
+  $('btn-narr').disabled = true;
+  const r = await (await fetch('/api/narrate',{method:'POST',body:fd})).json();
+  if(r.detail){ $('btn-narr').disabled = false; showError('narr-out', r.detail); return; }
+  watch(r.job_id, 'Narrating', j=>{
+    $('btn-narr').disabled = false;
+    if(j.status==='error'){ showError('narr-out', j.error); return; }
+    const rep = j.result.report, pid = j.result.project_id;
+    const mins = Math.floor(rep.duration_s/60), secs = Math.round(rep.duration_s%60);
+    $('narr-verdict').innerHTML =
+      `<div class="verdict pass">${mins}m ${secs}s · ${rep.words} words · `
+      + `${rep.utterances} utterances</div>`;
+    const audio = `/api/files/${encodeURIComponent(pid)}/${encodeURIComponent(j.result.files.audio)}`;
+    $('narr-audio').src = audio;
+    $('narr-files').innerHTML = Object.values(j.result.files)
+      .map(n=>`<a href="/api/files/${encodeURIComponent(pid)}/${encodeURIComponent(n)}">${esc(n)}</a>`).join('');
+    // The lint is the reason to run this at all -- a mispronounced term is the
+    // single most common thing wrong with a finished recording.
+    $('narr-warn').textContent = rep.warnings.length
+      ? 'Lint:\n  ' + rep.warnings.join('\n  ')
+        + '\n\nFix with a lexicon entry, then run again — only changed lines re-render.'
+      : '';
+    $('narr-out').classList.remove('hidden');
+  });
+}
+
+async function makeDialogue(){
+  if(!$('topic').value.trim()){ alert('Give it a topic.'); return; }
+  const fd = new FormData();
+  fd.append('topic',$('topic').value); fd.append('mode',$('dmode').value);
+  fd.append('turns',$('dturns').value); fd.append('script_writer',$('writer').value);
+  fd.append('gemini_model',$('gmodel').value);
+  fd.append('instructor_tts',$('dtts').value); fd.append('guest_tts',$('dguest').value);
+  fd.append('speed',$('dspeed').value); fd.append('turn_gap',$('dgap').value);
+  fd.append('bookends',$('dbook').value === '1' ? 'true' : 'false');
+  if($('dsrc').files[0]) fd.append('file',$('dsrc').files[0]);
+  $('btn-dlg').disabled = true;
+  const r = await (await fetch('/api/dialogue',{method:'POST',body:fd})).json();
+  if(r.detail || !r.job_id){ $('btn-dlg').disabled = false; showError('dlg-out', detailText(r)); return; }
+  watch(r.job_id, 'Building dialogue', j=>{
+    $('btn-dlg').disabled = false;
+    if(j.status==='error'){ showError('dlg-out', j.error); return; }
+    const rep = j.result.report;
+    $('dlg-verdict').innerHTML = `<div class="verdict ${rep.verdict.startsWith('PASS')?'pass':'fail'}">${esc(rep.verdict)} · ${Math.round(rep.duration_s/60*10)/10} min · ${rep.turns} turns</div>`;
+    $('dlg-files').innerHTML = Object.values(j.result.files)
+      .map(n=>`<a href="/api/files/${encodeURIComponent(j.result.project_id)}/${encodeURIComponent(n)}">${esc(n)}</a>`).join('');
+    $('dlg-out').classList.remove('hidden');
+  });
+}
+
+async function loadModels(){
+  // Filled from the API, never from a list typed into this page: the last one
+  // went stale and offered a model Google had already switched off.
+  try{
+    const r = await (await fetch('/api/models')).json();
+    $('gmodel').innerHTML = r.models.map(m =>
+      `<option value="${m}">${m}${m===r.current?' — configured':''}</option>`).join('');
+    $('gmodel').value = r.current;
+    $('gmodel-note').textContent = r.detail
+      ? `could not list models (${r.detail}) — showing the configured one`
+      : `${r.models.length} model(s) your key can call`;
+  }catch(e){
+    $('gmodel').innerHTML = '<option value="">unavailable</option>';
+    $('gmodel-note').textContent = 'could not reach the model list';
+  }
+}
+
+// ---------------------------------------------------------------- lexicon
+//
+// The same file `realme lexicon add` writes, edited in a table. Two columns,
+// because a respelling is the one form every engine understands -- IPA is
+// carried through and shown, but typing it is not the common case and a
+// column for it would make the common case look harder than it is.
+async function loadLexicon(){
+  const t = $('lx-table'); if(!t) return;
+  try{
+    const r = await (await fetch('/api/lexicon')).json();
+    const rows = r.entries.map(e => {
+      const say = e.respelling || e.ipa || e.arpabet ||
+        '<span class="own">not spelled out</span>';
+      const who = e.mine
+        ? `<button data-term="${esc(e.term)}" onclick="lexRemove(this.dataset.term)">remove</button>`
+        : '<span class="own">built in</span>';
+      return `<tr><td class="t">${esc(e.term)}</td><td class="s">${e.respelling || e.ipa || e.arpabet ? esc(say) : say}</td>`
+           + `<td style="text-align:right">${who}</td></tr>`;
+    }).join('');
+    t.innerHTML = '<tr><th>Term</th><th>Pronunciation</th><th></th></tr>' + rows;
+    // Where the file is, and how many are yours. Only yours survive an
+    // update, and that is worth saying on the page rather than in a guide.
+    $('lx-where').textContent =
+      `${r.mine} of your own, saved in ${r.path}` +
+      (r.exists ? '' : ' (not created yet)') +
+      '. Yours survive an update; the built-in entries are replaced by it.';
+  }catch(e){ t.innerHTML = '<tr><td>could not load the lexicon</td></tr>'; }
+}
+
+async function lexAdd(){
+  const term = $('lx-term').value.trim();
+  const say  = $('lx-say').value.trim();
+  if(!term){ $('lx-note').textContent = 'A term is needed.'; return; }
+  const r = await (await fetch('/api/lexicon',{method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({term, respelling: say})})).json();
+  $('lx-note').textContent = r.error ? r.error : r.saved;
+  $('lx-term').value = ''; $('lx-say').value = '';
+  loadLexicon();
+}
+
+async function lexRemove(term){
+  const r = await (await fetch('/api/lexicon/' + encodeURIComponent(term),
+    {method:'DELETE'})).json();
+  $('lx-note').textContent = r.note || '';
+  loadLexicon();
+}
+
+async function loadDraftVoices(){
+  // A switch that offers a voice which is not on disk is worse than no switch,
+  // so an uninstalled one is listed and disabled rather than quietly omitted --
+  // otherwise "where did the other voice go" has no answer on screen.
+  //
+  // And when one IS missing, say which folder was searched. "Not installed"
+  // about a voice the user can see on disk is a claim about a path, and until
+  // the path was printed there was nothing to check it against.
+  try{
+    const r = await (await fetch('/api/voices/draft')).json();
+    $('pdraft').innerHTML = r.voices.map(v =>
+      `<option value="${v.name}"${v.installed?'':' disabled'}>${v.label}` +
+      `${v.installed?'':' — not installed'}</option>`).join('');
+    $('pdraft').value = r.current;
+    const note = $('pdraft-note');
+    if(note) note.textContent = draftVoiceNote(r);
+  }catch(e){ $('pdraft').innerHTML = '<option>unavailable</option>'; }
+}
+
+function draftVoiceNote(r){
+  // Printed whether or not anything is wrong: knowing where the voices are
+  // read from is useful before it becomes urgent.
+  const missing = (r.voices||[]).filter(v => !v.installed).map(v => v.name);
+  if(!missing.length) return `voices read from ${r.folder}`;
+  const found = (r.present||[]).length
+    ? `that folder holds: ${r.present.join(', ')}`
+    : (r.folder_exists ? 'that folder holds no .onnx files' : 'that folder does not exist');
+  const env = r.realme_tools
+    ? `  REALME_TOOLS is set to ${r.realme_tools}, which decides where this looks.`
+    : '';
+  return `${missing.join(', ')} not found in ${r.folder} — ${found}.${env}`;
+}
+
+async function saveProfile(){
+  await fetch('/api/profile',{method:'POST',headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({display_name:$('pname').value, course_context:$('pctx').value,
+      style_notes:$('pstyle').value, disclosure:$('pdisc').value,
+      adapters:{tts:$('ptts').value, guest_tts:$('dguest').value},
+      draft_voice:$('pdraft').value,
+      signalling:$('psig').value,
+      video:{layout:$('playout').value, width:+$('pw').value, height:+$('ph').value, fps:+$('pfps').value}})});
+  $('psaved').textContent = 'Saved.';
+  setTimeout(()=>$('psaved').textContent='', 2500);
+  boot();
+}
+// Untouched by default. The tuning is all still here -- a take that
+// needs help can have it -- but a clean recording is left alone.
+let VPRESET = 'off';
+let VCTRL = null, VTUNE = {};
+
+async function loadControls(){
+  if(VCTRL) return VCTRL;
+  VCTRL = await (await fetch('/api/voice/controls')).json();
+  VTUNE = {...VCTRL.defaults};
+  $('vsliders').innerHTML = VCTRL.controls.map(c=>`
+    <div class="slider">
+      <label for="s_${c.key}" title="${esc(c.hint)}">${esc(c.label)}</label>
+      <input type="range" id="s_${c.key}" min="${c.min}" max="${c.max}"
+             step="${c.step}" value="${VTUNE[c.key]}"
+             oninput="setTune('${c.key}', this.value)">
+      <span class="val" id="v_${c.key}">${fmtVal(c, VTUNE[c.key])}</span>
+    </div>`).join('');
+  return VCTRL;
+}
+function fmtVal(c, v){
+  const n = Number(v);
+  return (c.step >= 0.05 ? n.toFixed(2) : n.toFixed(2)) + (c.unit || '');
+}
+function setTune(key, value){
+  VTUNE[key] = Number(value);
+  const c = VCTRL.controls.find(x=>x.key===key);
+  const el = $('v_'+key);
+  el.textContent = fmtVal(c, value);
+  el.classList.toggle('changed', Number(value) !== VCTRL.defaults[key]);
+  $('vtunemsg').textContent = 'changed — press Hear this';
+}
+function applyPresetToSliders(name){
+  if(!VCTRL || !VCTRL.presets[name]) return;
+  VTUNE = {...VCTRL.defaults, ...VCTRL.presets[name]};
+  for(const c of VCTRL.controls){
+    const el = $('s_'+c.key); if(!el) continue;
+    el.value = VTUNE[c.key];
+    const v = $('v_'+c.key);
+    v.textContent = fmtVal(c, VTUNE[c.key]);
+    v.classList.toggle('changed', VTUNE[c.key] !== VCTRL.defaults[c.key]);
+  }
+}
+function resetTune(){
+  applyPresetToSliders(VPRESET);
+  $('vtunemsg').textContent = `back to "${VPRESET}"`;
+}
+async function tunePreview(){
+  /* Pressing it again while it plays stops it -- the same button, so there is
+     nowhere to look for a stop control. */
+  if(PLAYER.playing && PLAYER.btn === $('btn-hear')){ PLAYER.stop(); return; }
+  PLAYER.stop();                       // silence the old take before rendering
+  $('vtunemsg').textContent = 'rendering…';
+  const r = await fetch('/api/voice/tune', {method:'POST',
+    headers:{'Content-Type':'application/json'}, body: JSON.stringify(VTUNE)});
+  const j = await r.json();
+  if(!r.ok){ $('vtunemsg').innerHTML = `<span class="warn">${esc(j.detail)}</span>`; return; }
+  VPRESET = 'custom';
+  PLAYER.play('/api/voice/preview/custom?t='+Date.now(),
+              'your settings', $('btn-hear'));
+  $('vtunemsg').textContent = `custom · SNR ~${j.snr_db} dB`;
+  $('vbaked').textContent = 'selected: custom';
+}
+$('vref').addEventListener('change', async e => {
+  const f = e.target.files[0]; if(!f) return;
+  $('vreport').innerHTML = '<p class="hint">Analysing…</p>';
+  const fd = new FormData(); fd.append('file', f);
+  const res = await fetch('/api/voice/analyze', {method:'POST', body:fd});
+  const j = await res.json();
+  if(!res.ok){ $('vreport').innerHTML = `<div class="note err">${esc(j.detail||'failed')}</div>`; return; }
+  const r = j.report;
+  const cls = r.verdict.startsWith('good') ? 'pass' : r.verdict.startsWith('usable') ? 'warn' : 'fail';
+  $('vreport').innerHTML =
+    `<div class="verdict ${cls}">${esc(r.verdict)}</div>
+     <dl class="kv" style="margin-top:10px">
+       <dt>Length</dt><dd>${r.duration_s}s</dd>
+       <dt>Peak</dt><dd>${r.peak_db} dBFS</dd>
+       <dt>Noise floor</dt><dd>${r.noise_floor_db} dB</dd>
+       <dt>Signal to noise</dt><dd>~${r.snr_db} dB</dd>
+     </dl>` +
+    (r.advice.length ? `<ul style="margin-top:10px">${r.advice.map(a=>`<li class="hint">${esc(a)}</li>`).join('')}</ul>` : '');
+  $('vplist').innerHTML = j.presets.map(p=>`
+    <div class="uttbar">
+      <button class="mini" onclick="pickPreset('${p.name}', this)">▶ ${esc(p.name)}</button>
+      <span class="hint">${esc(p.label)}</span>
+    </div>`).join('');
+  $('vpresets').classList.remove('hidden');
+  await loadControls();
+  applyPresetToSliders(VPRESET);
+});
+function hearOriginal(btn){
+  /* Preset "off" is the raw upload with no processing applied. Comparing a
+     tuned take against the previous tuned take tells you very little; against
+     the original it tells you whether you have improved anything at all. */
+  PLAYER.toggle('/api/voice/preview/off?t='+Date.now(), 'your original recording', btn);
+}
+
+async function pickPreset(name, btn){
+  VPRESET = name;
+  PLAYER.play('/api/voice/preview/'+name+'?t='+Date.now(),
+              'preset: ' + name, btn);
+  $('vbaked').textContent = `selected: ${name}`;
+  await loadControls();
+  applyPresetToSliders(name);
+  $('vtunemsg').textContent = '';
+}
+async function bakeVoice(){
+  PLAYER.stop();
+  const what = VPRESET === 'custom' ? 'your fine-tuned settings' : `the "${VPRESET}" preset`;
+  // A confirm step, because this is the one action here with consequences
+  // beyond the page: every lecture rendered afterwards inherits this voice.
+  if(!confirm(`Save ${what} as your voice?\n\n`
+    + `Every lecture you render from now on will use it. Your original `
+    + `recording is kept, so you can return and save a different setting `
+    + `later.`)) return;
+  $('vbaked').textContent = 'saving…';
+  const payload = VPRESET === 'custom'
+    ? {preset: 'custom', treatment: VTUNE} : {preset: VPRESET};
+  const res = await fetch('/api/voice/bake',{method:'POST',
+    headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload)});
+  const r = await res.json();
+  if(!res.ok){ $('vbaked').innerHTML = `<span class="warn">${esc(r.detail||'failed')}</span>`; return; }
+  $('vbaked').innerHTML = `<strong>saved</strong> — "${esc(r.preset)}", `
+    + `SNR ~${r.report.snr_db} dB. Change it any time; nothing already `
+    + `rendered is affected.`;
+  boot();
+}
+document.addEventListener('keydown', e => {
+  if(e.key === 'Escape' && PLAYER.playing) PLAYER.stop();
+});
+
+(async()=>{ try{ const c = await (await fetch('/api/voice/consent')).json();
+  $('consent-text').textContent = c.text; }catch(e){} })();
+
+let GEM = {};
+async function gemLoad(){
+  try{ GEM = await (await fetch('/api/voice/gemini')).json(); }catch(e){ return; }
+  $('gem-consent-text').textContent = GEM.consent_sentence || '';
+  $('gem-paid').checked = !!GEM.paid_tier_ack;
+  if(GEM.max_chars) $('gem-chars').value = GEM.max_chars;
+  const pill = $('gem-pill');
+  if(GEM.voice){ pill.textContent = 'enrolled'; pill.className = 'pill ok'; }
+  else if(!GEM.have_key){ pill.textContent = 'no api key'; pill.className = 'pill bad'; }
+  else { pill.textContent = 'not set up'; pill.className = 'pill'; }
+  const bits = [];
+  bits.push(GEM.have_key ? 'API key found' : 'no GEMINI_API_KEY');
+  bits.push(GEM.have_reference ? 'reference on file' : 'no voice reference yet');
+  bits.push(GEM.have_consent ? 'Google consent clip on file' : 'Google consent clip missing');
+  if(GEM.voice) bits.push(`voice ${GEM.voice} (${GEM.model}), created ${GEM.created_at||'—'}, expires ${GEM.expires}`);
+  bits.push(`${GEM.max_chars_effective} characters per call`
+    + (GEM.max_chars == null ? ' (measured default)'
+       : (GEM.max_chars === 0 ? " (the pipeline's own)" : '')));
+  bits.push(GEM.rate_match ? `pace retimed by ${GEM.rate_match}` : 'pace as cloned');
+  $('gem-detail').textContent = bits.join(' · ');
+  $('gem-enroll').disabled = !(GEM.have_key && GEM.have_reference
+                               && GEM.have_consent && GEM.paid_tier_ack);
+  $('gem-forget').disabled = !GEM.voice;
+  gemCheck();
+  gemVoices();
+}
+// Measured before anything is uploaded, because the refusal costs minutes and
+// arrives as an HTTP 500 whose readable sentence is four lines in.
+async function gemCheck(){
+  const el = $('gem-check');
+  if(!(GEM.have_reference && GEM.have_consent)){ el.textContent = ''; return; }
+  try{
+    const c = await (await fetch('/api/voice/gemini/check')).json();
+    if(c.ok){
+      el.innerHTML = `<span class="good">The two clips look like the same `
+        + `recording setup (resemblance ${c.score==null?'—':c.score.toFixed(3)}, `
+        + `${c.reference_s}s and ${c.consent_s}s). Google should accept them.</span>`;
+    } else {
+      el.innerHTML = `<span class="warn"><b>These would very likely be `
+        + `refused.</b></span><br>` + c.notes.map(esc).join('<br>')
+        + `<br><button class="mini" onclick="gemEnroll(true)">Upload anyway</button>`;
+    }
+  }catch(e){ el.textContent = ''; }
+}
+$('gem-paid').addEventListener('change', async e=>{
+  const r = await fetch('/api/voice/gemini/ack',{method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({paid: e.target.checked})});
+  if(r.ok) await gemLoad();
+});
+async function gemVoices(){
+  const box = $('gem-existing'), sel = $('gem-pick');
+  if(!GEM.have_key){ box.classList.add('hidden'); return; }
+  try{
+    const j = await (await fetch('/api/voice/gemini/voices')).json();
+    if(!j.voices || !j.voices.length){ box.classList.add('hidden'); return; }
+    sel.innerHTML = j.voices.map(v => `<option value="${esc(v.voice)}">`
+      + `${esc(v.voice)} — ${esc(v.display_name||'no name')}, expires `
+      + `${esc(v.ttl||'?')}${v.voice===j.current?' (in use)':''}</option>`).join('');
+    box.classList.remove('hidden');
+  }catch(e){ box.classList.add('hidden'); }
+}
+async function gemUse(){
+  const v = $('gem-pick').value;
+  $('gem-use-status').textContent = 'checking it with Google…';
+  const r = await fetch('/api/voice/gemini/use',{method:'POST',
+    headers:{'Content-Type':'application/json'}, body: JSON.stringify({voice:v})});
+  const j = await r.json();
+  $('gem-use-status').textContent = r.ok
+    ? `now speaking with ${j.voice}` : (j.detail || 'refused');
+  if(r.ok){ await gemLoad(); boot(); }
+}
+async function gemDrop(){
+  const v = $('gem-pick').value;
+  $('gem-use-status').textContent = `deleting ${v}…`;
+  const r = await fetch('/api/voice/gemini/forget',{method:'POST',
+    headers:{'Content-Type':'application/json'}, body: JSON.stringify({voice:v})});
+  const j = await r.json();
+  $('gem-use-status').textContent = j.note || 'removed';
+  await gemLoad(); boot();
+}
+async function gemEnroll(anyway){
+  const b = $('gem-enroll'); b.disabled = true;
+  $('gem-status').textContent = 'uploading both clips to Google…';
+  try{
+    const r = await fetch('/api/voice/gemini/enroll',{method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({anyway: !!anyway})});
+    const j = await r.json();
+    if(!r.ok){ $('gem-status').innerHTML =
+      `<span class="warn" style="white-space:pre-wrap">${esc(j.detail||'refused')}</span>`; }
+    else { $('gem-status').textContent = `enrolled as ${j.voice}`; }
+  }catch(e){ $('gem-status').textContent = String(e); }
+  await gemLoad(); boot();
+}
+async function gemForget(){
+  $('gem-status').textContent = 'deleting…';
+  const r = await fetch('/api/voice/gemini/forget',{method:'POST'});
+  const j = await r.json();
+  $('gem-status').textContent = j.note || 'removed';
+  await gemLoad(); boot();
+}
+async function gemPace(){
+  const w = $('gem-wpm').value.trim();
+  $('gem-pace-status').textContent = 'rendering a sample and measuring it…';
+  const r = await fetch('/api/voice/gemini/pace',{method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({target_wpm: w ? Number(w) : null})});
+  const j = await r.json();
+  if(!r.ok){ $('gem-pace-status').innerHTML =
+      `<span class="warn">${esc(j.detail||'failed')}</span>`; return; }
+  $('gem-pace-status').innerHTML = `you ${j.target_wpm} w/min · the clone `
+    + `${j.engine_wpm} w/min · every render now retimed by `
+    + `<b>${j.pace}</b>${j.clamped?' (clamped)':''}`;
+  await gemLoad();
+}
+async function gemChunk(){
+  const v = $('gem-chars').value.trim();
+  const r = await fetch('/api/voice/gemini/chunk',{method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({max_chars: v ? Number(v) : null})});
+  const j = await r.json();
+  $('gem-chunk-status').textContent = r.ok
+    ? `${j.max_chars_effective} characters per call`
+      + (j.max_chars == null ? ' (the measured default)' : '')
+    : (j.detail || 'rejected');
+  if(r.ok) await gemLoad();
+}
+gemLoad();
+
+for(const [id,kind] of [['conaud','consent_recording'],['gemaud','gemini_consent']]){
+  $(id).addEventListener('change', async e=>{
+    const f = e.target.files[0]; if(!f) return;
+    const fd = new FormData(); fd.append('kind',kind); fd.append('file',f);
+    const res = await fetch('/api/profile/audio',{method:'POST',body:fd});
+    const j = await res.json();
+    const where = kind === 'gemini_consent' ? $('gem-status') : $('consent-status');
+    where.textContent = res.ok
+      ? `${kind.replace('_',' ')} stored (${j.duration_s}s). ${kind === 'gemini_consent' ? 'You can create the cloned voice now.' : (j.ready_for_cloning?'Reference and consent both on file.':'Still need the other clip.')}`
+      : `Rejected: ${j.detail}`;
+    if(res.ok && j.pace_note) where.textContent += ' ' + j.pace_note;
+    if(kind === 'gemini_consent') await gemLoad();
+    boot();
+  });
+}
+boot();
+</script>
+</body>
+</html>

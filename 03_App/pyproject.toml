@@ -1,0 +1,40 @@
+[project]
+name = "realme"
+version = "2.0.0"
+requires-python = ">=3.10"
+# PyMuPDF is the preferred PDF backend: one dependency replaces pdfplumber,
+# pypdf AND the poppler system binary, and it is faster. It is AGPL-3.0 (or a
+# paid Artifex licence) where those are permissive -- see realme/pipeline/pdfdoc.py.
+# Uninstall it and the permissive fallback takes over automatically.
+# numpy and scipy are not optional: numpy generates the mask tone and every
+# enrolment measurement, and scipy runs the acoustic check that a lecture
+# render performs by default. Leaving them undeclared meant a render could
+# finish all its work and then fail on an import at the last step.
+# latex2mathml is a dependency rather than an extra. A deck with an equation
+# in it is ordinary in this audience, and an extra is installed by nobody who
+# does not already know it exists -- the failure is a render that reads
+# "\hat{\beta}" aloud as backslash-hat, discovered after the render.
+# Converting is pip's; SPEAKING the result wants speech-rule-engine, which is
+# npm's and stays a printed suggestion.
+dependencies = ["pydantic>=2.6", "pymupdf>=1.24", "python-pptx>=1.0", "pillow>=10.0", "fastapi>=0.110", "uvicorn[standard]>=0.27", "python-multipart>=0.0.9", "numpy>=1.24", "scipy>=1.10", "latex2mathml>=3.75"]
+
+[project.optional-dependencies]
+google = ["google-cloud-texttospeech>=2.16", "google-api-python-client", "google-auth-oauthlib"]
+selfhosted = ["chatterbox-tts", "torch", "torchaudio"]
+permissive-pdf = ["pypdf>=4.0", "pdfplumber>=0.11"]   # + poppler-utils, if avoiding AGPL
+align = ["faster-whisper"]
+math = []   # latex2mathml is a hard dependency now; equations also want:
+            #   npm install -g speech-rule-engine
+
+[project.scripts]
+realme = "realme.cli:main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["realme*"]
+
+[tool.setuptools.package-data]
+"realme.app" = ["ui.html"]

@@ -1,0 +1,28 @@
+# Installed payload. Fetched or built on the machine that needs it, never
+# committed: ffmpeg is ~300 MB, the voice engine's weights are ~2.5 GB, and the
+# compiled C++ engine is machine-specific. `realme engine install` and
+# `_get_ffmpeg.bat` recreate all of it.
+tools/
+03_App/tools/
+
+# Secrets.
+.env
+*.env
+!03_App/example.env
+
+# The update bundle is a build artefact of the delivery process.
+RealMe_Update.zip
+
+__pycache__/
+*.pyc
+*.egg-info/
+
+# Your work, not the project's.
+renders/
+projects/
+
+RealMe_Source/
+RealMe_Package.zip
+gemini_probe/
+*.wav
+*.mp4
