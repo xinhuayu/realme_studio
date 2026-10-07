@@ -458,6 +458,28 @@ def main():
               f"without re-synthesising a single utterance "
               f"({len(gt.calls) - spoke} extra calls)")
 
+        # What it took, in the report, so the Studio can show it beside what
+        # it produced. These numbers existed only in the scrolling log, which
+        # is the one place nobody looks after a render finishes.
+        rep = a["report"]
+        check(rep.get("render_s", 0) > 0,
+              f"the report says how long the render took ({rep.get('render_s')}s)")
+        check(rep.get("recording_s") is not None
+              and rep["recording_s"] <= rep["render_s"],
+              f"and how much of that was the engine "
+              f"({rep.get('recording_s')}s of {rep.get('render_s')}s)")
+        check(rep.get("takes_spoken") == spoke,
+              f"with the takes it bought ({rep.get('takes_spoken')} vs {spoke})")
+        # Against the first render's TOTAL, not its purchases: this deck
+        # repeats a line across both slides, so the first render already
+        # reused some of its own takes.
+        utterances = rep["takes_spoken"] + rep["takes_reused"]
+        check(b["report"]["takes_spoken"] == 0
+              and b["report"]["takes_reused"] == utterances,
+              f"and a cached re-render reports every take as reused "
+              f"({b['report'].get('takes_spoken')} spoken, "
+              f"{b['report'].get('takes_reused')} of {utterances} reused)")
+
     print("re-recording an existing project")
     # There was no way back into a project: PROJECT was set only by drafting,
     # importing or revising, so after a page reload the only route to Render

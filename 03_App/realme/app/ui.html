@@ -392,7 +392,7 @@ Consider a cohort where 15.3 percent received the intervention…</pre>
         <input type="file" id="nfile" accept=".txt,.md,.docx">
       </label>
       <div class="row">
-        <label>Voice<select id="ntts"></select></label>
+        <label>Voice<select id="ntts" onchange="narrateVoiceChanged()"></select></label>
         <label>Split<select id="nmode">
           <option value="natural">Natural — at clauses</option>
           <option value="sentence">Sentence — at full stops only</option>
@@ -404,6 +404,7 @@ Consider a cohort where 15.3 percent received the intervention…</pre>
           <option value="1.08">Quicker</option>
         </select></label>
       </div>
+      <p class="hint" id="ntts-note"></p>
       <div class="row">
         <label title="Higher is more expressive and more likely to drift; lower is flatter and, past a point, slower and duller.">Expression<select id="ntemp">
           <option value="0.7">Steady (0.7)</option>
@@ -457,10 +458,12 @@ Consider a cohort where 15.3 percent received the intervention…</pre>
           <option value="socratic">Socratic dialogue</option>
           <option value="interview">Expert interview</option>
         </select></label>
-        <label>Turns<input type="number" id="dturns" value="16" min="2" max="60"></label>
-        <label>Your voice<select id="dtts"></select></label>
-        <label>Interlocutor<select id="dguest"></select></label>
+        <label>Turns<input type="number" id="dturns" value="16" min="2" max="60"
+          onchange="dialogueVoiceChanged()"></label>
+        <label>Your voice<select id="dtts" onchange="dialogueVoiceChanged()"></select></label>
+        <label>Interlocutor<select id="dguest" onchange="dialogueVoiceChanged()"></select></label>
       </div>
+      <p class="hint" id="dvoice-note"></p>
       <div class="row">
         <label>Pace<select id="dspeed">
           <option value="0.64">Slower</option>
@@ -1521,6 +1524,9 @@ async function boot(){
     const first = [...$('dguest').options].find(o=>!o.disabled);
     if(first) $('dguest').value = first.value;
   }
+  // After the pickers have their values, not before: these notes read them.
+  narrateVoiceChanged();
+  dialogueVoiceChanged();
   $('psig').value=PROFILE.signalling||'highlight';
   $('playout').value=PROFILE.video.layout; $('pw').value=PROFILE.video.width;
   $('ph').value=PROFILE.video.height; $('pfps').value=PROFILE.video.fps;
@@ -1804,6 +1810,68 @@ async function hear(i){
   } finally { btn.disabled = false; }
 }
 
+function lectureKv(rep){
+  // What it took and what it cost, beside what it produced. A render is
+  // minutes or hours and cents or nothing depending on the engine, and
+  // until now the only place either number appeared was the scrolling log.
+  const rows = [
+    ['Duration', `${rep.actual_duration_s}s of video`],
+    ['Drift', `${rep.drift_s >= 0 ? '+' : ''}${rep.drift_s}s`],
+    ['Size', `${rep.size_mb} MB`],
+  ];
+  if(rep.render_s != null){
+    let t = clock(rep.render_s);
+    // The engine's share, when it is not simply all of it: a hosted render
+    // is minutes of Google then minutes of ffmpeg, a local one is hours of
+    // engine and the same minutes of ffmpeg.
+    if(rep.recording_s > 0 && rep.recording_s < rep.render_s * 0.95)
+      t += ` — ${clock(rep.recording_s)} of it recording`;
+    rows.push(['Time taken', t]);
+  }
+  if(rep.takes_spoken != null){
+    let takes = `${rep.takes_spoken} recorded`;
+    if(rep.takes_reused) takes += `, ${rep.takes_reused} reused from cache`;
+    if(rep.takes_rerecorded) takes += `, ${rep.takes_rerecorded} re-recorded shorter`;
+    rows.push(['Takes', takes]);
+  }
+  if(rep.estimated_cost_usd > 0)
+    rows.push(['Cost of this render',
+               `about $${rep.estimated_cost_usd.toFixed(2)} — an estimate from `
+               + `${esc(rep.estimated_cost_basis || 'the audio length')}, not an invoice`]);
+  else if(!rep.is_draft)
+    rows.push(['Cost of this render', 'nothing — this engine runs here']);
+  if(rep.draft_cost_usd > 0)
+    rows.push(['Drafting the narration',
+               `about $${rep.draft_cost_usd.toFixed(2)}, charged when the notes were written`]);
+  rows.push(['Streams', rep.streams.join(', ')],
+            ['Script', esc(rep.script_source)],
+            ['Voice', `${esc(rep.voice || '')}${rep.is_draft ? ' — DRAFT, not your voice' : ''}`],
+            ['Cues', `${rep.cues ?? 0}`]);
+  return rows
+    .map(([k, val]) => `<dt>${k}</dt><dd>${val}</dd>`).join('');
+}
+function tookLine(rep){
+  // The same two facts the lecture's output box gives, in one line for the
+  // pages whose output is a verdict strip rather than a table.
+  const bits = [];
+  if(rep.render_s != null) bits.push(`took ${clock(rep.render_s)}`);
+  // A dialogue has two voices and reports them as a pair; everything else
+  // reports one.
+  const engines = rep.voice ? [rep.voice] : Object.values(rep.voices || {});
+  if(rep.estimated_cost_usd > 0)
+    bits.push(`about $${rep.estimated_cost_usd.toFixed(2)} (estimated)`);
+  else if(engines.some(e => e && !String(e).startsWith('piper')))
+    bits.push('no per-minute cost');
+  return bits.join(' · ');
+}
+function clock(seconds){
+  // Seconds under a minute, minutes under an hour, h/m above. "7194s" is a
+  // number nobody converts in their head.
+  const t = Math.round(seconds);
+  if(t < 60) return `${t}s`;
+  if(t < 3600) return `${Math.floor(t / 60)}m ${String(t % 60).padStart(2, '0')}s`;
+  return `${Math.floor(t / 3600)}h ${String(Math.floor((t % 3600) / 60)).padStart(2, '0')}m`;
+}
 function costLine(c, voice){
   return c.estimated_usd > 0
     ? `${c.characters.toLocaleString()} characters · about $${c.estimated_usd.toFixed(2)} on ${voice}`
@@ -1862,22 +1930,104 @@ async function discardRevision(){
     + 'deck, slides and notes — nothing was changed.';
   $('rv-out').scrollIntoView({behavior:'smooth',block:'center'});
 }
+// What an engine means for the person about to press the button, in one
+// place for all three pages.
+//
+// Say it on the page, not only in the dropdown: someone who has spent an hour
+// editing a script is not reading the option text again. Three branches,
+// because the engines differ in the two things worth knowing beforehand —
+// how long it takes and what it costs. The single sentence this replaced
+// ("rendered on the CPU at three to five minutes per minute of audio") was
+// written when the only clone was the local one, and was simply untrue of a
+// hosted render — and the Narrate and Podcast pages, which offer the same
+// engines, said nothing at all.
+//
+// `what` names the thing being spoken, since the pages make different things.
+function engineLead(value){
+  const v = value || '';
+  if(v.startsWith('piper'))  return 'A draft: this is not your voice.';
+  if(v.startsWith('gemini')) return 'Your cloned voice, spoken at Google.';
+  return 'Your cloned voice, spoken on this machine.';
+}
+
+// `lead` overrides the opening sentence, for a page that has already said
+// whose voice it is. An override rather than the caller editing the returned
+// string: a `.replace` on this text would go quietly dead the first time a
+// word here changed.
+function engineNote(value, what, lead){
+  const v = value || '';
+  const head = `<b>${lead || engineLead(v)}</b> `;
+  if(v.startsWith('piper'))
+    return head + 'A stock voice reads '
+      + `${what} so you can check the words and the pacing — minutes rather `
+      + 'than an hour, and nothing to pay.';
+  if(v.startsWith('gemini')){
+    // Counted, not a balance. A denominator here was wrong within a day:
+    // "100 on Tier 1" came from one refusal, and the account moved to Tier 2.
+    const made = GEM.calls_today || 0;
+    let note = head + 'Minutes rather than '
+      + 'hours, at about 1.7 cents a minute of audio. The text is sent to '
+      + 'Google and the audio comes back; the takes are saved in this '
+      + "project's folder and everything else is assembled here.";
+    note += GEM.calls_exhausted_at
+      ? ` <b class="warn">Google said today's allowance was gone at `
+        + `${esc(GEM.calls_exhausted_at)}</b> — it resets on the date, and `
+        + 'anything already recorded is kept.'
+      : ` There is a daily request limit, depending on your tier, and one `
+        + `chunk is one request (${made} made today). If it runs out partway `
+        + 'it stops and says when the allowance returns: nothing already '
+        + 'recorded is charged again, and running it again continues from '
+        + 'where it stopped.';
+    if(GEM.rate_note) note += ` <span class="warn">${esc(GEM.rate_note)}</span>`;
+    return note;
+  }
+  if(!v) return '';
+  return head + 'Nothing leaves it '
+    + 'and there is nothing to pay, at roughly three to five minutes of '
+    + 'compute per minute of audio — so an hour of speech is most of a day. '
+    + 'It can be left running.';
+}
+
 function renderModeChanged(){
-  const draft = ($('rvoice').value || '').startsWith('piper');
-  // Say it on the page, not only in the dropdown. Someone who has spent an
-  // hour editing a script is not reading the option text again before they
-  // press the button.
-  $('rvoice-note').innerHTML = draft
-    ? '<b>A draft: this is not your voice.</b> A stock voice reads the script so '
-      + 'you can check the words, the pacing and the slide timing — minutes '
-      + 'rather than an hour. It is saved separately as '
-      + '<code>&lt;project&gt;_draft.mp4</code>, so it cannot overwrite a '
-      + 'finished recording. Re-render with your own voice when the script is '
-      + 'settled.'
-    : '<b>Your cloned voice</b>, rendered on the CPU at roughly three to five '
-      + 'minutes of compute per minute of audio. Worth doing once the words are '
-      + 'right — try a draft first if they are not.';
+  const v = $('rvoice').value || '';
+  const draft = v.startsWith('piper');
+  let note = engineNote(v, 'the script');
+  if(draft)
+    note += ' It is saved separately as <code>&lt;project&gt;_draft.mp4</code>, '
+      + 'so it cannot overwrite a finished recording. Re-render with your own '
+      + 'voice when the script is settled.';
+  else
+    note += ' Worth doing once the words are right — try a draft first if they '
+      + 'are not.';
+  $('rvoice-note').innerHTML = note;
   $('btn-render').textContent = draft ? 'Render draft' : 'Render video';
+}
+
+function narrateVoiceChanged(){
+  if($('ntts-note'))
+    $('ntts-note').innerHTML = engineNote($('ntts').value, 'the document');
+}
+
+function dialogueVoiceChanged(){
+  const box = $('dvoice-note');
+  if(!box) return;
+  const mine = $('dtts').value || '', guest = $('dguest').value || '';
+  const bits = [engineNote(mine, 'your turns',
+                           'Your turns: ' + engineLead(mine)
+                             .replace('Your cloned voice, spoken', 'your clone, spoken')
+                             .replace('A draft: this is not your voice.',
+                                      'a draft voice, not yours.'))];
+  // The interlocutor only earns its own paragraph when it is hosted too:
+  // a draft voice for the other side is the ordinary case and needs no
+  // explaining twice.
+  if(guest.startsWith('gemini'))
+    bits.push('<b>Interlocutor:</b> also spoken at Google, so both halves of '
+              + 'the conversation are billed.');
+  const turns = parseInt($('dturns').value, 10);
+  if((mine.startsWith('gemini') || guest.startsWith('gemini')) && turns > 0)
+    bits.push(`Each turn is at least one request, so ${turns} turns is upwards `
+              + `of ${turns} of them against the daily limit.`);
+  box.innerHTML = bits.join(' ');
 }
 
 async function renderLecture(){
@@ -1895,14 +2045,7 @@ async function renderLecture(){
     const rep = j.result.report;
     const cls = rep.verdict.startsWith('PASS (place') ? 'warn' : rep.verdict.startsWith('PASS') ? 'pass' : 'fail';
     $('lec-verdict').innerHTML = `<div class="verdict ${cls}">${esc(rep.verdict)}</div>`;
-    $('lec-kv').innerHTML = `
-      <dt>Duration</dt><dd>${rep.actual_duration_s}s</dd>
-      <dt>Drift</dt><dd>${rep.drift_s >= 0 ? '+' : ''}${rep.drift_s}s</dd>
-      <dt>Size</dt><dd>${rep.size_mb} MB</dd>
-      <dt>Streams</dt><dd>${rep.streams.join(', ')}</dd>
-      <dt>Script</dt><dd>${esc(rep.script_source)}</dd>
-      <dt>Voice</dt><dd>${esc(rep.voice || '')}${rep.is_draft ? ' — DRAFT, not your voice' : ''}</dd>
-      <dt>Cues</dt><dd>${rep.cues ?? 0}</dd>`;
+    $('lec-kv').innerHTML = lectureKv(rep);
     $('lec-files').innerHTML = Object.values(j.result.files)
       .map(n=>`<a href="/api/files/${encodeURIComponent(PROJECT)}/${encodeURIComponent(n)}">${esc(n)}</a>`).join('');
     $('lec-out').classList.remove('hidden');
@@ -1991,9 +2134,10 @@ async function makeNarration(){
     if(j.status==='error'){ showError('narr-out', j.error); return; }
     const rep = j.result.report, pid = j.result.project_id;
     const mins = Math.floor(rep.duration_s/60), secs = Math.round(rep.duration_s%60);
+    const extra = tookLine(rep);
     $('narr-verdict').innerHTML =
       `<div class="verdict pass">${mins}m ${secs}s · ${rep.words} words · `
-      + `${rep.utterances} utterances</div>`;
+      + `${rep.utterances} utterances${extra ? ' · ' + extra : ''}</div>`;
     const audio = `/api/files/${encodeURIComponent(pid)}/${encodeURIComponent(j.result.files.audio)}`;
     $('narr-audio').src = audio;
     $('narr-files').innerHTML = Object.values(j.result.files)
@@ -2025,7 +2169,10 @@ async function makeDialogue(){
     $('btn-dlg').disabled = false;
     if(j.status==='error'){ showError('dlg-out', j.error); return; }
     const rep = j.result.report;
-    $('dlg-verdict').innerHTML = `<div class="verdict ${rep.verdict.startsWith('PASS')?'pass':'fail'}">${esc(rep.verdict)} · ${Math.round(rep.duration_s/60*10)/10} min · ${rep.turns} turns</div>`;
+    const dextra = tookLine(rep);
+    $('dlg-verdict').innerHTML = `<div class="verdict ${rep.verdict.startsWith('PASS')?'pass':'fail'}">`
+      + `${esc(rep.verdict)} · ${Math.round(rep.duration_s/60*10)/10} min · `
+      + `${rep.turns} turns${dextra ? ' · ' + dextra : ''}</div>`;
     $('dlg-files').innerHTML = Object.values(j.result.files)
       .map(n=>`<a href="/api/files/${encodeURIComponent(j.result.project_id)}/${encodeURIComponent(n)}">${esc(n)}</a>`).join('');
     $('dlg-out').classList.remove('hidden');
@@ -2297,13 +2444,20 @@ async function gemLoad(){
             : 'pace as cloned');
   // One chunk is one request, and the allowance is daily. Worth seeing
   // before pressing render rather than at slide nine of thirteen.
-  if(GEM.daily_calls) bits.push(`${GEM.calls_today||0} of ~${GEM.daily_calls} requests today`);
+  bits.push(`${GEM.calls_today||0} requests today`
+    + (GEM.calls_exhausted_at ? ` (allowance gone at ${GEM.calls_exhausted_at})` : ''));
   $('gem-detail').textContent = bits.join(' · ');
   // A correction that is on file but not being applied has to say so here.
   // The badge used to read the stored number whether or not any render used
   // it, which is how a 1.25 nobody measured looked like a setting.
   const warn = $('gem-rate-note');
   if(warn){ warn.textContent = GEM.rate_note || ''; warn.style.display = GEM.rate_note ? '' : 'none'; }
+  // The Lecture tab's note quotes the request count, and this is when the
+  // count arrives -- `gemLoad` is async and resolves after boot has already
+  // drawn that note once.
+  if($('rvoice') && $('rvoice-note')) renderModeChanged();
+  if($('ntts-note')) narrateVoiceChanged();
+  if($('dvoice-note')) dialogueVoiceChanged();
   $('gem-enroll').disabled = !(GEM.have_key && GEM.have_reference
                                && GEM.have_consent && GEM.paid_tier_ack);
   $('gem-forget').disabled = !GEM.voice;

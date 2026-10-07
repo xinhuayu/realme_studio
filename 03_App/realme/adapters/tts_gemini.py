@@ -98,15 +98,23 @@ TOKENS_PER_SECOND = 32.0
 #: is the default, not a constant of nature.
 MEASURED_MAX_CHARS = 738
 
-#: Requests a day on the entry paid tier, as Google's own refusal states it:
-#: "limit: 100 requests per day on Tier 1". Advisory, not authoritative -- the
-#: API does not report what is left, and a tier change does not reach us -- so
-#: it is only ever used to WARN before a render, never to refuse one.
-#:
-#: Worth knowing before pressing render: one chunk is one request, and the
-#: thirteen-slide guide is thirty-three of them -- counted from the finished
-#: render's own cue list, not estimated. A hundred a day is three renders.
-DAILY_CALLS_TIER1 = 100
+# How many requests a day this account may make is NOT known here.
+#
+# The API reports no balance and no limit; the only time a number arrives is
+# in a refusal ("limit: 100 requests per day on Tier 1"), and that number
+# belongs to the tier the account was on at that moment. A constant was worse
+# than nothing: 100 was written down from one Tier 1 refusal, and the next day
+# the account was on Tier 2 and the Studio was confidently telling its owner
+# how many of a hundred requests were left.
+#
+# So: the calls are COUNTED, which is a fact, and the limit is QUOTED only
+# when Google has just stated it. Everything else is a warning in words --
+# there is a daily limit, it can run out, and running out costs nothing but
+# time.
+#
+# For scale, measured rather than assumed: one chunk of narration is one
+# request, and the thirteen-slide guide is thirty-three of them, counted from
+# that render's own cue list.
 
 #: Longest wait this will sit through by itself. A per-minute limit clears in
 #: under a minute and waiting is right; a per-day quota clears in hours and
@@ -159,95 +167,113 @@ def _usage_file() -> Path:
     return data_home() / "gemini_calls.json"
 
 
-def record_call(when=None) -> int:
-    """Count one request against today, and return today's total.
-
-    Local, and openly approximate: the API reports no remaining balance, so
-    the only way to know you are near a hundred requests a day is to have
-    counted them. Kept per calendar date in the data directory, because what
-    the limit resets on is a date.
-
-    Never allowed to break a render -- a counter that fails is a counter, not
-    a dependency.
-    """
+def _usage(when=None):
+    """Today's record, as (whole file, day key, {"calls": n, "exhausted": t})."""
     day = (when or _dtime.date.today()).isoformat()
-    f = _usage_file()
     try:
-        state = json.loads(f.read_text(encoding="utf-8")) if f.is_file() else {}
+        state = json.loads(_usage_file().read_text(encoding="utf-8"))
     except Exception:
         state = {}
     if not isinstance(state, dict):
         state = {}
-    state[day] = int(state.get(day, 0)) + 1
-    # Only the last fortnight: this is for "am I near today's limit", and an
-    # unbounded file that nothing ever reads is just a file that grows.
-    recent = sorted(state)[-14:]
+    today = state.get(day)
+    # The first version of this file stored a bare integer per day. Read both,
+    # so an update does not silently reset a count it could have kept.
+    if isinstance(today, int):
+        today = {"calls": today}
+    elif not isinstance(today, dict):
+        today = {}
+    return state, day, today
+
+
+def _write_usage(state: dict, day: str, today: dict) -> None:
+    state[day] = today
+    # The last fortnight only: this answers "how much have I used today", and
+    # an unbounded file nothing reads is just a file that grows.
+    keep = sorted(state)[-14:]
     try:
+        f = _usage_file()
         f.parent.mkdir(parents=True, exist_ok=True)
-        f.write_text(json.dumps({k: state[k] for k in recent}, indent=2),
+        f.write_text(json.dumps({k: state[k] for k in keep}, indent=2),
                      encoding="utf-8")
     except Exception:
-        pass
-    return state[day]
+        pass            # a counter that fails is a counter, not a dependency
+
+
+def record_call(when=None) -> int:
+    """Count one request against today, and return today's total.
+
+    Counting is the only honest part of this. The API reports no balance and
+    no limit, so what can be known here is how many requests THIS
+    installation has made since midnight -- not how many remain.
+    """
+    state, day, today = _usage(when)
+    today["calls"] = int(today.get("calls", 0)) + 1
+    _write_usage(state, day, today)
+    return today["calls"]
 
 
 def note_limit_reached(limit: int | None = None, when=None) -> None:
-    """Record that Google says today's allowance is gone.
+    """Record that Google said today's allowance was gone, and when.
 
-    The local count only sees calls made since it was added, so on the day it
-    starts it reads low -- and a warning that says "97 left" on a day with
-    none left is worse than no warning. A 429 is the authoritative answer, so
-    it is written down: from then on the pre-render note is right for the rest
-    of the day without anyone seeding a file by hand.
-
-    Self-correcting rather than clever. If the quota resets on a boundary that
-    is not this machine's midnight, the count is wrong for a few hours in the
-    safe direction -- it warns about a limit that has just lifted, and
-    Google's own refusal remains the thing that decides.
+    Not the number -- the fact. A limit quoted in a refusal belongs to the
+    tier the account was on at that moment, and an account can be upgraded
+    between one render and the next; a stored 100 then becomes the Studio
+    telling its owner how many of a hundred requests are left on a tier that
+    allows far more. The time is what stays true: the allowance ran out today,
+    at this hour, and it resets on a date boundary.
     """
-    day = (when or _dtime.date.today()).isoformat()
-    f = _usage_file()
-    try:
-        state = json.loads(f.read_text(encoding="utf-8")) if f.is_file() else {}
-        if not isinstance(state, dict):
-            state = {}
-        state[day] = max(int(state.get(day, 0)), int(limit or DAILY_CALLS_TIER1))
-        f.parent.mkdir(parents=True, exist_ok=True)
-        f.write_text(json.dumps(state, indent=2), encoding="utf-8")
-    except Exception:
-        pass
+    state, day, today = _usage(when)
+    today["exhausted"] = _dtime.datetime.now().strftime("%H:%M")
+    if limit:
+        # Kept for the message only, with the day it was said on, never for
+        # arithmetic about what is left.
+        today["limit_said"] = int(limit)
+    _write_usage(state, day, today)
 
 
 def calls_today(when=None) -> int:
     """How many requests this installation has made today, as counted here."""
-    day = (when or _dtime.date.today()).isoformat()
-    try:
-        state = json.loads(_usage_file().read_text(encoding="utf-8"))
-        return int(state.get(day, 0))
-    except Exception:
-        return 0
+    return int(_usage(when)[2].get("calls", 0))
 
 
-def budget_note(needed: int, *, limit: int = DAILY_CALLS_TIER1) -> str:
+def exhausted_today(when=None) -> str:
+    """The time Google said today's allowance was gone, or "" if it has not."""
+    return str(_usage(when)[2].get("exhausted") or "")
+
+
+def budget_note(needed: int, when=None) -> str:
     """What to say before a render that may not have the requests to finish.
 
     Said beforehand because the alternative is finding out in the middle. A
     render that stops at the limit loses nothing -- every take already made is
     cached -- but it is a surprise, and a surprise at slide nine of thirteen
     reads like a fault.
+
+    No arithmetic about what remains, because the limit is not known here: it
+    depends on the account's tier, Google reports it only when refusing, and
+    the tier can change. What is said is what is true -- how many this render
+    needs, how many have been made today, and that there is a daily ceiling
+    which costs time rather than work when it is hit.
     """
-    done = calls_today()
-    left = max(0, limit - done)
     if needed <= 0:
         return ""
-    said = (f"  {needed} Gemini call{'s' if needed != 1 else ''} to make; "
-            f"{done} made today, so about {left} of {limit} left on Tier 1")
-    if needed > left:
-        said += (f"\n  That is more than remains, so this will stop partway. "
-                 f"Nothing is lost when it does -- every take is cached, and "
-                 f"re-running continues from there. To finish it today, "
-                 f"render with --tts qwen3cpp instead, or raise the tier.")
-    return said
+    done, out = calls_today(when), exhausted_today(when)
+    said = [f"  {needed} Gemini call{'s' if needed != 1 else ''} to make; "
+            f"{done} made today"]
+    if out:
+        said.append(f"  Google reported this account's daily allowance "
+                    f"exhausted at {out}, so this will stop almost at once. "
+                    f"Nothing is lost when it does -- every take is cached, "
+                    f"and re-running continues from there once the allowance "
+                    f"resets. To finish it now, render with --tts qwen3cpp.")
+    else:
+        said.append("  There is a daily request limit on hosted voices, and "
+                    "how large it is depends on your tier. If this render "
+                    "reaches it, it stops and says when the allowance "
+                    "returns -- nothing already recorded is charged again, "
+                    "and re-running continues from there.")
+    return "\n".join(said)
 
 
 def _spell_wait(seconds: float) -> str:

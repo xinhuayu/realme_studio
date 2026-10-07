@@ -1284,8 +1284,10 @@ def _gemini_state() -> dict:
         "rate_match_stored": g.get("rate_match"),
         "rate_match_for": g.get("rate_match_for"),
         "rate_note": G.effective_rate_match(g)[1],
+        # Counted, never a balance: the API reports neither a limit nor what
+        # is left, and the limit depends on a tier that can change.
         "calls_today": G.calls_today(),
-        "daily_calls": G.DAILY_CALLS_TIER1,
+        "calls_exhausted_at": G.exhausted_today(),
         "consent_recording": g.get("consent_recording"),
         "have_consent": bool(g.get("consent_recording")
                              and Path(g["consent_recording"]).is_file()),
@@ -1895,6 +1897,9 @@ async def make_narration(text: str = Form(""), tts: str = Form("qwen3cpp"),
     out = pdir / (src.stem + ".wav")
 
     def work(job):
+        from realme.pipeline.speak import spend_of, took_and_cost
+        import time as _t
+        t0, spent_before = _t.perf_counter(), spend_of(engine)
         with SYNTH_LOCK:
             r = N.narrate(src, out, engine, mode=mode, pace=render_pace,
                           paragraph_gap_s=paragraph_gap, captions=captions,
@@ -1906,6 +1911,9 @@ async def make_narration(text: str = Form(""), tts: str = Form("qwen3cpp"),
                 "report": {"duration_s": round(r.duration_s, 1),
                            "words": r.words, "paragraphs": r.paragraphs,
                            "utterances": r.utterances,
+                           "voice": engine_name,
+                           **took_and_cost(_t.perf_counter() - t0, spent_before,
+                                           spend_of(engine), engine),
                            "warnings": r.warnings[:12]},
                 "files": files}
 
@@ -1945,8 +1953,14 @@ async def make_dialogue(topic: str = Form(...), mode: str = Form("debate"),
         raise HTTPException(400, str(e))
 
     def work(job):
+        from realme.pipeline.speak import spend_of, took_and_cost
+        import time as _t
         for role, spec in (("instructor", instructor_tts), ("guest", guest_tts)):
             job.say(f"      {role}: {casting.describe(spec, voices[role])}")
+        # Both voices, because either side of a conversation can be the
+        # hosted one and the bill is the pair.
+        t0 = _t.perf_counter()
+        before = [spend_of(voices[r]) for r in ("instructor", "guest")]
         out = dlg.build_dialogue(src, topic, pdir, writer, voices,
                                  mode=mode, turns=turns,
                                  turn_gap=turn_gap or dlg.DEFAULT_TURN_GAP_S,
@@ -1955,7 +1969,17 @@ async def make_dialogue(topic: str = Form(...), mode: str = Form("debate"),
                                  guest_name=casting.speaker_name(
                                      guest_tts, voices["guest"]),
                                  bookends=bookends, log=job.say)
-        return {"project_id": pid, "report": out["report"],
+        after = [spend_of(voices[r]) for r in ("instructor", "guest")]
+        paid = [(b, a, voices[r]) for b, a, r in
+                zip(before, after, ("instructor", "guest")) if b is not None]
+        report = dict(out["report"])
+        report["voices"] = {"instructor": instructor_tts, "guest": guest_tts}
+        report.update(took_and_cost(
+            _t.perf_counter() - t0,
+            sum(b for b, _, _ in paid) if paid else None,
+            sum(a for _, a, _ in paid) if paid else None,
+            paid[0][2] if paid else None))
+        return {"project_id": pid, "report": report,
                 "files": {"audio": Path(out["audio"]).name,
                           "transcript": Path(out["transcript"]).name}}
 

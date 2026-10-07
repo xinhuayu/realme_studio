@@ -407,20 +407,41 @@ def main() -> int:
         check(G.calls_today() == before + 1,
               "a refused one is not -- a counter that drifts high warns "
               "about a limit that is not there")
-        # The count only sees calls made since it existed, so on its first
-        # day it reads low -- and "97 left" on a day with none left is worse
-        # than saying nothing. Google's refusal is written down instead.
+        # What the local count can and cannot know. It counts requests, which
+        # is a fact. It does NOT know the ceiling: the API reports no balance
+        # and no limit, the only number ever quoted is in a refusal, and it
+        # belongs to the tier the account was on at that moment. A constant
+        # was worse than nothing -- 100 was taken from one Tier 1 refusal, and
+        # the account moved to Tier 2 the next day.
+        check(not hasattr(G, "DAILY_CALLS_TIER1"),
+              "no tier's limit is written down here as if it were ours")
+        # A day with no record of its own: an earlier section in this suite
+        # has already provoked a daily refusal, and today is marked spent.
+        import datetime as _d
+        quiet = _d.date(2099, 1, 1)
+        plain_note = G.budget_note(10, when=quiet)
+        check("daily request limit" in plain_note and "depends on your tier"
+              in plain_note,
+              "the warning is in words, not in arithmetic about what is left",
+              plain_note)
+        check("/100" not in plain_note and " of 100" not in plain_note,
+              "with no denominator it cannot know", plain_note)
+        check(f"{G.calls_today(quiet)} made today" in plain_note,
+              "but the count it does know is given", plain_note)
+
         net.replies.clear(); net.fail(429, daily)
         try:
             eng.synthesize("At the wall.", WORK / "q5.wav")
         except G.QuotaExceeded:
             pass
-        check(G.calls_today() >= 100,
-              "a daily refusal records the day as spent, whatever was counted",
-              str(G.calls_today()))
-        check("0 of 100 left" in G.budget_note(10),
-              "so the next render is warned correctly without seeding a file",
-              G.budget_note(10))
+        check(bool(G.exhausted_today()),
+              "a daily refusal records WHEN the allowance ran out",
+              G.exhausted_today())
+        spent_note = G.budget_note(10)
+        check("exhausted at" in spent_note and "stop almost at once" in spent_note,
+              "and the next render is told so before it starts", spent_note)
+        check("qwen3cpp" in spent_note and "cached" in spent_note,
+              "with what it costs (nothing) and what to do instead")
         at_wall = G.calls_today()
         net.replies.clear(); net.fail(429, minute)
         net.reply(audio_reply(wav_bytes(0.3)))
@@ -433,15 +454,8 @@ def main() -> int:
               "while a per-minute limit adds nothing but the call that then "
               "worked", f"{at_wall} -> {G.calls_today()}")
 
-        note = G.budget_note(5, limit=before + 3)
-        check("more than remains" in note,
-              "a render that cannot finish is said to be one, beforehand",
-              note)
-        check("cached" in note and "qwen3cpp" in note,
-              "with what that costs (nothing) and what to do instead")
-        check(G.budget_note(1, limit=before + 500) and
-              "more than remains" not in G.budget_note(1, limit=before + 500),
-              "while one that fits just reports the arithmetic")
+        check(G.budget_note(0) == "",
+              "and a render with nothing to buy says nothing at all")
 
         print("\na surprising response fails loudly, not quietly")
         net.replies.clear()

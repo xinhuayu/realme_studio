@@ -464,8 +464,8 @@ def render(deck: Path, outdir: Path, manifest: Manifest, tts, *, layout="slide_o
         has no such attribute and the whole feature disappears for it, which
         is what should happen.
         """
-        value = getattr(engine, "spend_usd", None)
-        return float(value) if isinstance(value, (int, float)) else None
+        from realme.pipeline.speak import spend_of
+        return spend_of(engine)
 
     spend_before = _spent(tts)
 
@@ -487,6 +487,16 @@ def render(deck: Path, outdir: Path, manifest: Manifest, tts, *, layout="slide_o
         log(f"  (could not estimate the engine calls: {e})")
 
     done_slides = 0
+    #: Wall clock, and the part of it spent waiting for the engine.
+    #:
+    #: Both, because they answer different questions and differ by a lot: a
+    #: hosted render is minutes of engine and then minutes of ffmpeg, while a
+    #: local one is hours of engine and the same minutes of ffmpeg. "How long
+    #: did that take" wants the first; "is the engine or my machine the slow
+    #: part" wants the second.
+    render_t0 = _time.perf_counter()
+    spoke_total = reused_total = redone_total = 0
+    synth_total = 0.0
     for i, seg in enumerate(manifest.segments):
         # One line before the slide and one after, and nothing in between.
         #
@@ -546,6 +556,10 @@ def render(deck: Path, outdir: Path, manifest: Manifest, tts, *, layout="slide_o
         terms = sorted({t for u in utts for t in (u.lexicon_terms or [])})
         cost = getattr(utts, "cost", {"spoken": len(utts), "reused": 0,
                                       "synth_s": 0.0})
+        spoke_total += cost.get("spoken", 0)
+        reused_total += cost.get("reused", 0)
+        redone_total += cost.get("rerecorded", 0)
+        synth_total += float(cost.get("synth_s", 0.0) or 0.0)
         took = _time.perf_counter() - _t0
         how = (f"{cost['spoken']} spoken" if cost["spoken"] else "")
         if cost["reused"]:
@@ -737,6 +751,12 @@ def render(deck: Path, outdir: Path, manifest: Manifest, tts, *, layout="slide_o
                                         report["audio_check"]["mispronounced"]})))
     report["lint_warnings"] = sorted(set(all_warnings))
     report["cues"] = len(all_cues)
+    report["render_s"] = round(_time.perf_counter() - render_t0, 1)
+    report["recording_s"] = round(synth_total, 1)
+    report["takes_spoken"] = spoke_total
+    report["takes_reused"] = reused_total
+    if redone_total:
+        report["takes_rerecorded"] = redone_total
 
     # The whole render's cost, once, at the end -- and in the report file, so
     # a term's worth of lectures can be added up later without anyone having

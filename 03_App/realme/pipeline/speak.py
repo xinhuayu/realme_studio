@@ -159,6 +159,36 @@ class Utterance:
     instructions: tuple = ()
 
 
+def spend_of(tts) -> float | None:
+    """Dollars this adapter has billed so far, or None if it does not charge.
+
+    One definition, because three pipelines report it and a fourth will. The
+    adapter owns the arithmetic; this only knows that a number means money and
+    an absence means a local engine.
+    """
+    value = getattr(tts, "spend_usd", None)
+    return float(value) if isinstance(value, (int, float)) else None
+
+
+def took_and_cost(seconds: float, before: float | None,
+                  after: float | None, tts) -> dict:
+    """The two lines every finished render owes the person who ran it.
+
+    Returned as report fields rather than printed, so the Studio can show them
+    beside the file and the CLI can print them -- the numbers used to exist
+    only in a scrolling log, which is the one place nobody looks once a render
+    has finished.
+    """
+    out = {"render_s": round(seconds, 1)}
+    if before is not None and after is not None and after - before >= 0.0005:
+        metered = getattr(tts, "all_metered", True)
+        out["estimated_cost_usd"] = round(after - before, 4)
+        out["estimated_cost_basis"] = ("token counts returned by the API"
+                                       if metered else
+                                       "audio duration at 32 tokens a second")
+    return out
+
+
 def plan_calls(texts, tts, *, mode: str = "natural") -> int:
     """How many engine calls this narration will take.
 

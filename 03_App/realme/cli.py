@@ -390,12 +390,13 @@ def _voice_gemini(a) -> int:
           + (f"{mc}" if mc else
              (f"{G.MEASURED_MAX_CHARS} (the measured default)" if mc is None
               else "260 (the pipeline's own)")))
-    made = G.calls_today()
-    print(f"  requests today       : {made} of about "
-          f"{G.DAILY_CALLS_TIER1} (Tier 1), counted here")
-    if made >= G.DAILY_CALLS_TIER1:
-        print("    at the limit -- it resets on the calendar date, and a "
-              "render that stops\n    resumes from where it stopped")
+    made, out = G.calls_today(), G.exhausted_today()
+    print(f"  requests today       : {made}, counted here "
+          f"(Google reports no balance)")
+    if out:
+        print(f"    Google said the daily allowance was gone at {out}. It "
+              f"resets on the calendar\n    date; a render that stops resumes "
+              f"from where it stopped.")
     print(f"\n  Google's consent sentence, to record in your own voice:\n")
     print(f"    {G.CONSENT_SENTENCE}\n")
     if not g.get("paid_tier_ack"):
