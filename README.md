@@ -25,7 +25,6 @@ podcasts:
 
 - **The slides** — [`RealMe_Guide_v4.pdf`](RealMe_Guide_v4.pdf).
 - **The narration** — [`RealMe_Guide_notes_v4.txt`](RealMe_Guide_notes_v4.txt).
-- **The video** — [`RealMe_Guide_v4.mp4`](RealMe_Guide_v4.mp4).
 
 Render it in your own voice — it makes a good first lecture: Lecture tab →
 **New with my notes**, choose the PDF and the notes file, then Render. Or:
