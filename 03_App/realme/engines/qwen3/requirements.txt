@@ -1,0 +1,4 @@
+# Installed only in .qwen3-tts-venv by scripts/setup-qwen3-tts.ps1.
+qwen-tts>=0.1.1,<0.2
+numpy>=2.0,<3
+soundfile>=0.13,<1

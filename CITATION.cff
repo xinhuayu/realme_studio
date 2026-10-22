@@ -1,0 +1,15 @@
+cff-version: 1.2.0
+message: "If you use RealMe Studio in your teaching or research, please cite it as below."
+title: "RealMe Studio: narrated lecture videos from slide decks, in the instructor's own voice"
+type: software
+authors:
+  - family-names: Yu
+    given-names: Xinhua
+version: "2.0.0"
+date-released: "2026-10-22"
+license: MIT
+keywords:
+  - lecture video
+  - text-to-speech
+  - voice cloning
+  - teaching
