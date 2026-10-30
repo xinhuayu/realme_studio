@@ -1,29 +1,24 @@
 """
 Joining videos into one, and knowing when that is safe.
 
-The inverse of `split`, and the one that looks trivial and is not.
+The inverse of `split`.
 
 `ffmpeg -f concat -c copy` is instant and lossless, and it is only CORRECT when
 every input agrees on codec, profile, resolution, pixel format, frame rate,
-audio codec, sample rate and channel count. Hand it two files that differ and
-the good case is an error; the bad case is a file that plays the first video
-and then goes black, or keeps the picture and loses the sound, or drifts
-further out of sync the longer it runs. It reports success either way.
+audio codec, sample rate and channel count. Given two files that differ it
+either errors or, silently, produces a file that goes black after the first
+video, loses the sound, or drifts out of sync. It reports success either way.
 
-That failure is invisible until someone watches to the end, which is the worst
-possible time to find it. So nothing here is assumed: every input is probed,
-the parameters are compared, and the fast path is taken only when they match.
-Where they do not, the inputs are normalised and re-encoded to one target, and
-the report says which happened and why.
+So every input is probed, the parameters are compared, and the fast path is
+taken only when they match. Where they do not, the inputs are normalised and
+re-encoded to one target, and the report says which happened and why.
 
-Two things travel with the video, because a merged lecture without them is a
-merged lecture someone has to repair by hand:
+Two things travel with the video:
 
   CAPTIONS   each input's .srt, shifted by the running offset and renumbered.
   CUT LIST   a combined `_segments.json`, so a merged video can be split again
              at slide boundaries. Only when every input has one -- a partial
-             cut list would claim slide times for material it knows nothing
-             about, which is worse than having none.
+             cut list would claim slide times for material it does not cover.
 """
 from __future__ import annotations
 import json
@@ -43,13 +38,11 @@ DRIFT_TOLERANCE_S = 1.0
 #: Anything not on this list either does not affect concatenation or is
 #: implied by something that is.
 #:
-#: `r_frame_rate`, NOT `avg_frame_rate`. The first version compared
-#: avg_frame_rate and declared three parts cut from ONE master incompatible:
-#: avg_frame_rate is frames divided by duration, so it differs for every clip
-#: of a different length -- 1472/59, 2072/83, 678400/27151 for three pieces of
-#: the same 25 fps video. Comparing it makes a lossless join impossible for
-#: exactly the files this tool exists to rejoin. r_frame_rate is the nominal
-#: rate and reads 25/1 for all of them.
+#: `r_frame_rate`, NOT `avg_frame_rate`. avg_frame_rate is frames divided by
+#: duration, so it differs for every clip of a different length (e.g. 1472/59
+#: and 2072/83 for two pieces of the same 25 fps video) and would make parts
+#: cut from one master look incompatible. r_frame_rate is the nominal rate and
+#: reads 25/1 for all of them.
 VIDEO_KEYS = ("codec_name", "width", "height", "pix_fmt", "profile",
               "r_frame_rate")
 AUDIO_KEYS = ("codec_name", "sample_rate", "channels")
@@ -180,8 +173,7 @@ def merge_srt(inputs: list[Input], out: Path) -> Path | None:
     """One caption file for the join, each part shifted by what precedes it.
 
     A part with no captions still advances the clock. Skipping its duration
-    would pull every later cue earlier by the length of the silent part, which
-    is the same drift this project rebuilt the caption timing to avoid.
+    would pull every later cue earlier by the length of the silent part.
     """
     import re
     blocks, clock, n = [], 0.0, 0
@@ -211,7 +203,7 @@ def merge_segments(inputs: list[Input], out: Path) -> Path | None:
 
     Written only when EVERY input has one. A cut list covering half the file
     would give slide numbers to the first lecture and nothing to the second,
-    and the splitter would happily offer to cut at a slide that is not there.
+    and the splitter would offer to cut at a slide that is not there.
 
     Slide numbers are KEPT when they already increase across the join -- which
     is the case when the inputs are parts of one lecture being reassembled, and

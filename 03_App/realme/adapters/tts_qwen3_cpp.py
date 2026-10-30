@@ -83,7 +83,7 @@ class Qwen3CppTTS(BaseTTS):
         Two engines running the same weights still produce different audio --
         different sampler, no transcript conditioning here. If they shared a
         fingerprint the utterance ledger would serve one engine's cached audio
-        for the other's render, which is the v2 bug all over again.
+        for the other's render.
         """
         ref = "none"
         if self.reference_wav and self.reference_wav.exists():
@@ -102,8 +102,7 @@ class Qwen3CppTTS(BaseTTS):
                 f"    Build it:  realme engine cpp")
         if state == "blocked":
             # Do NOT suggest rebuilding. A rebuild produces another unsigned
-            # binary that gets blocked identically, which wastes twenty minutes
-            # and teaches the wrong lesson.
+            # binary that gets blocked identically.
             raise AdapterUnavailable(
                 "The C++ engine is built, but Windows will not run it.\n  "
                 + detail + "\n\n"

@@ -16,15 +16,15 @@ Two kinds of engine gain from it, for different reasons:
                     at once. How many the project takes is measured by
                     `realme gemini-parallel`.
 
-How it fits without changing what works. This works out which sentences the
+How it fits beside the render loop. This works out which sentences the
 render loop is about to record -- the same splitting, the same text
 preparation, the same cache key -- and records them into the very files the
 loop would have written, entering each in the render ledger as it lands
 (always from the render's own thread). It runs ALONGSIDE the loop: the loop
 waits only for the sentences of the slide it is on, so one slide's video can
 be made while later slides are still being recorded. Anything this step
-missed, failed on, or found hurried, the loop records the ordinary way. So
-the worst this can do is nothing.
+missed, failed on, or found hurried, the loop records the ordinary way, so
+a failure here costs time, never takes.
 
     REALME_RECORD_WORKERS   1 turns it off; 2-8 asks for that many at once.
                             Unset: for the local clone, as many engines as
@@ -88,9 +88,9 @@ def engines_for_machine(base) -> int:
     not worth the memory by default -- REALME_RECORD_WORKERS=2 still asks
     for it.)
 
-    An engine built before the thread fix runs on 4 threads whatever it is
-    told, and two of those were measured a quarter faster than one, so it
-    keeps two on any machine with 8 or more logical processors.
+    An older engine build that does not apply its thread count runs on 4
+    threads whatever it is told; two of those are about a quarter faster than
+    one, so it keeps two on any machine with 8 or more logical processors.
     """
     from realme.core.cpu import physical_cores
     applies = getattr(base, "applies_threads", None)

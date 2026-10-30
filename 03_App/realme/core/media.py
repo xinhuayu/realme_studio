@@ -11,8 +11,7 @@ class MediaError(RuntimeError):
 def _bundled_dirs() -> list[Path]:
     """
     Where a bundled ffmpeg might be. One definition, shared with the engine
-    installer -- these used to disagree, which is how the payload ended up
-    split across two folders both called `tools`.
+    installer, so both look in the same `tools` folders.
     """
     from realme.core.paths import tools_search
     out: list[Path] = []
@@ -26,12 +25,9 @@ def _bundled_dirs() -> list[Path]:
 #: LibreOffice is the one that matters. On Windows it installs to Program
 #: Files and deliberately does not touch PATH, so `shutil.which("soffice")`
 #: returns nothing on a machine where LibreOffice is plainly installed and
-#: working. The symptom is the worst kind: RealMe says a program is missing
-#: that the user can see in their Start menu, and the suggested fix -- install
-#: it -- is something they have already done.
+#: working, and RealMe would otherwise report it missing.
 #:
-#: The launchers already search the usual folders for conda rather than
-#: demanding PATH be right. Same idea, same reason.
+#: The launchers search the usual folders for conda in the same way.
 KNOWN_LOCATIONS = {
     "soffice": [
         r"C:\Program Files\LibreOffice\program",
@@ -51,9 +47,8 @@ def find_binary(binary: str) -> str | None:
     folders an installer is known to use without announcing itself.
 
     Exposed so that `realme setup` and the render pipeline answer this question
-    the same way. They used to differ -- setup asked `shutil.which` and the
-    renderer asked this function -- which is how a check comes to report a
-    program missing that the thing it is checking for can find perfectly well.
+    the same way: a check must not report a program missing that the renderer
+    can find.
     """
     exe = binary + (".exe" if os.name == "nt" else "")
     for d in _bundled_dirs():
@@ -160,7 +155,7 @@ def stream_kinds(path: Path) -> set[str]:
 
 
 def write_wav(path: Path, pcm16_bytes: bytes, sample_rate: int, channels: int = 1) -> Path:
-    """Write a REAL RIFF wav. The v1 code wrote headerless PCM with a .wav name."""
+    """Write a REAL RIFF wav, header included, not bare PCM."""
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     with wave.open(str(path), "wb") as w:
@@ -209,18 +204,15 @@ def ensure_reference_wav(src: Path) -> Path:
     """
     A reference clip every engine can read, converting only if it has to.
 
-    This is the *one* place that question is answered. It was answered
-    separately before, and inconsistently: the profile converted on enrolment,
-    so the Studio was fine, while anything handed a path directly was not.
-    `realme bench --reference recording.m4a` fed the raw file to whichever
-    engine was asked for -- soundfile answered `Format not recognised`, and the
-    C++ engine, which parses RIFF headers by hand, answered `Not a RIFF file`.
-    Two different errors, one missing conversion, and neither error mentions
-    the format the file actually was.
+    This is the *one* place that question is answered, for the profile and
+    for anything handed a path directly (e.g. `realme bench --reference
+    recording.m4a`). Unconverted, soundfile reports `Format not recognised`
+    and the C++ engine, which parses RIFF headers by hand, reports `Not a RIFF
+    file`; neither names the format the file actually was.
 
-    It matters because an iPhone records .m4a and that is what a recording
-    session produces. The conversion is cached on the content hash, so a 40
-    minute session is converted once rather than once per utterance.
+    An iPhone records .m4a, so a recording session produces it. The
+    conversion is cached on the content hash, so a 40 minute session is
+    converted once rather than once per utterance.
     """
     src = Path(src)
     if src.suffix.lower() in {".wav", ".flac", ".ogg"}:
@@ -249,11 +241,9 @@ def to_reference_wav(src: Path, dst: Path) -> Path:
     """
     src, dst = Path(src), Path(dst)
     dst.parent.mkdir(parents=True, exist_ok=True)
-    # The file may already BE the destination. ffmpeg refuses that outright --
-    # "Output ... same as Input #0 - exiting" -- and the caller sees a stack
-    # trace for an operation that had nothing to do. Passing the stored copy
-    # back in is a reasonable thing to type, so it is a reasonable thing to
-    # handle.
+    # The file may already BE the destination (the stored copy passed back
+    # in). ffmpeg refuses that outright -- "Output ... same as Input #0 -
+    # exiting" -- so return it unchanged.
     try:
         if src.resolve() == dst.resolve() and dst.is_file():
             return dst
@@ -265,8 +255,7 @@ def to_reference_wav(src: Path, dst: Path) -> Path:
     if not dst.is_file() or dst.stat().st_size < 1024:
         raise MediaError(f"Converted {src.name} but the result is empty")
 
-    # The conversion must keep the recording's LENGTH, and until now nothing
-    # checked. ffmpeg exits 0 when it decodes part of a stream and gives up --
+    # The conversion must keep the recording's LENGTH. ffmpeg exits 0 when it decodes part of a stream and gives up --
     # a codec its build lacks, a container it half-understands -- so a minute
     # of speech can arrive as a few seconds with no error anywhere, and the
     # first sign is a reference clip that sounds truncated or an enrolment
@@ -308,8 +297,7 @@ def trim_reference(src: Path, seconds: float) -> Path:
     For an autoregressive engine the reference is a PROMPT, not a training set:
     it is prefilled into the context on every single call, so its length is paid
     again for every utterance in a lecture. Longer is therefore not simply
-    better, and the useful length is a question with an answer -- which is why
-    this exists, so the answer can be measured instead of assumed.
+    better; trimming lets the useful length be measured.
     """
     import hashlib
     src = Path(src)

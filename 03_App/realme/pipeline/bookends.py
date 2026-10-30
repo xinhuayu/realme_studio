@@ -1,16 +1,12 @@
 """
 The greeting a podcast opens with and the sign-off it closes on.
 
-An episode that starts mid-argument and stops mid-sentence does not sound like
-a podcast; it sounds like a recording that was trimmed wrong. The opening has
-work to do -- who is speaking, what the question is, who is answering it -- and
-the close has to tell the listener the thing is over rather than interrupted.
+The opening says who is speaking, what the question is and who is answering
+it; the close tells the listener the episode has ended.
 
-These are TEMPLATES, not model output, for two reasons. They say the same thing
-every episode, which is what makes a show recognisable; and they contain the
-only facts in the whole render that must be exactly right -- your name, and the
-topic as you typed it. A language model asked to write a greeting will
-sometimes rename your show.
+These are TEMPLATES, not model output: they say the same thing every episode,
+and they contain facts that must be exact -- the host's name and the topic as
+typed. A language model asked to write a greeting may alter them.
 
 They are ordinary turns, so they get the instructor's voice, the lexicon, the
 control markers and the pause rhythm like everything else. `[[pause]]` after
@@ -39,8 +35,7 @@ def _clean_topic(topic: str) -> str:
     """
     A topic typed as a question reads badly dropped into a sentence, and it
     already carries its own terminal punctuation -- so the template must not
-    add a second one. "...immortal time bias?." is the kind of thing that is
-    inaudible in text and unmistakable when spoken.
+    add a second one (e.g. "...immortal time bias?.").
     """
     t = " ".join(topic.split()).rstrip(" .")
     if t.endswith("?"):
@@ -68,8 +63,8 @@ def wrap(script, host: str, guest: str) -> None:
     """
     Add the bookends to a script, in place, at most once.
 
-    Idempotent because a dialogue resumes from `dialogue.json` on a re-run --
-    and a podcast that greets you twice is worse than one that never does.
+    Idempotent because a dialogue resumes from `dialogue.json` on a re-run,
+    which must not add a second greeting.
     """
     stances = {t.stance for t in script.turns}
     if "opening" in stances or "closing" in stances:

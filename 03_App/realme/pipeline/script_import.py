@@ -1,10 +1,10 @@
 """
 One script file for a whole deck.
 
-Adopted from real_voice_qwen3. Writing narration in your own editor and
-importing it beats typing into text boxes, and the strict 1..N validation is
-the part that matters: a script whose slide numbers skip or repeat would map
-silently onto the wrong slides, so it is refused instead.
+Adapted from real_voice_qwen3. Narration can be written in any editor and
+imported. Slide numbers are strictly validated as 1..N: a script whose slide
+numbers skip or repeat would map silently onto the wrong slides, so it is
+refused instead.
 
 Accepted labels, one per line:
 

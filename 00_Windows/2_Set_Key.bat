@@ -30,18 +30,18 @@ set /p OK="  OPENAI_API_KEY (platform.openai.com): "
 if not "!OK!"=="" "!R!" key OPENAI_API_KEY "!OK!"
 echo.
 echo  Optional - press Enter to skip.
-REM  LEAVE THIS BLANK if you ran step 3. Deliberately not pre-filled with the
-REM  legacy path: REALME_QWEN3_ROOT *overrides* the engine copied into
-REM  tools\qwen3, so setting it would pin RealMe to the old folder - and then
-REM  step 6 would delete that folder out from under it. It exists only for
-REM  someone who would rather point at an external engine than copy one in.
+REM  LEAVE THIS BLANK if you ran step 3. Not pre-filled: REALME_QWEN3_ROOT
+REM  *overrides* the engine copied into tools\qwen3, so pointing it at an
+REM  older engine folder pins RealMe there - and step 6 deletes such a folder
+REM  out from under it. It exists only for someone who would rather point at
+REM  an external engine than copy one in.
 set "QW="
 set /p QW="  Path to an external qwen3 folder (leave blank if you ran step 3): "
 REM  Explorer's "Copy as path" wraps the path in quotes. Removed with delayed
 REM  expansion, which happens after cmd has parsed the line, so a `)` or `&`
-REM  in the path is never seen by the parser. The old for /f "%%~A" idiom put
-REM  the quoted value inside a second pair of quotes, which UN-quoted the path
-REM  and let "C:\x (work)\qwen3" end the for-list at its `)`.
+REM  in the path is never seen by the parser. A for /f "%%~A" idiom puts the
+REM  quoted value inside a second pair of quotes, which UN-quotes the path
+REM  and lets "C:\x (work)\qwen3" end the for-list at its `)`.
 if defined QW set "QW=!QW:"=!"
 if defined QW if "!QW:~-1!"=="\" set "QW=!QW!."
 if not "!QW!"=="" "!R!" key REALME_QWEN3_ROOT "!QW!"

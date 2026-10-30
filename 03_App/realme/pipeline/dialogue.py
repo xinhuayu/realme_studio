@@ -2,9 +2,9 @@
 Podcast / debate build. Two voices, rendered turn by turn.
 
 Design note: Gemini's native TTS can do 2 speakers in a single call, but it
-cannot clone your voice -- so it can never play *you*. Rendering turn by turn
-with a per-speaker adapter is both more flexible and provider-agnostic: your
-cloned voice for the instructor, any other voice for the interlocutor.
+cannot clone a voice. Rendering turn by turn with a per-speaker adapter is
+provider-agnostic: the cloned voice for the instructor, any other voice for
+the interlocutor.
 """
 from __future__ import annotations
 import json
@@ -14,9 +14,8 @@ from realme.core.textio import read_text
 from realme.core.media import duration_of
 from realme.pipeline import compose
 
-#: Silence after each turn. 0.45 was tight enough that a conversation read as
-#: faster than it was: speakers stepping on each other's endings, with none of
-#: the beat a real exchange has before a reply. Overridable per run.
+#: Silence after each turn: the beat before a reply, so speakers do not step
+#: on each other's endings. Overridable per run.
 DEFAULT_TURN_GAP_S = 0.6
 
 
@@ -53,9 +52,8 @@ def build_dialogue(source: Path | None, topic: str, outdir: Path, writer,
     log(f"[2/4] Scripting {mode} via {writer.name}")
     script_path = work / "dialogue.json"
     # The saved script is reused only when it was written for THESE inputs.
-    # It used to be reused whenever the file existed, and the Studio names
-    # the project after the topic alone -- so the same topic with a different
-    # mode, turn count or source silently replayed the old script.
+    # The Studio names the project after the topic alone, so the same topic
+    # with a different mode, turn count or source must not replay it.
     import hashlib
     ask = hashlib.sha256(
         f"{topic}|{mode}|{turns}|{writer.name}|{getattr(writer, 'model', '')}|"
@@ -78,9 +76,8 @@ def build_dialogue(source: Path | None, topic: str, outdir: Path, writer,
         log(f"      {line}")
 
     # Name the speakers. The script writer labels them "Instructor" and
-    # "AI Interlocutor" -- slots, not names, and "AI Interlocutor" spoken aloud
-    # in a greeting reads as a stage direction. The host is you; the guest is
-    # its voice, which is the name a synthetic co-host actually has.
+    # "AI Interlocutor" -- roles, not names. The host is the user; the guest
+    # is named after its voice.
     host = host_name or "your host"
     guest = guest_name or _guest_name(script)
     for t in script.turns:
@@ -99,11 +96,9 @@ def length_report(script) -> list[str]:
     """
     How long the turns actually came out.
 
-    The prompt asks for three or four sentences. A prompt is a request, and a
-    model under a "be rigorous" instruction drifts long -- so the length is
-    measured and shown rather than assumed. If most turns are over the cap the
-    script is two alternating lectures again, and that is worth knowing before
-    nine minutes of rendering, not after.
+    The prompt asks for three or four sentences, but a model under a "be
+    rigorous" instruction drifts long -- so the length is measured and shown
+    before rendering rather than assumed.
     """
     from statistics import median
     from realme.adapters.script_writer import TURN_WORDS
@@ -126,9 +121,8 @@ def length_report(script) -> list[str]:
 def _spoken(turn) -> str:
     """The words, without the control markers.
 
-    The transcript is for reading. `[[pause:700]]` in the middle of a sentence
-    is an instruction to the engine, and printing it makes the transcript look
-    like a machine artefact rather than a record of what was said.
+    The transcript is for reading; `[[pause:700]]` and similar markers are
+    instructions to the engine and are left out.
     """
     try:
         from realme.text.controls import parse_controls
@@ -155,8 +149,7 @@ def _synthesize(script, outdir: Path, work: Path, voices: dict, log,
     lexicon = Lexicon()
     parts = []
     # `speak_segment` hands the adapter a path and expects it to be writable.
-    # Most adapters create the parent themselves; relying on that is how a
-    # caller works with one engine and fails with the next.
+    # Not every adapter creates the parent itself, so create it here.
     (work / "turns").mkdir(parents=True, exist_ok=True)
     log("[3/4] Synthesizing turns")
     for t in script.turns:

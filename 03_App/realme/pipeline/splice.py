@@ -4,8 +4,7 @@ Rebuilding a lecture video from an old one plus new material.
 The same-project path in `revise.py` needs nothing but the new deck, because
 the project folder still holds every per-slide video and the ledger that keys
 them. This module is for when it does not: the video was made on another
-machine, the project folder is gone, or the lecture was rendered before any of
-this existed.
+machine, the project folder is gone, or the lecture predates the ledger.
 
 What it needs, and why each:
 
@@ -20,22 +19,17 @@ boundary cannot use an exact hash -- a frame recovered from a compressed video
 never matches a freshly rasterised PNG bit for bit -- so comparison is
 perceptual.
 
-**What perceptual comparison can and cannot see.** Measured on a rendered
-1920x1080 slide, re-encoded at CRF 18 and compared with the original:
+**What perceptual comparison can and cannot see.** On a 1920x1080 slide
+re-encoded at CRF 18, re-encoding noise is about 0.015, one changed number
+on a dense slide about 0.04, and an entirely different slide about 126.
 
-    the same slide, re-encoded          0.015
-    one number changed on a dense slide 0.040
-    an entirely different slide       126
-
-A replaced figure, a new slide, a reordering: seen easily, by two orders of
-magnitude. A single corrected number on a text-heavy slide: 0.04 against a
-noise floor of 0.015, which is under three times the noise and not a margin
-anyone should trust across encoders and scaling.
+A replaced figure, a new slide or a reordering is seen easily, by two orders
+of magnitude. A single corrected number on a text-heavy slide is under three
+times the noise floor, which is not a reliable margin across encoders and
+scaling.
 
 So detection is tuned to catch substantial changes reliably and is NOT relied
-on for small edits. A slide can always be named explicitly -- the author knows
-which line they corrected, and asking is cheaper than a heuristic that is
-right most of the time.
+on for small edits. A slide can always be named explicitly by the author.
 
 `_chapters.txt` is deliberately not accepted as a timing source. It rounds to
 whole seconds because YouTube wants "12:34", and a second of error per cut
@@ -49,10 +43,9 @@ from pathlib import Path
 from realme.core.media import require, run, duration_of, MediaError
 from realme.core.textio import read_text
 
-#: Side of the grid a frame is reduced to, in colour. Larger grids were
-#: measured and do not help: the signal from an edited line of text stays near
-#: 0.04 whether the grid is 24 or 96, because the change is small relative to
-#: the whole slide either way.
+#: Side of the grid a frame is reduced to, in colour. Larger grids do not
+#: help: the signal from an edited line of text stays near 0.04 whether the
+#: grid is 24 or 96, because the change is small relative to the whole slide.
 THUMB = 32
 
 #: Mean absolute difference, 0-255, above which two slides are called
@@ -105,7 +98,7 @@ def thumb(png: Path) -> list[int]:
     """A tiny COLOUR fingerprint, via ffmpeg so there is no new dependency.
 
     Colour, not grayscale: a red title slide and a green one reduce to nearly
-    the same luma, and the first version of this called them identical.
+    the same luma.
     """
     import subprocess
     proc = subprocess.run(
@@ -130,11 +123,9 @@ def looks_same(a: list[int], b: list[int],
     """
     Same slide, allowing for compression and rescaling.
 
-    A plain mean absolute difference, deliberately. The first version
-    subtracted each image's mean first, reasoning that a rescaled slide shifts
-    every value slightly -- which is true, and which also erases the
-    difference between one flat colour and another. It reported a red slide
-    and a green slide as the same slide.
+    A plain mean absolute difference, deliberately. Subtracting each image's
+    mean first would absorb rescaling shifts but also erase the difference
+    between one flat colour and another, e.g. a red slide and a green one.
     """
     return difference(a, b) <= tolerance
 
@@ -144,7 +135,7 @@ def cut(video: Path, start_s: float, end_s: float, out: Path) -> Path:
 
     Re-encoded rather than stream-copied on purpose: a copy can only cut at a
     keyframe, so it silently moves the boundary to wherever the last one was
-    -- which is how a spliced lecture gains half of the previous slide.
+    and the part gains the tail of the previous slide.
     """
     out.parent.mkdir(parents=True, exist_ok=True)
     run([require("ffmpeg"), "-y", "-loglevel", "error",
@@ -164,7 +155,7 @@ def plan_from_video(video: Path, segments_json: Path, new_slides: list[Path],
     `also_rerecord` is the author's own list, in NEW slide numbers, and it is
     additive: perceptual comparison catches replaced figures and new slides
     reliably and small text edits not at all, so the person who made the edit
-    says so. Nothing here guesses on their behalf.
+    names those slides.
     """
     from realme.pipeline.revise import compare
     video, segments_json = Path(video), Path(segments_json)

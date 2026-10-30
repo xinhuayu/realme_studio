@@ -3,17 +3,15 @@ setlocal
 REM ===================================================================
 REM  How much text can Gemini TTS be given in ONE call?
 REM
-REM  Not what the API permits -- that is 8,192 input tokens and about
-REM  eight minutes of audio out, and it is not the number that matters.
-REM  What matters is the size at which the audio stops matching the text:
-REM  a sentence quietly dropped from the middle of a slide is a mistake
-REM  nobody hears until the lecture is published.
+REM  Not what the API permits (8,192 input tokens and about eight minutes
+REM  of audio out), but the size at which the audio stops matching the
+REM  text, e.g. a sentence silently dropped from the middle of a slide.
 REM
 REM  The probe synthesizes each sentence on its own, adds up the
 REM  durations, then synthesizes the same sentences together in one call
 REM  and compares. Short means text was dropped. Long means it stalled or
 REM  repeated. Every wav is kept so the two sizes that matter can be
-REM  listened to, because duration is a screen and listening is the proof.
+REM  listened to: duration flags a problem, listening confirms it.
 REM
 REM  It calls a paid API. It prints the estimated cost first -- about
 REM  twenty cents at current prices -- and the actual cost at the end.

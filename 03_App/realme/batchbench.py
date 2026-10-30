@@ -31,9 +31,9 @@ from pathlib import Path
 
 #: How much faster than one at a time a pass must be to be used at all.
 GAIN = 1.15
-#: A smaller pass within this of the fastest is taken instead of it. (A
-#: step-by-step rule -- each size 15% better than the one below -- stopped
-#: at 2 on the 8-bit model, where 4 was 8% faster still.)
+#: A smaller pass within this of the fastest is taken instead of it. Each
+#: size is compared with the fastest, not with the size below it, so a
+#: larger pass that is still clearly faster is not missed.
 NEAR = 0.06
 DEFAULT_SIZES = (1, 2, 4, 8)
 
@@ -175,7 +175,7 @@ def main_cli(sizes, sentences: int, outdir: Path, reference: Path | None,
     f = data_home() / BATCH_FILE
     try:
         saved = json.loads(f.read_text(encoding="utf-8"))
-        if "batch" in saved:                       # the first, flat format
+        if "batch" in saved:                       # older flat, single-model format
             saved = {saved.get("quant") or "f16": saved}
     except (OSError, ValueError):
         saved = {}

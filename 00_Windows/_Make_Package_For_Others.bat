@@ -14,13 +14,9 @@ REM  This is the one you send. 7_Make_Migration_Package.bat makes the
 REM  other one, which carries your voice and is for another machine of
 REM  yours.
 REM
-REM  `migrate --no-voice` refuses to carry your API key as well -- a
-REM  package for another person and a key in their hands are not two
-REM  decisions -- and after writing the archive it reads it back and
-REM  stops if any personal file is still inside. That check is why this
-REM  launcher does not need one of its own: "the flag was set" and "the
-REM  file is not in there" are different claims, and the command makes
-REM  the second.
+REM  `migrate --no-voice` leaves out your API key as well, and after
+REM  writing the archive it reads it back and stops if any personal file
+REM  is still inside. That is why this launcher has no check of its own.
 REM
 REM  verify_tree runs first, as it does before an update zip.
 REM

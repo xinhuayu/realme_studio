@@ -7,7 +7,7 @@ REM
 REM  For the free local clone (qwen3cpp) only. Gemini is one call at a
 REM  time whatever this says.
 REM
-REM  Starts one engine as the Studio does today, then two and three side
+REM  Starts one engine as the Studio does, then two and three side
 REM  by side, each with its own copy of the model (about 3-4 GB each),
 REM  and times the same sentences through every layout, twice. Loading
 REM  is reported separately and never counted as recording time.

@@ -1,9 +1,9 @@
 @echo off
 setlocal
 REM ===================================================================
-REM  Make the voice server: your cloned voice for other tools (Anim Studio,
-REM  or anything that can use OpenAI's text-to-speech), in a folder of its
-REM  own that runs without RealMe.
+REM  Make the voice server: your cloned voice for other tools (anything
+REM  that can use OpenAI's text-to-speech), in a folder of its own that
+REM  runs without RealMe.
 REM
 REM  Writes the folder BESIDE the RealMe folder:
 REM      ..\realme-qwen3-tts-server\
@@ -49,10 +49,9 @@ echo.
 echo  Port: 8800 unless you change it to what your tool expects, in
 echo      !OUT!\voice_server.json   ^(or start it with --port 5050^)
 echo  Start it:   !OUT!\server\start_server.bat   ^(needs Python 3.9+^)
-echo  Then, in Anim Studio: Setup - Other voices - A voice server:
-echo      address  http://127.0.0.1:8800   model  realme-qwen3-tts   voice  realme   no key
-echo  Any other tool: an OpenAI-compatible speech endpoint at
-echo      http://127.0.0.1:8800/v1/audio/speech   ^(with your port^)
+echo  Then, in the tool, add an OpenAI-compatible voice:
+echo      address  http://127.0.0.1:8800   ^(with your port^)
+echo      model    realme-qwen3-tts      voice  realme      no key
 echo  More voices: put name.wav recordings in !OUT!\voices and restart it.
 echo.
 pause

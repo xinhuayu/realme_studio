@@ -1,13 +1,12 @@
 """
 Writing a WAV with the standard library, for the experiment's own files.
 
-Reading goes through `verify.acoustic.read_wav`, which the project already
-owns. Writing had nowhere to go: the adapters each write their own output and
-none of them exposes a plain "save this array" helper. This is that, in twelve
-lines of `wave`, so the harness needs no audio library of its own.
+Reading goes through `verify.acoustic.read_wav`. The adapters each write
+their own output and none exposes a plain "save this array" helper, so this
+provides one with `wave`, and the harness needs no audio library of its own.
 
-PCM 16-bit mono, which is what every engine in this project already emits and
-what `read_wav` reads back without surprises.
+PCM 16-bit mono, which is what every engine emits and what `read_wav` reads
+back.
 """
 from __future__ import annotations
 import wave
@@ -22,7 +21,7 @@ def write_wav(path, signal, sr: int) -> Path:
     a = np.asarray(signal, dtype=np.float64).reshape(-1)
     # Clip rather than normalise. Normalising would quietly rescale a clip
     # that was rendered too loud, and loudness is one of the things being
-    # measured -- the instrument must not adjust what it is reading.
+    # measured.
     a = np.clip(a, -1.0, 1.0)
     pcm = (a * 32767.0).astype("<i2")
     with wave.open(str(path), "wb") as w:

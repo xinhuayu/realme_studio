@@ -50,12 +50,9 @@ def main() -> int:
           "winget install libreoffice", required=False),
         C("speech-rule-engine", False, "equations",
           "npm install -g speech-rule-engine", required=False),
-        # A pip-installable OPTIONAL extra. Without one of these in the list,
-        # deleting the required-only filter changes nothing and the check that
-        # guards it proves nothing.
-        # Equations are installed by default now, so the optional pip
-        # package that guards the required-only filter has to be a different
-        # one. A check that no longer tests anything is worse than no check.
+        # Equations are installed by default, so latex2mathml is required.
+        # The optional pip package that exercises the required-only filter
+        # is PyMuPDF in the fallback list below.
         C("python: latex2mathml", False, "converting equations to speech",
           "pip install latex2mathml", required=True),
     ]
@@ -101,15 +98,9 @@ def main() -> int:
         # and it is asserted structurally rather than by grepping the command
         # for "conda".
         #
-        # That grep failed on the one machine it was written to protect:
-        # cmd[0] is sys.executable, and on an Anaconda install that reads
-        # C:\Users\...\anaconda3\envs\realme\python.exe -- which contains
-        # the substring "conda". The check passed in a sandbox whose Python
-        # lives at /usr/bin/python3, and passed again when run by hand with a
-        # `python` that happened to resolve to a non-conda interpreter, so it
-        # only ever failed through the launcher that uses the right one.
-        # Grepping a string where the behaviour can be asserted is the fault
-        # this project's own audit flagged twice before.
+        # A grep would misfire: cmd[0] is sys.executable, and on an Anaconda
+        # install that path (...\anaconda3\envs\realme\python.exe) contains
+        # the substring "conda".
         check("only this interpreter's pip is invoked",
               Path(cmd[0]) == Path(sys.executable)
               and cmd[1:4] == ["-m", "pip", "install"],

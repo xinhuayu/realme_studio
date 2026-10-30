@@ -9,11 +9,8 @@ lexicon entry against.
 
 What this does NOT do is re-implement the render. Chunking, control markers,
 the lexicon, the speaker's measured pause rhythm and the utterance cache are
-the same functions the lecture uses, called the same way. That matters more
-here than anywhere else: the whole point of narrating a test transcript is to
-hear what a lecture will sound like, and a bench that renders differently from
-the renderer answers a question nobody asked. The bench had exactly that bug,
-twice -- its own splitter, and its own joining without pauses.
+the same functions the lecture uses, called the same way, so a narrated test
+transcript sounds exactly as it would in a lecture.
 """
 from __future__ import annotations
 from dataclasses import dataclass, field
@@ -46,7 +43,7 @@ class NarrationResult:
     #: counting captions is not a way to find a paragraph. `animate` needs the
     #: paragraph: one paragraph is one narrated cue, and the picture changes on
     #: the cue. Measured here, where the clock already exists, rather than
-    #: inferred downstream from a caption count that happened to match once.
+    #: inferred downstream from a caption count.
     paragraph_spans: list[tuple[float, float]] = field(default_factory=list)
 
 
@@ -54,9 +51,8 @@ def read_text(source: Path) -> str:
     """
     Plain text, Markdown, or Word.
 
-    Word is read by unzipping the document and pulling the text runs, because
-    requiring python-docx for the one job of reading paragraphs out of a file
-    the user already has is a dependency for nothing. A .docx is a zip with XML
+    Word is read by unzipping the document and pulling the text runs, to avoid
+    a python-docx dependency for reading paragraphs. A .docx is a zip with XML
     inside; `w:p` is a paragraph and `w:t` is a text run.
     """
     source = Path(source)
@@ -86,10 +82,8 @@ def to_paragraphs(text: str) -> list[str]:
     """
     Blank-line separated blocks, with Markdown headings dropped.
 
-    A heading is a visual signal, not something a narrator says. "## Methods"
-    read aloud as "hash hash Methods" is the kind of thing that survives all the
-    way into a finished recording because nobody listens to the first ten
-    seconds twice.
+    A heading is a visual signal, not something a narrator says; otherwise
+    "## Methods" would be read aloud as "hash hash Methods".
     """
     out: list[str] = []
     for block in text.replace("\r\n", "\n").split("\n\n"):
@@ -113,8 +107,7 @@ def work_dir(out_wav: Path) -> Path:
 
     A function rather than a convention, because anything that wants to add
     to that ledger -- hearing one sentence before a render, for instance --
-    has to find the same folder, and a second copy of the rule in another
-    module is a rule that goes stale without saying so.
+    has to find the same folder without duplicating the rule.
     """
     out_wav = Path(out_wav)
     return out_wav.parent / f"{out_wav.stem}_work"
@@ -142,8 +135,8 @@ def narrate(source: Path, out_wav: Path, tts, *, mode: str = "natural",
     re-renders; it never buys a take again.
 
     Because the hold is part of the clock, the reported spans, the captions
-    and the sync check all follow it, which is the whole reason it is here
-    rather than in the video layer.
+    and the sync check all follow it; that is why it is here rather than in
+    the video layer.
     """
     source, out_wav = Path(source), Path(out_wav)
     paragraphs = to_paragraphs(read_text(source))
@@ -152,14 +145,12 @@ def narrate(source: Path, out_wav: Path, tts, *, mode: str = "natural",
 
     work = work_dir(out_wav)
     # The audio directory, not just the work root: `speak_segment` hands the
-    # adapter a path and expects it to be writable. Most adapters happen to
-    # create the parent themselves, which is exactly why a caller that does not
-    # is a bug waiting for the one adapter that does not bother.
+    # adapter a path and expects it to be writable. Not every adapter creates
+    # the parent itself, so create it here.
     (work / "audio").mkdir(parents=True, exist_ok=True)
     # Keyed on text AND voice fingerprint, so editing one sentence re-renders
     # one sentence and changing the reference re-renders everything. Reading
-    # the same transcript again after a one-word fix is then seconds, not
-    # minutes -- which is the difference between iterating and not bothering.
+    # the same transcript again after a one-word fix takes seconds.
     ledger = RenderLedger(work / "ledger.json")
     lexicon = Lexicon()
 
@@ -185,9 +176,8 @@ def narrate(source: Path, out_wav: Path, tts, *, mode: str = "natural",
     clock = 0.0
     # A mistyped marker is silent in the audio -- `[[emphasise]]` is simply not
     # a control, so it survives normalization and gets read aloud, or dropped.
-    # Check before synthesising anything: the whole point of the markers is
-    # that you cannot hear the difference between one that worked and one that
-    # was ignored until you listen to the whole file.
+    # Check before synthesising anything, since an ignored marker is only
+    # noticed by listening to the whole file.
     from realme.text.controls import parse_controls
     unknown: list[str] = []
     for para in paragraphs:

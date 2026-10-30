@@ -1,30 +1,28 @@
 """
 Which release is installed, and is the zip in the folder still waiting?
 
-**Never by timestamp.** That is the whole point of this module.
+**Never by timestamp.**
 
-The update archive is built with every entry deliberately stamped 24 hours in
-the past. ZIP stores a naive local time with no timezone; this machine builds in
-UTC and Windows extracts as local, so without the backdating a user west of UTC
-gets files dated in the future -- which is exactly what made Ninja fail with
-"manifest still dirty after 100 tries" and cost an afternoon.
+The update archive is built with every entry stamped 24 hours in the past.
+ZIP stores a naive local time with no timezone; the build runs in UTC and
+Windows extracts as local, so without the backdating a user west of UTC gets
+files dated in the future, which makes Ninja fail with "manifest still dirty
+after 100 tries".
 
-That backdating is correct, and it makes mtimes useless for answering "has this
-update been applied?". The archive *file* carries the time it was copied onto
-the machine, which is now; the files it extracts carry a time a day ago. So the
-old check -- zip newer than cli.py -- was true immediately after a perfectly
-successful update, and would have gone on nagging forever. A warning that is
-always on is a warning nobody reads.
+The backdating makes mtimes useless for answering "has this update been
+applied?". The archive *file* carries the time it was copied onto the
+machine; the files it extracts carry a time a day ago. A "zip newer than
+cli.py" check would be true immediately after a successful update.
 
 So the question is answered by CONTENT. The packager hashes everything it is
 about to ship and writes that digest to `03_App/realme/BUILD_ID`, inside the
 archive and into the source tree together. Comparing the archive's copy of that
 one small file with the installed copy is exact, costs two reads, and does not
-care what any clock says.
+depend on any clock.
 
-For an archive built before stamping existed there is a fallback that is still
-timestamp-free: compare each entry's stored size against the file on disk. Sizes
-live in the zip's central directory, so nothing is decompressed.
+For an unstamped archive there is a fallback that is still timestamp-free:
+compare each entry's stored size against the file on disk. Sizes live in the
+zip's central directory, so nothing is decompressed.
 """
 from __future__ import annotations
 import hashlib
@@ -66,9 +64,8 @@ def guide_video_name(version: int = GUIDE_VERSION) -> str:
 
 def guide_video_sources(version: int = GUIDE_VERSION) -> tuple[str, ...]:
     """Where a render of that version leaves it. Several, because the guide
-    has been rendered from both a deck and a scenes module, and a release
-    should pick up whichever is there rather than making somebody copy a
-    file by hand and refusing when they forget."""
+    can be rendered from a deck or from a scenes module; a release picks up
+    whichever is there."""
     return tuple(p.format(v=int(version)) for p in _GUIDE_SOURCE_PATTERNS)
 
 
@@ -129,29 +126,15 @@ SHIP_FILES = (".gitignore", "README.md", "START_HERE.md", "HANDOVER.md",
               "LICENSE", "CITATION.cff",
               "realme.bat",
               # The narrated guide: the slides, the script they were read
-              # from, and the video itself. The README links to all three, and
-              # a link that only resolves on the machine it was written on is
-              # not a link. `shipped_files` walks the numbered folders; the
+              # from, and the video itself. The README links to all three, so
+              # all three ship. `shipped_files` walks the numbered folders; the
               # project root is this list alone.
-              #
-              # It replaces the older `RealMe_Introduction.pdf` and
-              # `test_slides.mp4` pair, which described a tool with one voice
-              # that ran only locally. Those files are still in the working
-              # tree and no longer travel.
-              # v2's deck and script stay: they are small, and they are what
-              # the "narrate an existing deck" walkthrough in the README is
-              # built from. Its rendered video does not -- two guide videos
-              # would put 45 MB in an update zip to say the same thing twice,
-              # and the README gives the one command that rebuilds it.
               GUIDE_DECK, GUIDE_NOTES, GUIDE_PPTX,
               GUIDE_VIDEO)
 
-# `_Archive` is deliberately absent. It holds the development history -- the
-# superseded architecture drafts, the design reviews, the working journal that
-# START_HERE.md was rewritten from. All of it is worth keeping and none of it
-# is worth sending: a colleague opening the package should find a tool, not a
-# record of how it came to be one. The underscore matches the convention in
-# `00_Windows`, where `_`-prefixed files are the ones nobody runs directly.
+# `_Archive` is absent: it holds development history, not the program. The
+# underscore matches the convention in `00_Windows`, where `_`-prefixed files
+# are not run directly.
 
 
 def _excluded(rel: Path) -> bool:
@@ -161,17 +144,17 @@ def _excluded(rel: Path) -> bool:
     `tools/` is the important one: ~3 GB of ffmpeg, model weights and a
     machine-specific compiled engine, downloaded once. An update that wrote
     there would destroy it, so it is excluded here and refused again by
-    0_Update.bat -- a convention plus a check, because the convention alone is
-    what conventions always are.
+    0_Update.bat.
     """
     parts = set(rel.parts)
+    # `_Private` and `_Archive` (development history and notes) are local only.
     if parts & {"tools", "__pycache__", ".git", "renders", "projects",
-                ".ruff_cache", ".pytest_cache", "realme.egg-info"}:
+                ".ruff_cache", ".pytest_cache", "realme.egg-info",
+                "_Private", "_Archive"}:
         return True
     if rel.suffix in {".pyc", ".zip"}:
         return True
-    # One machine's old engine path. Its own header says to delete it once
-    # the migration is done; until then it must not travel.
+    # A local migration helper for an older engine path; never shipped.
     if rel.name == "_legacy_qwen3.bat":
         return True
     if rel.name.endswith(".env") and rel.name != "example.env":
@@ -201,13 +184,10 @@ def _excluded(rel: Path) -> bool:
 def shipped_files(root: Path) -> list[Path]:
     """Every file in a release, as paths relative to the project root, sorted.
 
-    The BUILD_ID stamp is ALWAYS listed, whether or not it exists on disk yet.
-    It used to be listed only when found, so on a fresh tree the packager
-    took the file list, then wrote the stamp, and shipped a zip without it --
-    the first RealMe_Update.zip from any new checkout was unstamped, and
-    `update_pending` fell back to guessing by size. A release carries a stamp
-    by definition; the packager writes it before reading any bytes, and
-    anyone else reading the list must allow for it not existing yet.
+    The BUILD_ID stamp is ALWAYS listed, whether or not it exists on disk yet,
+    so a zip packed from a fresh tree still carries it. The packager writes it
+    before reading any bytes; anyone else reading the list must allow for it
+    not existing yet.
     """
     out: list[Path] = []
     for d in SHIP_DIRS:
@@ -270,8 +250,8 @@ def _differs_by_size(zip_path: Path, root: Path) -> bool:
     Fallback for an unstamped archive: does any entry differ in size on disk?
 
     Reads only the central directory. Same-size-but-different-content slips
-    through, which is why this is the fallback and not the check -- but it can
-    never be fooled by a clock, and that is the failure being fixed.
+    through, which is why this is the fallback and not the check; it does not
+    depend on any clock.
     """
     try:
         with zipfile.ZipFile(zip_path) as z:
@@ -293,9 +273,8 @@ def update_pending(root: Path) -> tuple[bool, str]:
     """
     Is RealMe_Update.zip in `root` a release other than the one installed?
 
-    Returns (pending, why). `why` is short enough to print and specific enough
-    to act on -- "no archive present" and "already applied" are different
-    answers to "why am I not being told to update", and both are worth seeing.
+    Returns (pending, why). `why` is short enough to print and says which
+    case applies, e.g. "no archive present" or "already applied".
     """
     zip_path = root / "RealMe_Update.zip"
     if not zip_path.is_file():

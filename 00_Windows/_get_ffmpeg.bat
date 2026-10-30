@@ -4,15 +4,15 @@ REM  Downloads a self-contained ffmpeg into  tools\ffmpeg\
 REM
 REM  A HELPER, not a step. 1_Install.bat calls it. It is the ONLY place that
 REM  decides whether ffmpeg needs fetching - callers must not add their own
-REM  "is it already there" check, because two guards testing different files is
-REM  how you get a half-installed toolchain reported as complete.
+REM  "is it already there" check, because two guards testing different files
+REM  can report a half-installed toolchain as complete.
 REM
 REM  Pass any argument to suppress the pause when calling it from a script.
 REM
 REM  Why not conda: installing ffmpeg from conda-forge into an Anaconda
 REM  environment mixes channels, and on Windows that reliably produces DLL
-REM  errors with names like "gdk_pixbuf-2.0-0.dll not found" - nothing to do
-REM  with video, everything to do with conflicting dependency trees.
+REM  errors with names like "gdk_pixbuf-2.0-0.dll not found", caused by
+REM  conflicting dependency trees.
 REM
 REM  A static build has no such dependencies. It is one folder, it is not on
 REM  the system PATH, and it is found by RealMe automatically.

@@ -4,23 +4,22 @@ Installing the voice-conversion stage.
 **What this is for.** Qwen3 is a codec language model: it predicts audio tokens
 one at a time, so a 50-minute lecture costs about 5 hours of compute. Voice
 conversion splits the job in two. A fast non-autoregressive engine (piper, real
-time factor 0.04-0.10) says the words; a converter repaints the timbre. Measured
-end to end here: **RTF 0.42**, so the same lecture takes about 21 minutes.
+time factor 0.04-0.10) says the words; a converter repaints the timbre. End to
+end this runs at about **RTF 0.42**, so the same lecture takes about 21 minutes.
 
-**Two backends, deliberately.**
+**Two backends.**
 
-`knnvc` is the measured one. It is non-parametric: WavLM turns both your
+`knnvc` is the recommended one. It is non-parametric: WavLM turns both your
 recording and the draft audio into frame features, each draft frame is replaced
 by the mean of its nearest neighbours *in your own recording*, and a HiFiGAN
 vocoder turns the result back into sound. Nothing is trained, nothing is
-embedded -- the output is literally assembled out of your acoustics. It wants
+embedded -- the output is assembled out of your own recording. It wants
 5-10 minutes of your voice and gets better the more it has.
 
 `openvoice` extracts one global "tone colour" embedding from a few seconds and
 conditions a flow converter on it. Much lighter (30 MB against 1.3 GB) and
-needs far less reference audio. **It has not been measured here** -- this
-container cannot reach the host its weights live on -- so it ships as a second
-option for you to bench, not as a recommendation.
+needs far less reference audio. It is a second option to bench, not the
+recommended one.
 
 Both download weights only when they are missing, and a half-finished download
 resumes rather than starting over.
@@ -46,7 +45,7 @@ KNNVC_FILES = {
 
 # The converter source is vendored (see engines/ov/NOTICE.md); only weights are
 # fetched. Upstream's S3 zip returns 404, and `pip install git+...` needs git on
-# PATH, which Windows does not have -- both reported from real runs.
+# PATH, which Windows does not have.
 OPENVOICE_HF_REPO = "myshell-ai/OpenVoiceV2"
 OPENVOICE_FILES = ("converter/config.json", "converter/checkpoint.pth")
 
@@ -92,8 +91,7 @@ def openvoice_status(home: Path | None = None) -> dict:
     """
     Two layouts are accepted, because two ways of getting the weights produce
     two shapes: `converter/…` from the Hugging Face repo, and
-    `checkpoints_v2/converter/…` from anyone who unpacked the old zip by hand.
-    Searching both costs two stat calls and saves a support conversation.
+    `checkpoints_v2/converter/…` from the release zip unpacked by hand.
     """
     home = Path(home) if home else vc_home()
     d = home / "openvoice"
@@ -120,7 +118,7 @@ def openvoice_status(home: Path | None = None) -> dict:
 
 def _download(url: str, dest: Path, expected: int = 0, log=print) -> bool:
     """
-    Resumable download. A 1.3 GB file over a hotel connection deserves it.
+    Resumable download, for weight files up to 1.3 GB.
 
     Writes to `<dest>.part` and renames on success, so an interrupted run can
     never leave a truncated file that looks installed.
@@ -165,15 +163,14 @@ def install_knnvc(home: Path | None = None, log=print) -> dict:
         log("  kNN-VC already installed - skipping")
         return st
     if not st["torch"]:
-        # TWO commands, not one, and this is not a style choice.
+        # TWO commands, not one.
         #
         # `--index-url` REPLACES PyPI rather than adding to it, and PyTorch's
         # CPU index carries only torch packages. Asking for soundfile in the
         # same command gets "No matching distribution found for soundfile" --
         # and because pip resolves everything before installing anything, that
         # failure takes torch and torchaudio down with it and nothing at all
-        # gets installed. Reported from a real run, where it looked like a
-        # missing package rather than a poisoned index.
+        # gets installed.
         log("  installing torch and torchaudio (CPU build, ~1 GB)")
         subprocess.run([sys.executable, "-m", "pip", "install", "--quiet",
                         "torch", "torchaudio",

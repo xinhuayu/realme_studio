@@ -2,7 +2,7 @@
 """
 A video inserted between a lecture's slides, remembered by the lecture.
 
-The test plays the part of Anim Studio: a short clip at a different size and
+The test plays the part of another video tool: a short clip at a different size and
 frame rate, with no sound and a caption file beside it, inserted after slide
 2 of a three-slide lecture. Then it checks what a viewer and the rest of
 RealMe would notice if it were wrong:
@@ -10,12 +10,13 @@ RealMe would notice if it were wrong:
   * the clip is in the video, in its place, at the lecture's size, with sound;
   * the captions, chapters and cut list all move by its length, and its own
     caption is carried in;
-  * the duration check knows about it (this is the check that failed when a
-    video's contents and the script disagreed);
+  * the duration check knows about it, so the video's contents and the
+    script agree;
   * splitting at a slide keeps it with the part it follows;
   * taking it out or putting it in again re-joins the last render without
     recording a word;
-  * and the Animate tab it replaces is gone, with its code archived, not lost.
+  * and there is no Animate tab; `realme setup` moves the retired animation
+    code of an older install into _Archive intact.
 """
 from __future__ import annotations
 import contextlib, io, json, math, os, struct, subprocess, sys, tempfile, wave
@@ -74,7 +75,7 @@ class Stub:
 
 
 def make_clip(path: Path) -> Path:
-    """What Anim Studio might hand over: another size, another rate, silent."""
+    """What another tool might hand over: another size, another rate, silent."""
     from realme.core.media import require
     subprocess.run([require("ffmpeg"), "-y", "-loglevel", "error", "-f", "lavfi",
                     "-i", f"testsrc=size=640x480:rate=24:duration={CLIP_S}",
@@ -132,7 +133,7 @@ def main() -> int:
     check(a["report"]["verdict"].startswith("PASS"), "the lecture renders",
           a["report"]["verdict"])
 
-    print("\nan Anim Studio clip after slide 2")
+    print("\nan animated clip after slide 2")
     clip = make_clip(WORK / "confounding.mp4")
     item = INS.add(proj, clip, 2, title="Confounding, animated")
     check((proj / item.file).is_file() and bool(item.captions),
@@ -371,7 +372,7 @@ def parallel_videos():
 
 
 def regressions(deck, proj, clip, eng, quiet, name, base):
-    """Faults found in review, each pinned by the smallest check that shows it."""
+    """Edge cases, each pinned by the smallest check that shows it."""
     import shutil
     from realme.core.ledger import RenderLedger
     from realme.core.media import (MediaError, concat_line, duration_of,
@@ -539,7 +540,7 @@ def regressions(deck, proj, clip, eng, quiet, name, base):
         msg = ""
     except MediaError as e:
         msg = str(e)
-    except Exception as e:                    # the crash this replaced
+    except Exception as e:                    # anything else is a crash
         msg = f"CRASH {type(e).__name__}: {e}"
     check("Render the lecture again" in msg and "removed" in msg
           and "edited" in msg,

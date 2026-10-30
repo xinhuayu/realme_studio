@@ -50,11 +50,9 @@ main{max-width:1180px;margin:0 auto;padding:24px 20px 80px;display:grid;
   display:flex;flex-direction:column;gap:14px;margin-bottom:18px}
 h2{margin:0;font-size:1.1rem;letter-spacing:-.01em}
 h3{margin:0;font-size:.95rem}
-/* 66ch is the rule for a page of prose. These are two- and three-line notes
-   sitting under a full-width panel, and the cap left them ending halfway
-   across with a column of empty space beside every one. They now run the width
-   of the controls they explain; the slightly looser line height keeps the
-   longer measure readable. */
+/* No 66ch prose cap: these are two- and three-line notes under a full-width
+   panel, so they run the width of the controls they explain. The slightly
+   looser line height keeps the longer measure readable. */
 .hint{font-size:.85rem;line-height:1.55;color:var(--ink3);margin:0;max-width:none}
 label{display:flex;flex-direction:column;gap:5px;font-size:.82rem;font-weight:600;color:var(--ink2)}
 input,select,textarea{font:inherit;background:var(--bg);color:var(--ink);
@@ -128,10 +126,9 @@ table.lex button{font-size:.78rem;padding:2px 8px}
 .rev-edited{background:#FEF3C7;color:#92400E}
 .rev-moved{background:#E8EEFB;color:#1E3A8A}
 .rev-same{background:var(--panel2);color:var(--ink3)}
-/* Shown on EVERY slide, ticked and disabled where there is nothing to keep.
-   It used to be omitted entirely for those, which reads as a missing control
-   rather than as an answered question -- and the answer ("this one has to be
-   recorded, there is no earlier take") is worth saying. */
+/* Shown on EVERY slide, ticked and disabled where there is nothing to keep,
+   so that slide still answers the question ("this one has to be recorded,
+   there is no earlier take") rather than looking like a missing control. */
 .redo-off{opacity:.55;cursor:default}
 .redo{display:flex;align-items:center;gap:6px;margin-top:6px;cursor:pointer;
   font-size:.72rem;color:var(--ink2);font-weight:600}
@@ -928,7 +925,7 @@ Consider a cohort where 15.3 percent received the intervention…</pre>
           of the lecture's length (100 minutes in 30–40): slide videos are made
           while the audio comes back, and two sentences are requested at once.
           With the free local clone, about real time on a 6-core
-          computer once the engine is rebuilt (the 8-bit model, several
+          computer (the 8-bit model, several
           sentences per pass and the faster vocoder, all set in Twin Setup) —
           an hour of lecture in about an hour — and longer on a
           smaller laptop. It runs unattended.</li>
@@ -1144,8 +1141,8 @@ Consider a cohort where 15.3 percent received the intervention…</pre>
           <p class="hint" style="margin-top:8px">Adjust, hear, adjust again.
             Nothing is committed until you press <strong>Save this
             voice</strong> below — and <strong>Original</strong> plays your
-            untouched recording, which is the only honest reference for whether
-            a change helped.</p>
+            untouched recording, the reference for whether a change
+            helped.</p>
         </details>
 
         <div id="vplaying" class="playing hidden"></div>
@@ -1665,13 +1662,9 @@ function tab(n){
 }
 /* ------------------------------------------------------------------ audio
  *
- * ONE audio element for the whole page.
- *
- * Every play used to be `new Audio(url).play()` -- a fresh object, no handle
- * kept. Nothing could stop it, and pressing a second button layered a second
- * voice over the first. For a tuning loop that is not a small annoyance: the
- * whole point is to hear one version, judge it, change something, hear it
- * again, and you cannot judge two takes playing at once.
+ * ONE audio element for the whole page, kept so it can be stopped: a new
+ * play stops the previous one, and two takes never play over each other.
+ * Tuning means hearing one version, changing something, and hearing it again.
  */
 const PLAYER = {
   el: null,
@@ -1848,13 +1841,12 @@ async function boot(){
   const missBin = Object.entries(d.binaries).filter(([,v])=>!v).map(([k])=>k);
   pills.push(missBin.length ? `<span class="pill bad">missing: ${missBin.join(', ')}</span>`
                             : `<span class="pill ok">media tools ready</span>`);
-  // Say what to do, not just that something is wrong. "no gemini key" with no
-  // next step is where people get stuck -- especially since the .env lives in
-  // the DATA folder, which is not the project folder and has a similar name.
+  // Say what to do, not just that something is wrong. The .env lives in the
+  // DATA folder, which is not the project folder and has a similar name.
   pills.push(d.writers.gemini.ok ? `<span class="pill ok">gemini key found</span>`
                                  : `<span class="pill warn">no gemini key — run 2_Set_Key.bat</span>`);
-  // Three distinct states, because "cloning: qwen3cpp" while it is actually
-  // speaking in the default speaker is a lie the pill should not tell.
+  // Three distinct states, so the pill never says "cloning: qwen3cpp" while
+  // the engine is speaking in the default speaker.
   const yours   = Object.entries(d.voices).filter(([,v])=>v.ok && v.cloning_you).map(([k])=>k);
   const capable = Object.entries(d.voices).filter(([,v])=>v.ok && v.clone).map(([k])=>k);
   const lectureVoice = String(((PROFILE||{}).adapters||{}).tts||'');
@@ -1871,8 +1863,8 @@ async function boot(){
     // offered in the tooltip rather than as the thing to do.
     pills.push(`<span class="pill warn" title="Or the free local clone, qwen3cpp (00_Windows\\3_Get_Voice_Engine.bat builds it). Or use the draft voices: Twin Setup → Voice for lectures">no cloned voice yet — Twin Setup → Your voice → Gemini</span>`);
   // The engine loads in the background from the moment the Studio starts, so
-  // the first Preview does not pay for it. Say so while it happens: a page
-  // that looks idle during a 30-second model load is how "it is slow" starts.
+  // the first Preview does not pay for it. Say so while it happens, so a
+  // 30-second model load does not look like an idle page.
   pills.push(`<span class="pill" id="warm-pill"></span>`);
   $('pills').innerHTML = pills.join('');
   paintWarm(d.engine_warm || {state: 'idle'});
@@ -1885,8 +1877,8 @@ async function boot(){
   WRITER_STATUS = d.writers || {};
   paintKeynote();
   // The interlocutor gets one entry PER DRAFT VOICE, not one for "piper".
-  // "piper" alone cannot express "the female one", which is the whole
-  // question when the instructor is a cloned male voice.
+  // "piper" alone cannot express "the female one", which matters when the
+  // instructor is a cloned male voice.
   let DRAFT = [], DRAFT_WHERE = null;
   try{
     DRAFT_WHERE = await (await fetch('/api/voices/draft')).json();
@@ -1902,9 +1894,8 @@ async function boot(){
   }).join('');
   $('dguest').innerHTML = guestOpts;
   // The lecture's own voice switch: the cloning engines first, then each
-  // draft voice by name. A draft render is the whole point of having a draft
-  // voice, and until now the lecture page offered no way to ask for one --
-  // the only route was the command line.
+  // draft voice by name, so a draft render can be asked for here as well as
+  // from the command line.
   const clones = Object.entries(d.voices)
     .filter(([k, v]) => v.clone && !v.placeholder)
     .map(([k, v]) => engineOption(k, v, lectureVoice));
@@ -1917,9 +1908,8 @@ async function boot(){
   // Narration gets the same per-voice list: picking "the female draft voice"
   // is as reasonable here as it is for an interlocutor.
   // First, and chosen by default: "your voice", sent blank, which the server
-  // reads as the profile's voice (Gemini unless changed in Twin Setup).
-  // Pre-selecting the first engine in the list read every text in whatever
-  // happened to sort first.
+  // reads as the profile's voice (Gemini unless changed in Twin Setup),
+  // rather than whichever engine sorts first in the list.
   $('ntts').innerHTML = (lectureVoice.startsWith('piper')
       ? `<option value="">Lecture voice from Twin Setup (profile default — ${
           esc(voiceLabel(lectureVoice))})</option>`
@@ -1987,8 +1977,8 @@ async function boot(){
   }
   renderModeChanged();
   $('ntts').value = '';
-  // A saved plain "piper" no longer matches any option value, so fall back to
-  // the first enabled one rather than leaving the select blank.
+  // An older saved value of plain "piper" matches no option value, so fall
+  // back to the first enabled one rather than leaving the select blank.
   $('dguest').value=PROFILE.adapters.guest_tts;
   if(!$('dguest').value){
     const first = [...$('dguest').options].find(o=>!o.disabled);
@@ -2203,10 +2193,7 @@ async function loadProjects(){
 
 /* ------------------------------------------------------------- page shape
  *
- * The Studio used to be every control at once, top to bottom: four ways to
- * start a lecture stacked above the editor, the editor's slides above its
- * Render button, and each step's explanation spelled out in full. What is
- * shown now is what the moment needs:
+ * The Studio shows what the moment needs, not every control at once:
  *
  *   - four cards to start from, and only the chosen one's form;
  *   - once a lecture is open, just that lecture: a slide list on the left to
@@ -2215,7 +2202,7 @@ async function loadProjects(){
  *   - explanations behind "More about this", not in the way;
  *   - the Activity log only while something is running, or when asked for.
  *
- * Every control keeps its id, so nothing that drives the page changed. */
+ * Every control has a stable id, which is what the scripts drive. */
 let START_CHOSEN = false;
 function chooseStart(kind, guess){
   if(!guess) START_CHOSEN = true;
@@ -2509,8 +2496,8 @@ async function loadEditor(){
   const m = r.manifest;
   // Declared before the slide list is built, not after it. `const` in the same
   // function is in the temporal dead zone until its line runs, so computing
-  // this below the template that reads it threw on every load and left an
-  // empty editor.
+  // this below the template that reads it would throw and leave an empty
+  // editor.
   const notes = {};
   ((r.plan && r.plan.changes) || []).forEach(c=>{ if(c.note) notes[c.slide] = c.note; });
   $('segs').innerHTML = m.segments.map((s,i)=>`
@@ -2562,9 +2549,8 @@ async function loadEditor(){
   enterEditor(m);
   PENDING = !!r.pending;
   $('pendbar').classList.toggle('hidden', !PENDING);
-  // What Render will replace. Re-recording overwrites in place, so the only
-  // honest thing is to name the file and its date before the button is
-  // pressed rather than after.
+  // What Render will replace. Re-recording overwrites in place, so name the
+  // file and its date before the button is pressed.
   const had = r.existing || [];
   $('overwrite').innerHTML = had.length
     ? 'Rendering replaces ' + had.map(f =>
@@ -2641,8 +2627,7 @@ async function hear(i){
 
 function lectureKv(rep){
   // What it took and what it cost, beside what it produced. A render is
-  // minutes or hours and cents or nothing depending on the engine, and
-  // until now the only place either number appeared was the scrolling log.
+  // minutes or hours and cents or nothing depending on the engine.
   const rows = [
     ['Duration', `${rep.actual_duration_s}s of video`],
     ['Drift', `${rep.drift_s >= 0 ? '+' : ''}${rep.drift_s}s`],
@@ -2694,8 +2679,7 @@ function tookLine(rep){
   return bits.join(' · ');
 }
 function clock(seconds){
-  // Seconds under a minute, minutes under an hour, h/m above. "7194s" is a
-  // number nobody converts in their head.
+  // Seconds under a minute, minutes under an hour, h/m above.
   const t = Math.round(seconds);
   if(t < 60) return `${t}s`;
   if(t < 3600) return `${Math.floor(t / 60)}m ${String(t % 60).padStart(2, '0')}s`;
@@ -2782,14 +2766,10 @@ async function discardRevision(){
 // What an engine means for the person about to press the button, in one
 // place for all three pages.
 //
-// Say it on the page, not only in the dropdown: someone who has spent an hour
-// editing a script is not reading the option text again. Three branches,
-// because the engines differ in the two things worth knowing beforehand —
-// how long it takes and what it costs. The single sentence this replaced
-// ("rendered on the CPU at three to five minutes per minute of audio") was
-// written when the only clone was the local one, and was simply untrue of a
-// hosted render — and the Narrate and Podcast pages, which offer the same
-// engines, said nothing at all.
+// Said on the page, not only in the dropdown, since the option text is not
+// read again before pressing Render. Three branches, because the engines
+// differ in the two things worth knowing beforehand — how long it takes and
+// what it costs.
 //
 // `what` names the thing being spoken, since the pages make different things.
 function engineLead(value){
@@ -2811,8 +2791,8 @@ function engineNote(value, what, lead){
       + `${what} so you can check the words and the pacing — minutes rather `
       + 'than an hour, and nothing to pay.';
   if(v.startsWith('gemini')){
-    // Counted, not a balance. A denominator here was wrong within a day:
-    // "100 on Tier 1" came from one refusal, and the account moved to Tier 2.
+    // Counted, not a balance: the daily allowance depends on the account's
+    // tier, which can change, so no denominator is shown.
     const made = GEM.calls_today || 0;
     let note = head + 'Minutes rather than '
       + 'hours, at about 1.7 cents a minute of audio. The text is sent to '
@@ -2831,13 +2811,12 @@ function engineNote(value, what, lead){
     return note;
   }
   if(!v) return '';
-  // One figure, the same one the Help tab and START_HERE give: measured
-  // about real time (1.07) on a 6-core machine with the rebuilt engine:
-  // 8-bit model, four per pass, faster vocoder (October 2026). Two numbers for one fact is
-  // how a plan goes wrong by half a day.
+  // One figure, the same one the Help tab and START_HERE give: about real
+  // time (1.07) on a 6-core machine with the 8-bit model, four per pass and
+  // the faster vocoder.
   return head + 'Nothing leaves it '
     + 'and there is nothing to pay, at about real time on a 6-core '
-    + 'computer once the engine is rebuilt (longer on a smaller laptop) — so '
+    + 'computer (longer on a smaller laptop) — so '
     + 'an hour of lecture is about an hour of compute. It can be left running.';
 }
 
@@ -3113,8 +3092,8 @@ async function makeNarration(){
     $('narr-audio').src = audio;
     $('narr-files').innerHTML = Object.values(j.result.files)
       .map(n=>`<a href="/api/files/${encodeURIComponent(pid)}/${encodeURIComponent(n)}">${esc(n)}</a>`).join('');
-    // The lint is the reason to run this at all -- a mispronounced term is the
-    // single most common thing wrong with a finished recording.
+    // The lint is the main result here: a mispronounced term is the most
+    // common fault in a finished recording.
     $('narr-warn').textContent = rep.warnings.length
       ? 'Worth checking:\n  ' + rep.warnings.join('\n  ')
         + '\n\nFix a word under Tools → Pronunciations, then run again — only changed lines are recorded again.'
@@ -3234,7 +3213,7 @@ async function loadLexicon(){
     }).join('');
     t.innerHTML = '<tr><th>Term</th><th>Pronunciation</th><th></th></tr>' + rows;
     // Where the file is, and how many are yours. Only yours survive an
-    // update, and that is worth saying on the page rather than in a guide.
+    // update, so the page says so.
     $('lx-where').textContent =
       `${r.mine} of your own, saved in ${r.path}` +
       (r.exists ? '' : ' (not created yet)') +
@@ -3319,13 +3298,11 @@ async function saveLocalClone(which){
 }
 
 async function loadDraftVoices(){
-  // A switch that offers a voice which is not on disk is worse than no switch,
-  // so an uninstalled one is listed and disabled rather than quietly omitted --
-  // otherwise "where did the other voice go" has no answer on screen.
+  // A voice that is not on disk is listed and disabled rather than omitted,
+  // so the switch never offers it and the screen still shows where it went.
   //
-  // And when one IS missing, say which folder was searched. "Not installed"
-  // about a voice the user can see on disk is a claim about a path, and until
-  // the path was printed there was nothing to check it against.
+  // And when one IS missing, say which folder was searched, so "Not
+  // installed" can be checked against the path.
   try{
     const r = await (await fetch('/api/voices/draft')).json();
     $('pdraft').innerHTML = r.voices.map(v =>
@@ -3381,8 +3358,8 @@ async function saveProfile(){
   setTimeout(()=>$('psaved').textContent='', 2500);
   boot();
 }
-// Untouched by default. The tuning is all still here -- a take that
-// needs help can have it -- but a clean recording is left alone.
+// Untouched by default: a clean recording is left alone, and a take that
+// needs help can be tuned.
 let VPRESET = 'off';
 let VCTRL = null, VTUNE = {};
 
@@ -3531,14 +3508,13 @@ async function gemLoad(){
        : (GEM.max_chars === 0 ? " (the pipeline's own)" : '')));
   bits.push(GEM.rate_match ? `pace retimed by ${GEM.rate_match} (measured)`
             : 'pace as cloned');
-  // One chunk is one request, and the allowance is daily. Worth seeing
-  // before pressing render rather than at slide nine of thirteen.
+  // One chunk is one request, and the allowance is daily, so the count is
+  // shown before Render is pressed.
   bits.push(`${GEM.calls_today||0} requests today`
     + (GEM.calls_exhausted_at ? ` (allowance gone at ${GEM.calls_exhausted_at})` : ''));
   $('gem-detail').textContent = bits.join(' · ');
-  // A correction that is on file but not being applied has to say so here.
-  // The badge used to read the stored number whether or not any render used
-  // it, which is how a 1.25 nobody measured looked like a setting.
+  // A correction that is on file but not being applied has to say so here,
+  // so the badge never shows a stored number as if renders used it.
   const warn = $('gem-rate-note');
   if(warn){ warn.textContent = GEM.rate_note || ''; warn.style.display = GEM.rate_note ? '' : 'none'; }
   // The Lecture tab's note quotes the request count, and this is when the

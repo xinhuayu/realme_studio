@@ -37,11 +37,9 @@ class JobRunner:
     """
     Jobs survive an app restart.
 
-    A render is minutes long and a laptop lid closes. Losing the record of what
-    finished -- and its verification report -- because the process restarted is
-    a bad experience for something that advertises crash resume everywhere else.
-    The heavy artifacts were always recoverable via the ledger; now the job
-    history is too.
+    The job history, including each verification report, is saved to
+    `state_path` so a restarted process still shows what finished. Rendered
+    segments are recovered separately, via the ledger.
     """
 
     def __init__(self, state_path=None) -> None:
@@ -75,8 +73,8 @@ class JobRunner:
         if not self.state_path:
             return
         # The worker thread and the submitting thread both save; on Windows
-        # the loser of that race got PermissionError on the open file, and
-        # the `except` below hid it. One writer at a time, via a temp file.
+        # concurrent writes raise PermissionError on the open file. One
+        # writer at a time, via a temp file.
         with self._lock:
             try:
                 self.state_path.parent.mkdir(parents=True, exist_ok=True)

@@ -45,7 +45,7 @@ for the same voice and language are recorded in the same pass.
 The engine's speed switches are turned on unless set in the environment
 already: QWEN3_TTS_FAST_SNAKE=1 and QWEN3_TTS_VOCODER_F32=1 (with its longest
 sentence chosen by the machine's memory), and QWEN3_TTS_THREADS. --exact
-leaves them off, for the original engine's numbers.
+leaves them off, for upstream's numbers.
 """
 from __future__ import annotations
 

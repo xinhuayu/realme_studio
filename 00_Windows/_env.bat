@@ -16,9 +16,8 @@ REM  Sets REALME_ENV. Override it to keep the environment elsewhere.
 REM
 REM  Also sets REALME_TOOLS, the one folder holding the installed payload:
 REM  ffmpeg, the voice engine venv, the model weights, the draft voice. Pinning
-REM  it here rather than letting Python infer it from where the package lives is
-REM  what stops ffmpeg and the engine ending up in two different tools\ folders,
-REM  which is exactly what happened before. Every launcher calls this file, so
+REM  it here rather than letting Python infer it from where the package lives
+REM  keeps ffmpeg and the engine in one tools\ folder. Every launcher calls this file, so
 REM  they all agree. An existing REALME_TOOLS wins, and an engine already
 REM  installed somewhere else is still found - RealMe searches, and only writes
 REM  to this one.
@@ -68,9 +67,9 @@ goto :eof
 REM  The same directories `conda activate` prepends. Library\bin is where
 REM  conda-forge's ffmpeg.exe lands, which is what makes ffmpeg work here
 REM  without a separate system-wide install.
-REM  Prepend ONCE per window. The realme wrapper in the project root calls this on every command, and an
-REM  unconditional prepend grew PATH by ~300 characters each time until cmd's
-REM  8191-character line limit cut it off a few dozen commands in.
+REM  Prepend ONCE per window. The realme wrapper in the project root calls this
+REM  on every command, and each prepend adds ~300 characters; repeated, PATH
+REM  soon passes cmd's 8191-character line limit and is cut off.
 if defined REALME_PATH_SET if "%REALME_PATH_SET%"=="%REALME_ENV%" goto :setexe
 set "PATH=%REALME_ENV%;%REALME_ENV%\Library\mingw-w64\bin;%REALME_ENV%\Library\usr\bin;%REALME_ENV%\Library\bin;%REALME_ENV%\Scripts;%PATH%"
 set "REALME_PATH_SET=%REALME_ENV%"

@@ -1,12 +1,11 @@
 """
 Installing the local voice engine: runtime + weights.
 
-The split this follows is the same one used for ffmpeg and Python, and it is
-deliberate: **a repository carries the parts that are ours, and instructions for
-the parts that are not.** So the worker code is vendored, while PyTorch (~500 MB
-in the CPU build we use) and the model weights (~2.5 GB) are fetched. That keeps the project
-publishable on GitHub without shipping other people's binaries, and a fresh
-clone is still one command from working.
+As with ffmpeg and Python, the repository carries RealMe's own parts and
+fetches the rest: the worker code is vendored, while PyTorch (~500 MB in the
+CPU build used here) and the model weights (~2.5 GB) are downloaded. The
+repository ships no third-party binaries, and a fresh clone is still one
+command from working.
 
 Two sources, in order of preference:
 
@@ -18,7 +17,7 @@ Two sources, in order of preference:
                     worth copying: 2.5 GB that is slow to fetch and identical
                     either way. A *runtime* is only worth copying if it is
                     already lean -- copying a full venv (gradio, pandas, CUDA)
-                    would undo the whole point of the lean build, so when the
+                    would defeat the lean build, so when the
                     source looks like that we say so and build fresh instead.
   (default)         create a venv, pip install qwen-tts, download the weights
                     from Hugging Face.
@@ -70,9 +69,9 @@ def engine_home(tools: Path | None = None) -> Path:
     """
     Where the engine is, or where a new one would go.
 
-    An engine that already exists wins, wherever it sits: an earlier version of
-    this code installed under `03_App/tools`, and that is 2.5 GB of weights
-    nobody should re-download because a path convention changed.
+    An engine that already exists wins, wherever it sits: an older install
+    may be under `03_App/tools`, and its 2.5 GB of weights are used where
+    they are rather than downloaded again.
     """
     if tools:
         return Path(tools) / "qwen3"
@@ -209,9 +208,8 @@ def build_runtime(home: Path, log=print, force: bool = False,
     `force=True` is the escape hatch when a runtime is genuinely wrecked.
 
     `lean=True` installs the CPU build of PyTorch and skips gradio, which
-    together cut the download from roughly 2.5 GB to roughly 500 MB. We are
-    running inference on a laptop, not training anything, and RealMe supplies
-    its own interface.
+    together cut the download from roughly 2.5 GB to roughly 500 MB. RealMe
+    runs inference only, on the CPU, and supplies its own interface.
     """
     dst = home / "venv"
     py = venv_python(home)
@@ -310,8 +308,8 @@ def piper_status(home: Path, voice: str = DEFAULT_PIPER_VOICE) -> dict:
     except Exception:
         code = False
     f = piper_voice_file(home, voice)
-    # A voice is the .onnx AND the .onnx.json. Checking only the model meant
-    # `status` reported ready for a voice piper then refused to load.
+    # A voice is the .onnx AND the .onnx.json; piper will not load a voice
+    # without both, so both are checked.
     def _pair(p: Path) -> bool:
         return p.is_file() and Path(f"{p}.json").is_file()
     local = _pair(f) or _pair(Path(f"{voice}.onnx"))
@@ -325,8 +323,7 @@ def install_draft_voices(home: Path, log=print) -> dict:
     Every draft voice, so the Studio can offer the switch.
 
     Every voice in DRAFT_VOICES, ~60 MB each. The Studio lets you pick between them per
-    project, and a switch that offers a voice which is not on disk is worse
-    than no switch.
+    project, so every voice it offers must be on disk.
     """
     from realme.adapters.tts import DRAFT_VOICES
     out = {}
@@ -439,9 +436,7 @@ def install(source: Path | None = None, home: Path | None = None,
     # Each step is attempted independently. They fail for entirely different
     # reasons -- the runtime needs a 500 MB download, the weights are a local
     # file copy, the draft voice is a small pip install -- so one failing must
-    # not skip the others. The previous version let a runtime error abort
-    # before the weights were copied, which is how an install can leave
-    # `tools/` completely empty after a long wait.
+    # not skip the others.
     log("[1/3] Python runtime")
     try:
         if not force and runtime_works(home):
@@ -516,14 +511,13 @@ def install(source: Path | None = None, home: Path | None = None,
 #
 # Once qwen3-tts.cpp is built and converted, the same 0.6B model is on disk
 # twice: 2.5 GB of safetensors plus a torch venv here, and ~2.2 GB of GGUF next
-# door. The C++ engine measured 2.4x faster and closer to the speaker, so the
-# Python copy is dead weight on this machine -- but it is NOT dead code. It is
-# the fallback where no C++ compiler exists, and on an NVIDIA laptop PyTorch
-# CUDA is a far better-travelled path for this model than GGML's CUDA backend.
+# door. Where the C++ engine runs, the Python payload can go; the code stays.
+# It is the fallback where no C++ compiler exists, and on an NVIDIA machine
+# PyTorch CUDA is a better-tested path for this model than GGML's CUDA backend.
 #
-# So: delete the payload, keep the adapter, and refuse to do even that until the
-# GGUF it was converted into is verifiably complete. Deleting the source of a
-# conversion before checking the result is how a 2.5 GB re-download happens.
+# So: delete the payload, keep the adapter, and only once the GGUF it was
+# converted into is verifiably complete; otherwise getting it back means a
+# 2.5 GB re-download.
 
 def python_payload(home: Path | None = None) -> dict:
     """What retiring the Python engine would actually reclaim."""

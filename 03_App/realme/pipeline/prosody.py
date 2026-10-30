@@ -1,8 +1,7 @@
 """
 Delivery units and punctuation-aware pauses.
 
-Adopted from the real_voice_qwen3 project, which solved this better than the
-flat inter-utterance gap RealMe had. Three ideas worth keeping:
+Adapted from the real_voice_qwen3 project. Three ideas:
 
 1. **Split at punctuation, not at a character count.** A clause boundary is a
    real prosodic boundary; 260 characters is not. Hard sentence stops close a
@@ -10,14 +9,13 @@ flat inter-utterance gap RealMe had. Three ideas worth keeping:
    rather than run two sentences into one model call.
 
 2. **Vary the pace slightly, alternating.** A constant rate over thirty minutes
-   reads as a metronome. ±2.5% per unit, nudged by question and exclamation
-   marks, is audible as life without being audible as an effect.
+   sounds mechanical. ±2.5% per unit, nudged by question and exclamation
+   marks, adds variation without being audible as an effect.
 
-3. **Derive the pauses from the speaker's own recording.** If your reference
-   shows you leave 600 ms between sentences, the synthesis leans that way —
-   bounded, so one unusually long pause in the recording does not propagate
-   everywhere. This is the part that makes long-form narration sound like a
-   person rather than a reader.
+3. **Derive the pauses from the speaker's own recording.** If the reference
+   shows 600 ms between sentences, the synthesis leans that way — bounded,
+   so one unusually long pause in the recording does not propagate
+   everywhere.
 
 Chinese and English punctuation are both handled, since decks and quotations
 are not reliably one language.
@@ -30,8 +28,8 @@ HARD_STOP = ".!?。！？"
 CLAUSE_STOP = ",:;、，：；—–"
 
 
-#: Periods that end a word without ending a sentence. Short and specific: this
-#: is an exception list, and a long one would mean the rule is wrong.
+#: Periods that end a word without ending a sentence. A short, specific
+#: exception list.
 ABBREVIATIONS = {
     "dr", "mr", "mrs", "ms", "prof", "st", "jr", "sr", "vs", "etc", "eg",
     "ie", "cf", "al", "fig", "figs", "eq", "no", "vol", "ch", "approx",
@@ -51,13 +49,10 @@ def _punctuation_units(text: str) -> list[tuple[str, bool]]:
     """
     Split at sentence/clause punctuation, keeping the boundary character.
 
-    A period is not always a full stop. This split on the one inside "15.3
-    percent", which produced the utterance "Only 15." followed by "3 percent
-    of that sample…" -- found by reading a real lecture script aloud, and it
-    would have hit every decimal, p-value and effect size in a statistics
-    course. Three cases are excluded now: a decimal point between digits, a
-    period with no whitespace after it (inside a token), and a known
-    abbreviation.
+    A period is not always a full stop: "15.3 percent" must not become
+    "Only 15." followed by "3 percent of that sample…". Three cases are
+    excluded: a decimal point between digits, a period with no whitespace
+    after it (inside a token), and a known abbreviation.
     """
     units: list[tuple[str, bool]] = []
     start = 0
@@ -108,11 +103,11 @@ def split_delivery_units(text: str, *, mode: str = "natural") -> list[str]:
         # Whole sentences, never split at a comma.
         #
         # Clause splitting exists for the autoregressive engine, where short
-        # calls bound the damage when one goes wrong. It costs something a
-        # non-autoregressive engine does not have to pay: piper renders a whole
-        # sentence with one intonation arc, and cutting "If the outcome is
-        # rare," off from its own conclusion makes it fall like a full stop.
-        # For piper and anything built on it, this is the honest unit.
+        # calls bound the damage when one goes wrong. A non-autoregressive
+        # engine does not need it: piper renders a whole sentence with one
+        # intonation arc, and cutting "If the outcome is rare," off from its
+        # own conclusion makes it fall like a full stop. For piper and
+        # anything built on it, the sentence is the right unit.
         out, current = [], []
         for unit, hard in _punctuation_units(cleaned):
             current.append(unit)
@@ -192,19 +187,15 @@ def gap_ms(unit: str, *, mode: str = "natural", pause_scale: float = 1.0,
     else:
         base = 110 if mode in ("natural", "sentence") else 125
 
-    # The lift from the speaker's own rhythm, reduced in October 2026.
+    # The lift from the speaker's own rhythm, kept small.
     #
-    # It was double-counting. The median pause measured by
-    # `measure_reference_pauses` is the median across EVERY gap in the
-    # reference, most of them mid-sentence breaths -- and it was being applied
-    # at every sentence boundary, on top of the trailing breath the engine
-    # already renders because each clause is synthesised as its own utterance.
-    # One instructor's clip (0.336 s median, 1.192 s longest, 18 breath-length
-    # gaps) produced 442 ms after every sentence against a 185 ms floor: a
-    # measured 2.4x, audible as a lecture that drags.
+    # The median pause measured by `measure_reference_pauses` is the median
+    # across EVERY gap in the reference, most of them mid-sentence breaths,
+    # and the engine already renders a trailing breath because each clause is
+    # synthesised as its own utterance. Applied in full at every sentence
+    # boundary it would count that breath twice and make a lecture drag.
     #
-    # The factors are halved and the ceilings lowered, so the rhythm still
-    # shows -- 238 ms rather than 185 ms for that clip -- without being the
+    # Small factors and low ceilings let the rhythm show without being the
     # dominant term. `pause_scale` tunes it per project; `--prosody-mode
     # stable` removes inserted gaps altogether.
     if reference_pause_seconds and reference_pause_seconds > 0:
@@ -213,8 +204,7 @@ def gap_ms(unit: str, *, mode: str = "natural", pause_scale: float = 1.0,
         base = max(base, min(limit, round(reference_pause_seconds * 1000 * factor)))
     if hard and reference_longest_pause_seconds and reference_longest_pause_seconds > 0:
         base = max(base, min(420, round(reference_longest_pause_seconds * 1000 * 0.20)))
-    # No separate breath bump. It added 25 ms on top of a lift that already
-    # encodes breathing, which is the same quantity counted twice.
+    # No separate breath bump: the lift already encodes breathing.
     return round(base * pause_scale)
 
 

@@ -2,11 +2,10 @@
 """
 The guest's pace: measured for the voice in hand, or measured now.
 
-Written because Amy dragged. The cause was not one bug but a gap between two
-that each looked right on its own: `voice pace` saved its numbers in one
-shape, the per-voice lookup read another, and when the lookup honestly said
-"I have never measured this voice" the caster applied a constant anyway --
-0.72, which is slower than the ratio measured against a FASTER voice.
+`voice pace` and `voice pace --all` save their numbers in two shapes, and the
+per-voice lookup reads both. A voice that has never been measured is
+measured now rather than given the constant DIALOGUE_SPEED (0.72), which is
+slower than the ratio measured against a faster voice.
 
 No engine here. Piper is stubbed, so this runs anywhere and still exercises
 the real arithmetic and the real profile shapes.
@@ -20,14 +19,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 # Isolated from the real installation, deliberately and before any import
 # that reads it.
 #
-# These suites build their own fake tree and fake data folder -- and then
-# asked the REAL one anyway, because the code they exercise resolves those
-# through `data_home()` and `find_tool()`, which read the environment at call
-# time. On a clean machine both come back empty and the fixtures are used; on
-# a working machine the test silently measured against the instructor's own
-# profile and packaged his own engine folder. Eight checks failed on his
-# machine and none in the sandbox, which is the worst way for a test to be
-# wrong.
+# These suites build their own fake tree and fake data folder, but the code
+# they exercise resolves those through `data_home()` and `find_tool()`, which
+# read the environment at call time. Without the redirect, on a machine with
+# RealMe installed, a test would measure against the real profile and package
+# the real engine folder, and its result would depend on the machine.
 _ISO = tempfile.mkdtemp(prefix="t_pace_iso_")
 os.environ["REALME_HOME"] = str(Path(_ISO) / "home")
 os.environ["REALME_TOOLS"] = str(Path(_ISO) / "tools")
@@ -42,8 +38,8 @@ def check(name, cond, detail=""):
         FAILED.append(name)
 
 
-#: His profile, as `realme voice pace` actually left it: one nested record,
-#: no top-level your_wpm, no per-voice table. The shape the lookup missed.
+#: A profile as `realme voice pace` leaves it: one nested record, no
+#: top-level your_wpm, no per-voice table.
 ORDINARY = {
     "draft_speed": 0.744,
     "draft_pace_measured": {"voice": "en_US-ryan-medium", "your_wpm": 160.3,
@@ -102,7 +98,7 @@ def main() -> int:
     amy = speed_from(FULL, "en_US-amy-medium")
     check("once measured, Amy gets her own",
           abs(amy - round(160.3 / 174.7, 3)) < 1e-9, str(amy))
-    # The whole complaint, in one line: she was 27% slower than she should be.
+    # The measured speed is faster than the constant fallback.
     check("and it is faster than the constant she was getting",
           amy > casting.DIALOGUE_SPEED,
           f"{amy} vs {casting.DIALOGUE_SPEED}")
@@ -177,11 +173,12 @@ def main() -> int:
         shutil.rmtree(tmp, ignore_errors=True)
 
     # ------------------------------------------------------------------
-    # The 25% error: a re-recorded enrolment of a SHORTER passage, with the
-    # previous passage's transcript still on disk. 163 words over 28.8 s of
-    # speech measured 323 words a minute, the calibration asked for 1.846x,
-    # the clamp turned that into 1.25, and 1.25 was stored as if measured.
-    # Four things had to be true at once; each one is checked here.
+    # A re-recorded enrolment of a SHORTER passage, with the previous
+    # passage's transcript still on disk, measures an impossible rate (e.g.
+    # 323 words a minute) and asks for a correction no retiming can carry.
+    # Each safeguard is checked here: the mismatched transcript is refused,
+    # an implausible rate is refused, an out-of-range correction is a
+    # failure rather than a clamped value, and corrections do not compound.
     # ------------------------------------------------------------------
     print("\na transcript that is not the recording's is refused")
     import subprocess
@@ -252,8 +249,8 @@ def main() -> int:
                   abs(r["pace"] - 1.0) < 0.03, str(r))
             check("and nothing is reported as clamped", r["clamped"] is False)
 
-            # The failure as it happened: the engine is fine, the target is a
-            # mismatched transcript. Refused BEFORE a paid render.
+            # The engine is fine, the target is a mismatched transcript.
+            # Refused BEFORE a paid render.
             built["engine"] = Stub(20.0)
             try:
                 P.calibrate_engine("stub", tone, stale, workdir=box,
@@ -318,8 +315,8 @@ def main() -> int:
         print("\nand a transcript corrected by hand is a transcript")
         # The .txt sits beside the audio so it can be opened and fixed, and
         # the design says the FILE wins over the JSON mirror. A hand edit
-        # therefore has to be able to settle the pair -- otherwise doing the
-        # right thing in Notepad leaves the pace permanently unmeasurable.
+        # therefore has to be able to settle the pair, or a transcript fixed
+        # in a text editor would leave the pace unmeasurable.
         import time
         hand = PROF.Profile(box / "hand")
         hand.store_audio(other, "voice_reference")
@@ -351,10 +348,9 @@ def main() -> int:
               not hand.transcript_matches_recording)
 
         print("\na correction smaller than the noise is not a correction")
-        # His case exactly: 172.5 words a minute of speech against the
-        # clone's 175.1 -- 1.5%, where two takes of the same passage by the
-        # same person differ by 3-5%. Retiming that costs high-frequency
-        # detail to chase a difference nobody can hear.
+        # A 1.5% difference (172.5 against 175.1 words a minute) is inside
+        # the 3-5% by which two takes of the same passage by the same person
+        # differ. Retiming it costs high-frequency detail for no audible gain.
         import realme.adapters.factory as F2
         real2 = F2.build
         F2.build = lambda name, **kw: built["engine"]

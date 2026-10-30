@@ -33,8 +33,8 @@ This module keeps the text and the finished video, and lets the media go:
 Slides are the unit throughout. A slide is re-recorded whole or kept whole.
 
 This sits beside the ordinary render and does not change it: a project that
-was never compacted renders exactly as before, and `render` is what records
-the changed slides here too.
+was never compacted renders normally, and `render` is what records the
+changed slides here too.
 """
 from __future__ import annotations
 
@@ -112,8 +112,8 @@ def media_bytes(pdir: Path) -> int:
 def compact(pdir: Path, log=print) -> dict:
     """Keep the finished video and the text; delete the working media.
 
-    A render that could not be rebuilt from its video (no cut list, or
-    recorded before renders kept their script) keeps its slide videos: they
+    A render that could not be rebuilt from its video (no cut list, or an
+    older render without its script) keeps its slide videos: they
     are then the only copy of that work.
     """
     pdir = Path(pdir)
@@ -174,7 +174,7 @@ def restore(pdir: Path, name: str, log=print) -> list[Path]:
     """One video per slide of `name`, cut from its finished video.
 
     Returns the slide videos in script order, and records them as that
-    render's own, so inserting a video between slides works again too.
+    render's own, so inserting a video between slides works on it too.
     """
     from realme.pipeline.lecture import _record_assembly
     from realme.pipeline.split import keyframe_times

@@ -2,17 +2,15 @@
 """
 What the Studio asks of a speech engine at startup, and when.
 
-Two faults, one cause: the status check asked every adapter in the registry
-to get READY rather than to say whether it COULD run.
+The status check asks whether an engine COULD run, not for it to get READY:
 
-  - For qwen3cpp, `preflight()` is `qwen3_tts_create` -- two gigabytes off
-    disk. Every page refresh paid it and threw the handle away, and the first
-    Preview then paid it again.
-  - For elevenlabs, chatterbox, indextts and google_chirp3 -- engines this
-    project neither installs nor tests -- it meant importing a torch stack
-    nobody has, to produce a red pill nobody can act on.
+  - For qwen3cpp, `preflight()` is `qwen3_tts_create`, two gigabytes off
+    disk; it must not run on every page refresh.
+  - For elevenlabs, chatterbox, indextts and google_chirp3 (engines this
+    project neither installs nor tests) it would mean importing a torch
+    stack that is not installed.
 
-So: `check()` is the cheap question and `preflight()` is the expensive one,
+So `check()` is the cheap question and `preflight()` is the expensive one,
 the status page walks DEVELOPED rather than the whole registry, and the
 engine warms in the background into the same cache the renderer reads.
 
@@ -81,7 +79,7 @@ def main() -> int:
         check(n in DEVELOPED, f"{n} is")
     check(all(n in REGISTRY for n in NOT_DEVELOPED),
           "the ones we do not set up are still usable by name")
-    # Retired September 2026: not offered, not checked, not constructible.
+    # Retired engines: not offered, not checked, not constructible.
     for n in ("piper+knnvc", "piper+openvoice", "espeak"):
         check(n in RETIRED, f"{n} is recorded as retired, with a reason")
         check(n not in REGISTRY, f"and {n} cannot be built by name")
@@ -105,9 +103,8 @@ def main() -> int:
     from realme.adapters.tts_qwen3_dll import Qwen3DllTTS
     check(Qwen3DllTTS.check is not BaseTTS.check,
           "the C++ engine answers it without loading the model")
-    # Behaviour, not the text of the method: an earlier version of this
-    # asserted that "qwen3_tts_create" did not appear in check()'s source,
-    # and failed on the docstring that explains why it does not call it.
+    # Behaviour, not the text of the method: check()'s docstring names
+    # qwen3_tts_create, so a search of its source would misfire.
     class FakeLib:
         def __init__(self): self.called = []
         def qwen3_tts_create(self, *a):
@@ -178,10 +175,9 @@ def main() -> int:
           str(spies["qwen3cpp"].asked))
 
     print("\nevery path that speaks shares one engine")
-    # The fault this catches: the warm-up loaded the model, and then Render
-    # built its OWN adapter through factory.build -- so a second 2 GB copy
-    # was loaded at the first click and both stayed resident for the life of
-    # the process (rss 2.0 GB -> 5.3 GB in one session).
+    # Guards against a second resident copy of the model: if Render built
+    # its OWN adapter through factory.build instead of reusing the warmed
+    # one, another 2 GB would load at the first click and stay resident.
     import inspect as _ins
     src = _ins.getsource(S)
     for fn in ("render_lecture", "preview_utterance", "make_narration"):
@@ -203,8 +199,8 @@ def main() -> int:
     check(len(built) == 3, "and asking again for one of them builds nothing")
 
     print("\nthe speaker embedding survives a restart")
-    # 114.7 s of speaker encoding was paid on every start, at the first
-    # Render. It is the same 1024 floats each time from the same clip.
+    # Speaker encoding takes about 115 s and gives the same 1024 floats each
+    # time from the same clip, so it is cached on disk across restarts.
     from realme.adapters.tts_qwen3_dll import Qwen3DllTTS
     from ctypes import c_float
     ref = Path(os.environ["REALME_HOME"]) / "voice_reference.wav"

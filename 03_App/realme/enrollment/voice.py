@@ -1,24 +1,21 @@
 """
 Voice enrollment: check a recording, then polish it — the "Better Me" idea.
 
-The premise from the original design is right and worth keeping: nobody wants
-their tired Tuesday-afternoon voice preserved for a whole semester. What you
-want is *you*, on a good day, in a decent room. Not a different person —
-recognisably you, with the room noise, the sibilance and the boominess taken
-out and the level made consistent.
+The aim is the speaker's own voice in good conditions: recognisably the same
+person, with room noise, sibilance and boominess removed and the level made
+consistent.
 
-Where this differs from the original: it happens ONCE, on the reference clip,
-before cloning. The cloning model then learns the polished voice and every
-lecture inherits it for free. Polishing every render instead would be slower,
-and would drift as the chain changed.
+Polishing happens ONCE, on the reference clip, before cloning. The cloning
+model then learns the polished voice and every lecture inherits it. Polishing
+every render instead would be slower and less consistent.
 
-Everything here is ffmpeg. No extra dependency, nothing to download, and each
-filter is a standard broadcast tool rather than anything exotic:
+Everything here is ffmpeg, with no extra dependency. Each filter is a standard
+broadcast tool:
 
     highpass      remove desk rumble, aircon, footsteps, plosive thump
     afftdn        FFT denoise - takes out steady hiss and fan noise
     equalizer     cut boxiness ~300 Hz, add chest ~180 Hz, add clarity ~3 kHz
-    deesser       tame harsh "s" - the single most fatiguing thing over 30 min
+    deesser       tame harsh "s", which is fatiguing over a long lecture
     acompressor   even out the loud and quiet parts of a sentence
     loudnorm      EBU R128 to -16 LUFS, the podcast/lecture standard
     alimiter      catch stray peaks without audible pumping
@@ -34,9 +31,8 @@ from pathlib import Path
 
 from realme.core.media import require, run, duration_of, probe
 
-# Presets are deliberately conservative. A voice clone trained on an
-# over-processed reference sounds processed in every lecture you ever make,
-# and that is not undoable.
+# Presets are deliberately conservative. A voice clone made from an
+# over-processed reference sounds processed in every lecture.
 PRESETS: dict[str, dict] = {
     "off": {"label": "No processing", "chain": []},
     "clean": {
@@ -77,14 +73,12 @@ PRESETS: dict[str, dict] = {
 
 # ---------------------------------------------------------------- treatment
 #
-# Continuous tone controls, adopted from the real_voice_qwen3 project, whose
-# bounds were arrived at by actually listening rather than by guessing. They are
-# deliberately narrow: Qwen3-TTS (or whichever engine) remains the identity
-# anchor, and these only move the tone colour slightly around your own voice.
+# Continuous tone controls, with bounds set by listening tests. They are
+# deliberately narrow: the cloning engine remains the identity anchor, and
+# these only move the tone colour slightly around the speaker's own voice.
 #
-# The presets above are named points in this same space, so you can start from
-# one and then nudge a single control rather than choosing between four fixed
-# options.
+# The presets above are named points in this same space, so one can start from
+# a preset and then nudge a single control.
 
 PACE_MIN, PACE_MAX = 0.94, 1.06
 PITCH_MIN, PITCH_MAX = -0.75, 0.75          # semitones
@@ -144,16 +138,15 @@ class Treatment:
         """
         The ffmpeg chain for this treatment.
 
-        Pitch and pace are decoupled, which is the part worth copying: shifting
-        pitch with `asetrate` also changes the tempo, so `atempo` is given
-        `pace / pitch_factor` to undo exactly that much. Change the pitch and
-        the speaking rate stays put.
+        Pitch and pace are decoupled: shifting pitch with `asetrate` also
+        changes the tempo, so `atempo` is given `pace / pitch_factor` to undo
+        exactly that much. Changing the pitch leaves the speaking rate as is.
         """
         self.validated()
         pitch_factor = 2 ** (self.pitch_semitones / 12.0)
         tempo = self.pace / pitch_factor
-        # The rate the caller is working at, not a constant. Resampling a
-        # 48 kHz enrolment down to 24 here threw away the top octave silently.
+        # The rate the caller is working at, not a constant, so a 48 kHz
+        # enrolment keeps its top octave.
         sr = int(sample_rate)
         chain = [
             f"aresample={sr}",
@@ -176,8 +169,8 @@ class Treatment:
         return chain
 
 
-# The named presets, expressed as points in the continuous space above, so the
-# two systems agree instead of drifting apart.
+# The named presets, expressed as points in the continuous space above, so
+# presets and controls share one chain.
 PRESET_TREATMENTS: dict[str, Treatment] = {
     "off": Treatment(warmth=0.0, clarity=CLARITY_NEUTRAL),
     "clean": Treatment(warmth=0.0, clarity=CLARITY_NEUTRAL, smoothing=0.10),
@@ -232,8 +225,8 @@ def analyze(path: Path) -> VoiceReport:
     """
     Judge a reference recording and say what to do about it, in plain words.
 
-    The goal is not a score. It is: should you re-record, and if so, what should
-    you change? A number nobody can act on is worse than useless here.
+    Returns problems and actionable advice: whether to re-record, and if so,
+    what to change.
     """
     path = Path(path)
     info = probe(path)
@@ -303,16 +296,13 @@ def _measured_loudnorm(src: Path, target_i: float = -16.0,
     """
     Two-pass loudnorm: measure the file, then apply ONE fixed correction.
 
-    Single-pass `loudnorm` is adaptive. It rides the level as the file plays,
-    which on a lecture reference means the gain moves between sentences -- heard
-    as "not steady across sentences", and reported that way. The whole point of
-    a reference clip is that it is one consistent example of a voice.
+    Single-pass `loudnorm` is adaptive: it rides the level as the file plays,
+    so the gain moves between sentences. A reference clip should be one
+    consistent example of a voice.
 
-    ffmpeg's own answer is the two-pass form: measure with `print_format=json`,
-    feed the measurements back, and the second pass applies a single offset. If
-    the measurement fails for any reason this returns the plain single-pass
-    filter rather than nothing, because a slightly-riding reference beats no
-    reference.
+    The two-pass form measures with `print_format=json`, feeds the
+    measurements back, and the second pass applies a single offset. If the
+    measurement fails, this returns the plain single-pass filter.
     """
     import json
     probe_chain = (f"loudnorm=I={target_i}:TP={tp}:LRA={lra}:"
@@ -355,10 +345,9 @@ def repairs_for(src: Path) -> list[tuple[str, str]]:
     """
     Only the corrections this recording actually needs, with the reason.
 
-    The chain used to be fixed: every take was denoised and de-essed whether or
-    not it had hiss or sibilance to remove. On a clean recording a denoiser has
-    no noise to find and takes detail instead -- which is heard as smearing, and
-    was, by the person whose voice it was.
+    Denoising and de-essing run only when the recording has hiss or sibilance
+    to remove. On a clean recording a denoiser removes detail instead, which
+    is heard as smearing.
     """
     out = [("highpass=f=75", "removed rumble below 75 Hz")]
     try:
@@ -386,17 +375,12 @@ def treat(src: Path, dst: Path, treatment: Treatment,
     they answer different questions — "is this recording usable" versus "do I
     want to sound slightly warmer".
 
-    Three things here were wrong, and a listener found all three by preferring
-    the untreated take:
-
-    * `loudnorm` ran single-pass, which is adaptive -- the gain moved between
-      sentences. It is measured first now, and applied as one fixed offset.
-    * `afftdn` denoised every recording, including clean ones, where there is
-      nothing to remove and the only audible effect is smearing. It now runs
-      only when the recording actually needs it.
-    * the output was forced to 24 kHz, so a 48 kHz enrolment lost its top octave
-      on the way in for no reason anyone had asked for. The source rate is kept
-      unless a caller names one.
+    * `loudnorm` is measured first and applied as one fixed offset, so the
+      gain does not move between sentences.
+    * `afftdn` runs only when the recording needs it; on a clean recording
+      its only audible effect is smearing.
+    * The source sample rate is kept unless a caller names one, so a 48 kHz
+      enrolment keeps its top octave.
     """
     src, dst = Path(src), Path(dst)
     dst.parent.mkdir(parents=True, exist_ok=True)
@@ -430,28 +414,20 @@ def beautify(src: Path, dst: Path, preset: str = "natural",
     """
     Apply the chosen preset and write a mono reference.
 
-    **Through `treat`, which is the one chain.** `PRESET_TREATMENTS` says of
-    itself that the presets are "expressed as points in the continuous space
-    above, so the two systems agree instead of drifting apart" -- and then this
-    function used a second, hand-written chain in `PRESETS` and they drifted
-    anyway. That second chain is what produced the reference a listener rejected:
-    a 3:1 compressor with a 6 ms attack, a denoiser on a recording with 56 dB of
-    signal-to-noise, and a single-pass `loudnorm` riding the level from sentence
-    to sentence. `PRESETS` keeps its labels; the audio comes from one place now.
+    The audio goes through `treat` with the preset's point in
+    `PRESET_TREATMENTS`. Only the labels in `PRESETS` are used here; its
+    `chain` lists are not applied.
 
     Mono because every cloning backend wants it. The sample rate follows the
-    source unless a caller names one -- the engines resample to whatever they
-    need, and doing it twice only loses.
+    source unless a caller names one; the engines resample to whatever they
+    need, and resampling twice loses detail.
     """
     if preset not in PRESETS:
         raise ValueError(f"Unknown preset {preset!r}. Choose from: {', '.join(PRESETS)}")
     src, dst = Path(src), Path(dst)
     if preset == "off":
-        # "No processing" means no processing. This used to run the file through
-        # the filter chain anyway -- zero-gain EQ, a resample and a limiter --
-        # which is nearly transparent and still not what the label promises. A
-        # WAV is copied; anything else is converted, because the engines cannot
-        # read AAC and that is a format change, not a treatment.
+        # "No processing": a WAV is copied unchanged; anything else is only
+        # converted, because the engines cannot read AAC.
         dst.parent.mkdir(parents=True, exist_ok=True)
         if src.suffix.lower() == ".wav":
             shutil.copy2(src, dst)
@@ -469,8 +445,7 @@ def compare(src: Path, outdir: Path, presets: list[str] | None = None,
     """
     Render a short excerpt through each preset so they can be heard back to back.
 
-    Choosing a voice by reading filter names is hopeless; choosing it by
-    listening takes fifteen seconds.
+    Presets are easier to choose by ear than by filter names.
     """
     outdir = Path(outdir)
     outdir.mkdir(parents=True, exist_ok=True)
@@ -497,22 +472,20 @@ def consent_text(name: str, date: str) -> str:
 
     Google's Chirp 3 requires its own exact sentence and will reject anything
     else; this is for your own records and for institutions that ask. Keep it
-    with the reference audio — it is the artifact that answers the question
-    later, and it costs ten seconds now.
+    with the reference audio.
     """
     return CONSENT_SCRIPT.format(name=name or "the speaker", date=date)
 
 
 # ------------------------------------------------- does it still sound like me
 #
-# Adopted from real_voice_qwen3. This answers a different question from
-# `realme/verify/acoustic.py`: that one asks "did the engine say the right
-# word", this asks "does the clone still sound like the person". Both are
-# needed, and neither substitutes for the other.
+# This answers a different question from `realme/verify/acoustic.py`: that one
+# asks "did the engine say the right word", this asks "does the clone still
+# sound like the person".
 #
-# The framing from the original is kept deliberately: this is descriptive
-# acoustic resemblance, NOT biometric speaker verification. It is a tuning aid.
-# A high score does not prove identity and a low one does not disprove it.
+# This is descriptive acoustic resemblance, NOT biometric speaker verification.
+# It is a tuning aid. A high score does not prove identity and a low one does
+# not disprove it.
 
 SIGNATURE_FEATURES = (
     # (name, scale at which a difference costs full marks, weight)
@@ -534,11 +507,9 @@ SIGNATURE_FEATURES = (
 #: far brighter for that reason alone. Zero-crossing rate is counted per sample,
 #: so it halves when the rate halves.
 #:
-#: Found the hard way: comparing one enrolled clip at 48 kHz against its own
-#: tuned copy at 24 kHz returned a centroid similarity of 0.0 and an overall
-#: 61.6%, for two files that are the same recording. Every earlier comparison
-#: between engines that emit different rates -- 16 kHz from kNN-VC, 22.05 from
-#: piper, 24 from qwen3cpp -- carried some of the same distortion.
+#: The engines emit different rates (16 kHz from kNN-VC, 22.05 from piper,
+#: 24 from qwen3cpp), so without a common rate their signatures would not be
+#: comparable.
 ANALYSIS_RATE = 22050
 
 
@@ -651,8 +622,8 @@ def compare_signatures(reference: dict, candidate: dict) -> dict:
 # second is what carries prosody, and it is also why the transcript has to match
 # the recording word for word -- including the false starts you left in.
 #
-# It is prefilled as context on *every* utterance, so a long reference is paid
-# for on every line of every lecture. Longer is not better past a point.
+# It is prefilled as context on *every* utterance, so a long reference slows
+# every line of every lecture without cloning better past a point.
 
 REF_SECONDS_IDEAL = (10, 45)
 REF_SECONDS_MAX = 90
@@ -662,9 +633,8 @@ def read_transcript(value: str | Path) -> tuple[str, str]:
     """
     Accept either the words themselves or a file containing them.
 
-    Returns (text, source). A transcript long enough to be annoying to paste is
-    exactly the case where it should live in a file, so this takes both rather
-    than making anyone escape quotes around three paragraphs.
+    Returns (text, source). A long transcript is easier to keep in a file
+    than to quote on the command line.
     """
     raw = str(value)
     candidate = Path(raw.strip().strip('"').strip("'"))
@@ -723,18 +693,11 @@ def transcript_fit(text: str, audio_seconds: float) -> list[str]:
 # --- Steadying synthesized output ------------------------------------------
 #
 # Distinct from `Treatment`, which shapes the REFERENCE before cloning. This
-# runs on what an engine produced, and it exists because of two measurements on
-# converted audio.
+# runs on what an engine produced.
 #
-# First, it comes out pinned to the ceiling: peaks at 0.00 dBFS on six of seven
-# utterances, with zero clipped samples. Not distortion, but no headroom either,
-# and no headroom is how a lecture picks up inter-sample clipping later, in
-# whatever encoder ships it.
-#
-# Second, the within-phrase range was 35.9 dB where the speaker's own recording
-# sits at 38.3 -- but the loud moments were arriving faster than a listener
-# wants to ride, which is what "dynamic should be a bit controlled and steady"
-# means in practice.
+# Converted audio tends to peak at 0 dBFS without clipping. That leaves no
+# headroom, which invites inter-sample clipping later in an encoder. A light
+# compressor also evens out loud moments within a phrase.
 #
 # The chain is deliberately FIXED rather than adaptive. `loudnorm` and
 # `dynaudnorm` measure the clip and choose their own gain, so the same sentence
@@ -742,9 +705,8 @@ def transcript_fit(text: str, audio_seconds: float) -> list[str]:
 # each other over a lecture. Fixed threshold, fixed makeup, fixed ceiling: the
 # same input always gives the same output.
 #
-# Measured over seven utterances, `steady` moved RMS -15.7 -> -16.7 dB (the
-# speaker's own recording is -16.7), peak 0.0 -> -1.3 dBFS, and within-phrase
-# range 35.9 -> 30.9 dB.
+# `steady` brings RMS to about -16.7 dB and peaks to about -1.3 dBFS, and
+# narrows the within-phrase range by about 5 dB.
 
 STEADY_PRESETS: dict[str, str | None] = {
     "off": None,
@@ -783,27 +745,18 @@ def steady_output(src: Path, dst: Path | None = None,
 # ------------------------------------------------- judging a take for cloning
 #
 # `analyze` answers "is this recording technically sound" -- level, clipping,
-# noise, length. That is necessary and it is not the whole question, because a
-# recording can pass every one of those checks and still make a clone that
-# sounds polished.
+# noise, length. A recording can pass every one of those checks and still make
+# a clone that sounds over-smoothed.
 #
-# Measured on one instructor's own material: his clone differed from him on
-# exactly one axis, harmonic-to-noise ratio, by 2.0 dB (n=25 utterances against
-# 8 slices of the enrolment, standard error 0.37). Everything else -- jitter,
-# shimmer, pitch spread, between-sentence variation -- sat inside the range
-# spanned by two recordings of the man himself. The clone had less breath in
-# it than he does, and that was audible as "over-smoothed" while every other
-# property was right.
+# The axis on which a clone most often differs from its speaker is
+# harmonic-to-noise ratio: the clone has less breath in it. A clone inherits
+# the aspiration and micro-noise of the clip it was cloned from, so a very
+# clean take tends to produce a very clean voice. The recording that scores
+# best on SNR is not necessarily the one that clones best.
 #
-# The lever is the reference. A clone inherits the aspiration and micro-noise
-# of the clip it was cloned from, so a very clean take tends to produce a very
-# clean voice. That is a real trade and not an obvious one: the recording that
-# scores best on SNR is not necessarily the one that clones best.
-#
-# So these are the numbers to compare takes on, and the honest framing is that
-# they are descriptive. Nothing here predicts what a given model will do; they
-# tell you how your takes differ from each other, before you spend a clone on
-# one of them.
+# These features are descriptive. They do not predict what a given model will
+# do; they show how candidate takes differ from each other before one is
+# chosen for cloning.
 
 def clone_features(path: Path) -> dict:
     """Descriptive features of a take, on the axes that separate clones."""
@@ -852,10 +805,9 @@ def _codec_of(path: Path) -> str:
     return "?"
 
 
-#: Codecs that throw away detail. Not a judgement about the take -- a phone
-#: recording is a perfectly good reference -- but a warning about COMPARING
-#: one against an uncompressed take, which compares the codecs as much as the
-#: recordings.
+#: Codecs that throw away detail. A phone recording is a usable reference;
+#: this is for warning when one is COMPARED against an uncompressed take,
+#: which compares the codecs as much as the recordings.
 LOSSY = {"aac", "mp3", "opus", "vorbis", "wmav2", "amr_nb", "amr_wb"}
 
 

@@ -6,19 +6,17 @@ REM  code, the tools already built, the model weights, and your
 REM  enrolled voice.
 REM
 REM  For somebody else, use _Make_Package_For_Others.bat instead. That
-REM  one leaves your voice out, and it is the difference between a
-REM  colleague installing RealMe and a colleague holding a model of
-REM  your voice.
+REM  one leaves your voice out.
 REM
 REM  Left out on purpose: tools\qwen3 (the PyTorch engine, ~4 GB) and
-REM  tools\vc (voice conversion, ~1.3 GB). Both were measured and set
-REM  aside; `realme engine install` brings them back if ever wanted.
+REM  tools\vc (voice conversion, ~1.3 GB). Neither is used by default;
+REM  `realme engine install` brings them back if wanted.
 REM
 REM  Your .env is NOT included. Set the key on the new machine.
 REM
 REM  verify_tree runs first, as it does before an update zip. Packaging
 REM  a tree that does not import produces an archive that installs and
-REM  then fails on the new machine, where there is nobody to debug it.
+REM  then fails on the new machine.
 REM
 REM  Exit codes are compared against 0, never with `if errorlevel 1`,
 REM  which is ">= 1" and so treats a crash (a negative code) as success.

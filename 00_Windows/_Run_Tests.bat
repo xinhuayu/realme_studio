@@ -7,43 +7,34 @@ REM  For a script or an AI agent, the same run with one exit code and a
 REM  JSON summary:  python 03_App\run_tests.py --json
 REM  The suite list lives there too; verify_tree checks the two agree.
 REM
-REM  Two things went wrong doing this by hand, and both are removed here:
+REM  What this launcher takes care of:
 REM
-REM    1. The wrong Python. `python t_render.py` finds whichever one is
-REM       first on PATH, which on a machine with several is usually not the
-REM       one RealMe is installed into -- forty import failures with one
-REM       cause. _env.bat points at the right interpreter.
+REM    1. The Python. `python t_render.py` finds whichever one is first on
+REM       PATH, which may not be the one RealMe is installed into.
+REM       _env.bat points at the right interpreter.
 REM
-REM    2. The wrong folder. The suites live in 03_App and used to read
-REM       their fixtures relative to wherever the shell was standing, so
-REM       running them from the project root failed late and confusingly.
-REM       They are anchored on their own location now, and this file cd's
-REM       to the root anyway so the question never arises.
+REM    2. The folder. The suites live in 03_App and anchor their fixtures
+REM       on their own location; this file also cd's to the root.
 REM
-REM  Three things about how the result is read, each of them a scar:
+REM  How the result is read:
 REM
 REM    `if errorlevel 1` is NOT used. It means "errorlevel >= 1", so a
 REM    process that dies with a negative code -- an access violation is
-REM    -1073741819 -- passes it. A crash reported as a pass is the worst
-REM    thing a test runner can do. The code is captured and compared
+REM    -1073741819 -- passes it. The code is captured and compared
 REM    against 0, and printed either way, so a failed check (1) and a
 REM    crash (anything else) are told apart on sight.
 REM
 REM    Nothing is piped. `cmd | more` leaves %ERRORLEVEL% holding the exit
-REM    code of `more`, not of the program, so the pipe that made the output
-REM    readable also made the verdict meaningless.
+REM    code of `more`, not of the program.
 REM
 REM    The failure list is `name=code`, with no parentheses in it. A close
 REM    paren inside a FOR block ends the block -- even inside a quoted value
-REM    and even inside a REM comment, which is how the comment EXPLAINING
-REM    this broke the loop it was written in. A caret in a quoted `set` is a
-REM    literal caret, not an escape, so the obvious spelling produced
-REM    "t_setup^(1^)".
+REM    and even inside a REM comment. A caret in a quoted `set` is a
+REM    literal caret, not an escape, so it cannot escape the paren either.
 REM
-REM    Output stays live. A suite can run for a minute and a runner that
-REM    buffers it looks hung, which is the complaint this project already
-REM    had about the render log. A suite that FAILS is re-run into
-REM    tests.log, so there is one file to paste without losing the live view.
+REM    Output stays live: a suite can run for a minute, and buffered output
+REM    looks hung. A suite that FAILS is re-run into tests.log, so there is
+REM    one file to paste without losing the live view.
 REM ===================================================================
 cd /d "%~dp0.."
 call "%~dp0_env.bat"
@@ -56,7 +47,7 @@ set "LOG=%CD%\tests.log"
 REM  Delayed expansion is turned on only here, after every %~dp0 above, so a
 REM  `!` in the folder name is not eaten. Inside the ( ) blocks below, paths
 REM  are read as !PY! and !LOG!: cmd expands %VAR% when it reads the whole
-REM  block, and a folder like "Documents (work)" ended it mid-path.
+REM  block, and a folder like "Documents (work)" ends it mid-path.
 setlocal EnableDelayedExpansion
 echo RealMe test run > "!LOG!"
 echo python: !PY! >> "!LOG!"

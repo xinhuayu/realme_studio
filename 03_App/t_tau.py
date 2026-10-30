@@ -3,10 +3,10 @@
 Emotion directions: the arithmetic, and the plumbing that carries it.
 
 No engine anywhere in here. The vector maths is pure and testable, and the
-adapter's two new methods are exercised against stubbed modules -- the real
-file, not a copy of it, because the thing most worth proving is that the
-UNTOUCHED path through `synthesize` still hands the engine the identical
-buffer it handed before any of this existed.
+adapter's direction methods are exercised against stubbed modules -- the real
+file, not a copy of it, because the main thing to prove is that the
+UNSHIFTED path through `synthesize` hands the engine the identical buffer it
+would without directions.
 """
 from __future__ import annotations
 import json, math, sys, types
@@ -65,10 +65,9 @@ def takes(tmp: Path):
 
 
 def main() -> int:
-    # A temp directory, removed on the way out. The first version wrote
-    # `_t_tau/` beside the source, and `core.build.shipped_files` walks the
-    # folder rather than reading a manifest -- so running the tests once put
-    # stub wavs and a fake tau.json into the next release.
+    # A temp directory, removed on the way out. `core.build.shipped_files`
+    # walks the folder rather than reading a manifest, so scratch written
+    # beside the source would end up in the next release.
     import shutil, tempfile
     tmp = Path(tempfile.mkdtemp(prefix="t_tau_"))
     try:
@@ -133,8 +132,8 @@ def _run(tmp: Path) -> int:
               ts.usable_alpha(name) >= 1.0, str(ts.usable_alpha(name)))
     check("the ceiling is finite", ts.usable_alpha("pressing") < 4.0)
 
-    # Two takes that barely differ produce a direction made of noise, and
-    # scaling noise is the failure this has to name rather than hide.
+    # Two takes that barely differ produce a direction made of noise; that
+    # is reported rather than scaled.
     same = dict(paths)
     flat = tmp / "flat.wav"; flat.write_bytes(b"")
     eng2 = FakeEngine({paths["explaining"]: BASE,
@@ -275,7 +274,7 @@ def _run(tmp: Path) -> int:
           w.voice_fingerprint() not in ("inner", "inner|tau=base"))
 
     # Per-direction strength: the registers are not equally far from neutral
-    # and the ear did not want them at one setting.
+    # and do not sound right at one setting.
     w3 = ExpressionShifted(Inner(), ts, alphas={"pressing": 1.0,
                                                 "conceding": 0.7})
     check("each direction carries its own strength",
@@ -353,9 +352,8 @@ def _run(tmp: Path) -> int:
     check("a responding one is not",
           "NOTHING GOT THROUGH" not in T.sweep_report(live))
 
-    # The correction that this whole second pass exists for: a swing smaller
-    # than the spread between identical renders is not an effect, however
-    # large it looks next to nothing.
+    # A swing smaller than the spread between identical renders is noise,
+    # not an effect.
     noisy = ([row("pressing", 0.0, r, f0=f) for r, f in enumerate((140., 160., 150.))]
              + [row("pressing", 0.7, r, f0=f) for r, f in enumerate((145., 158., 152.))]
              + [row("pressing", 1.4, r, f0=f) for r, f in enumerate((148., 155., 149.))])

@@ -1,8 +1,8 @@
 """
 Captions built from MEASURED segment durations.
 
-v1 estimated every timestamp at 140 wpm. Over a 30-minute lecture a 10% rate
-error accumulates to ~3 minutes of caption drift by the end. Here, each
+Timestamps are not estimated from a fixed speaking rate, since a 10% rate
+error drifts ~3 minutes over a 30-minute lecture. Instead each
 segment's window is its real ffprobe'd duration, and sentences are distributed
 inside that window proportionally to character count. That is accurate to the
 segment boundary and typically within ~0.3s inside it, which is fine for
@@ -89,8 +89,8 @@ def shift_srt(src: Path, out: Path, by: float) -> Path:
 
     Captions are timed against the narration, which starts at zero. A video
     holds a lead-in before the first word, so the same file sitting beside the
-    video is early by exactly that lead-in -- 0.6 s, which is enough to read
-    as a mistake. A lecture already accounts for this when it builds its cues;
+    video is early by exactly that lead-in (0.6 s). A lecture already
+    accounts for this when it builds its cues;
     anything that narrates first and muxes afterwards has to shift the file.
     """
     src, out = Path(src), Path(out)

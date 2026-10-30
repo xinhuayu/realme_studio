@@ -1,26 +1,23 @@
 """
 Stance-aware pacing, added by WRAPPING an adapter rather than changing one.
 
-Every adapter in this project already takes a per-utterance `pace` multiplier,
-and piper already applies it on top of its configured speed:
+Every adapter takes a per-utterance `pace` multiplier, and piper applies it
+on top of its configured speed:
 
     scale = 1.0 / (self.speed * (pace or 1.0))
 
-That is exactly the relationship this needs. `self.speed` is the measured
-dialogue pace -- set by `realme voice pace`, or the calibrated fallback in
-`casting.DIALOGUE_SPEED` -- and a stance must MODIFY that, never replace it.
-A stance that set an absolute speed would silently discard a measurement
-someone took on purpose.
+`self.speed` is the measured dialogue pace -- set by `realme voice pace`, or
+the calibrated fallback in `casting.DIALOGUE_SPEED` -- and a stance must
+MODIFY that, never replace it, so the measurement is kept.
 
-So there is nothing to change in the adapters. This is a delegating proxy: it
-answers every attribute from the adapter it wraps, and intercepts exactly one
-call to multiply in the stance's pace. Delete this file and the adapters are
-untouched, because they never knew about it.
+The adapters need no change. This is a delegating proxy: it answers every
+attribute from the adapter it wraps, and intercepts exactly one call to
+multiply in the stance's pace.
 
 The fingerprint is the one place the proxy must NOT be transparent. The render
 ledger keys cached audio on `voice_fingerprint()`, and if a stance-paced voice
-reported the same fingerprint as a flat one, an experiment would be served the
-flat audio it rendered an hour ago and would measure nothing at all.
+reported the same fingerprint as a flat one, an experiment would be served
+cached flat audio.
 """
 from __future__ import annotations
 from realme.expressive import stance as ST
@@ -32,14 +29,14 @@ class StancePaced:
     Usage is deliberately explicit -- the stance is set before each call rather
     than inferred -- because the thing being tested is whether a KNOWN stance
     produces an audible difference, and an adapter that guessed would make the
-    result impossible to attribute.
+    result hard to attribute.
     """
 
     def __init__(self, inner, *, enabled: bool = True, strength: float = 1.0):
         #: `strength` scales every multiplier toward 1.0, so an experiment can
         #: sweep the whole mapping with one number instead of editing a table.
-        #: 0.0 reproduces the unwrapped adapter exactly, which is what makes
-        #: the control arm of a comparison trustworthy.
+        #: 0.0 reproduces the unwrapped adapter exactly, for the control arm
+        #: of a comparison.
         self._inner = inner
         self._enabled = bool(enabled)
         self._strength = float(strength)
@@ -87,18 +84,16 @@ class StancePaced:
 class StanceVoiced:
     """An adapter that speaks each turn in the register matching its stance.
 
-    The engine already takes a per-utterance reference -- `synthesize(...,
+    The engine takes a per-utterance reference -- `synthesize(...,
     voice=<wav>)` -- so switching registers needs nothing added to it. This
-    chooses which one, from the stance the script writer already assigns.
+    chooses which one, from the stance the script writer assigns.
 
-    Wrapping rather than editing, for the same reason as `StancePaced`: the
-    adapter never learns that registers exist, and deleting this file leaves
-    it as it was. The two wrappers compose -- pace one, voice the other --
-    because each intercepts a different part of the same call.
+    Wrapping rather than editing, as with `StancePaced`: the adapter does not
+    know that registers exist. The two wrappers compose -- pace one, voice
+    the other -- because each intercepts a different part of the same call.
 
     A stance with no register recorded falls back to the neutral one, and says
-    so once per stance rather than once per turn: a dialogue of forty turns
-    should not print the same line forty times.
+    so once per stance rather than once per turn.
     """
 
     def __init__(self, inner, registers: dict, *, enabled: bool = True,
@@ -166,18 +161,16 @@ class ExpressionShifted:
     The continuous version of `StanceVoiced`. That one switches between the
     four references that were actually recorded; this one moves between them,
     and past them, by handing the engine `x(neutral) + alpha * tau(stance)`
-    instead of a file. Four recordings become a continuum.
+    instead of a file.
 
-    Wrapping rather than editing, as with the other two, but with one
-    difference that cannot be wrapped away: the engine has to accept a vector.
-    `set_expression` on the adapter is the whole of that change, and it is
-    inert until called -- an adapter that never hears from this class produces
-    exactly the bytes it produced before this file existed.
+    Wrapping rather than editing, as with the other two, except that the
+    engine has to accept a vector. `set_expression` on the adapter provides
+    that, and it is inert until called: an adapter that is never wrapped by
+    this class produces identical output.
 
-    An adapter that has no `set_expression` at all is not silently tolerated.
-    It would run, sound completely ordinary, and be mistaken for a null result
-    about emotion vectors when it was really a null result about this wrapper.
-    So it says so, once, loudly.
+    An adapter that has no `set_expression` would run and sound ordinary,
+    which could be mistaken for a null result about emotion vectors. This is
+    reported once.
     """
 
     #: Which direction each stance leans on. The same table as StanceVoiced's,
@@ -193,9 +186,8 @@ class ExpressionShifted:
 
     #: How far along each direction, per direction.
     #:
-    #: Not one number, because the registers are not equally far from neutral
-    #: to begin with and the ear did not like them at the same strength. These
-    #: are where the sweep's listening landed; `alpha=` overrides the lot, and
+    #: Per direction, because the registers are not equally far from neutral.
+    #: Values chosen by listening to sweeps; `alpha=` overrides the lot, and
     #: `alphas=` overrides them one at a time.
     ALPHA = {"pressing": 0.85, "conceding": 0.85, "wondering": 0.85}
 
@@ -206,10 +198,9 @@ class ExpressionShifted:
         #
         # StanceVoiced passes `voice=<register>.wav`, which makes the engine
         # encode THAT clip -- and then this wrapper replaces the result
-        # outright. The register would be silently discarded, after paying for
-        # the speaker encoder to produce it, and the fingerprint would claim
-        # both were in force. alpha = 1 already IS the register, so stacking
-        # them is not even a thing anyone would want.
+        # outright. The register would be silently discarded and the
+        # fingerprint would claim both were in force. alpha = 1 along a
+        # direction already IS the register.
         if isinstance(inner, StanceVoiced) or hasattr(inner, "_registers"):
             raise ValueError(
                 "a register-switching voice cannot also be shifted by an "
@@ -255,8 +246,7 @@ class ExpressionShifted:
         """The strength for this turn, never past what the takes support.
 
         Clamped to the measured ceiling rather than to a constant: a direction
-        built from two takes that barely differ cannot carry alpha = 1, and the
-        set knows that about itself.
+        built from two takes that barely differ cannot carry alpha = 1.
         """
         d = self.direction_now()
         if not d:
@@ -282,18 +272,12 @@ class ExpressionShifted:
             # A turn with no direction still gets a vector: the ORIGIN of this
             # space, x(explaining).
             #
-            # Leaving it None looked like the obvious no-op and was not one.
-            # The adapter then falls back to its own `reference_wav` -- the
-            # enrolled clip, a different recording on a different day from the
-            # register take every direction is measured from. So the
-            # unshifted turns of a dialogue were spoken by a slightly
-            # different voice than the shifted ones, and in a comparison
-            # against the register switcher (which uses the neutral TAKE for
-            # those turns) the two arms were not the same condition even at
-            # alpha = 1, where the arithmetic says they must be.
-            #
-            # A control that is quietly a different voice is the fault this
-            # project keeps rediscovering. Anchor it explicitly.
+            # None is not a no-op: the adapter would fall back to its own
+            # `reference_wav`, the enrolled clip, which is a different
+            # recording from the register take every direction is measured
+            # from. Unshifted turns would then use a slightly different voice,
+            # and a comparison against the register switcher (which uses the
+            # neutral TAKE for those turns) would not match even at alpha = 1.
             vec = (self._tau.vector({d: 1.0}, a, renorm=self._renorm)
                    if d and a else list(self._tau.base))
             self._inner.set_expression(vec, alpha=a)
@@ -307,9 +291,8 @@ class ExpressionShifted:
         """Never transparent while this wrapper is in force.
 
         The render ledger keys cached audio on this string. A shifted turn that
-        reported the flat fingerprint would be served the flat take rendered an
-        hour ago, and the experiment would measure nothing -- the same trap
-        StancePaced documents, one layer along.
+        reported the flat fingerprint would be served the cached flat take,
+        as described for StancePaced.
         """
         base = self._inner.voice_fingerprint()
         if not (self._enabled and self._supported):

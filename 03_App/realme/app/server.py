@@ -48,8 +48,7 @@ LEAN = os.environ.get("REALME_LEAN") == "1"
 MB, GB = 1 << 20, 1 << 30
 #: The most one upload may be, by what it is. A file is copied to disk in
 #: chunks and refused (413) the moment it passes its cap; it is never held in
-#: memory whole. Videos are the large case; text is small by nature, and a
-#: notes file of 50 MB is not notes.
+#: memory whole. Videos are the large case; text files get a small cap.
 UPLOAD_LIMITS = {"video": 2 * GB, "deck": 1 * GB, "audio": 500 * MB,
                  "document": 200 * MB, "text": 20 * MB}
 _UPLOAD_WHAT = {"video": "a video", "deck": "a slide deck",
@@ -242,8 +241,8 @@ def _origin_ok(origin: str, host_header: str) -> bool:
     """Is `origin` this Studio's own page?
 
     Parsed and compared whole -- scheme, host and port -- against the Host
-    the request was sent to. A prefix test let `http://127.0.0.1:8000.evil.
-    example` and `http://localhost:80001` through as "local".
+    the request was sent to. A prefix test would accept `http://127.0.0.1:
+    8000.evil.example` and `http://localhost:80001` as "local".
     """
     from urllib.parse import urlsplit
     try:
@@ -260,9 +259,8 @@ runner = JobRunner(state_path=DATA / "jobs.json")
 profile = Profile(DATA / "profile")
 
 # TTS price per million characters, for the pre-render estimate.
-#: Dollars per million CHARACTERS of narration -- which is the unit
-#: `lec.estimate_cost` divides by, and the unit the other entries here were
-#: always in. Local engines are absent and cost nothing.
+#: Dollars per million CHARACTERS of narration -- the unit
+#: `lec.estimate_cost` divides by. Local engines are absent and cost nothing.
 #:
 #: gemini-tts is billed per audio token, not per character, so it has to be
 #: converted: $9 per million audio tokens at ~32 tokens a second is $1.04 an
@@ -270,11 +268,6 @@ profile = Profile(DATA / "profile")
 #: (measured on the probe's own calibration clips), so a million characters is
 #: 18.5 hours and about $19.30. Both halves of the Google price double on
 #: 1 January 2027.
-#:
-#: Written out because the first version of this line said "$1.04" with a
-#: comment calling it dollars per hour -- a number that was right about the
-#: world and wrong about this dictionary, and would have quoted a 10,000
-#: character lecture at one cent.
 PRICE = {"espeak": 0.0, "google_chirp3": 60.0, "elevenlabs": 165.0,
          "chatterbox": 0.0, "gemini-tts": 19.30}
 
@@ -308,9 +301,8 @@ def build_tts(name: str, **overrides):
     """
     Construct an adapter with everything the profile knows about your voice.
 
-    Delegates to the shared factory. Three call sites used to do this three
-    different ways and each got it wrong differently; see
-    realme/adapters/factory.py.
+    Delegates to the shared factory, so every caller constructs adapters
+    the same way; see realme/adapters/factory.py.
     """
     from realme.adapters.factory import build
     from realme.adapters.base import AdapterUnavailable
@@ -321,10 +313,10 @@ def build_tts(name: str, **overrides):
 
 
 # One adapter per engine, shared by every preview and render, and one lock
-# around synthesis. A fresh `build_tts()` per request meant a full model load
-# for every preview click and, on the PyTorch path, a worker process left
-# behind each time; two renders submitted together drove two DLL contexts
-# at once.
+# around synthesis. A fresh `build_tts()` per request would mean a full model
+# load for every preview click and, on the PyTorch path, a worker process
+# left behind each time; the lock keeps two renders from driving two DLL
+# contexts at once.
 _TTS_CACHE: dict[str, object] = {}
 _TTS_LOCK = threading.Lock()
 SYNTH_LOCK = threading.RLock()
@@ -347,8 +339,8 @@ class _Serialised:
 def make_tts(name: str, **overrides):
     """The adapter for this engine, built once per distinct configuration.
 
-    `overrides` is part of the key, not decoration: "piper with Amy" and
-    "piper with Ryan" are different engines to everyone except the cache.
+    `overrides` is part of the key: "piper with Amy" and "piper with Ryan"
+    are different engines.
     """
     key = name + "|" + repr(sorted(overrides.items()))
     with _TTS_LOCK:
@@ -363,11 +355,9 @@ def make_tts(name: str, **overrides):
 def engine_for(spec: str, *, pace: float | None = None, max_spend=None):
     """The adapter for "engine" or "engine:voice", from the shared cache.
 
-    Every path that speaks goes through here. Three of them used to call
-    `factory.build` directly, so the engine the Studio had already loaded in
-    the background was ignored and a second copy of a 2 GB model was loaded
-    at the first Render -- both copies then sitting in memory for the life of
-    the process.
+    Every path that speaks goes through here, so the engine warmed up in
+    the background is reused. Calling `factory.build` directly would load a
+    second copy of a 2 GB model and keep both in memory.
     """
     from realme.pipeline import casting
     name, voice_file = casting.split_spec(spec)
@@ -549,14 +539,12 @@ WARM: dict = {"engine": "", "state": "idle", "detail": "", "seconds": 0.0}
 def warm_engine(name: str = "", *, block: bool = False) -> None:
     """Load the speech engine now, in the background, into the shared cache.
 
-    The model load is tens of seconds and it used to happen at the first
-    click of Preview or Render -- so the cost landed exactly when somebody
-    was waiting to hear something. Nothing else needs it: uploading a deck
-    and drafting a script are a model call and some PDF work. Doing it while
-    they read the draft is free wall-clock.
+    The model load takes tens of seconds. Doing it now, while the user
+    uploads a deck and reads the draft, keeps it off the first click of
+    Preview or Render.
 
     Failure here is not fatal and is deliberately not raised: the engine is
-    reported as it always was by /api/doctor, and the first render will
+    reported by /api/doctor as usual, and the first render will
     raise the same AdapterUnavailable with the same advice. Set
     REALME_NO_WARMUP=1 to keep the memory until it is asked for.
     """
@@ -642,9 +630,9 @@ _PID_OK = re.compile(r"[^A-Za-z0-9_\-]")
 def project_id_from(filename: str, fallback: str = "lecture") -> str:
     """A project id that is safe as a folder name AND as a URL path segment.
 
-    Only spaces used to be replaced, so `Lecture #3.pdf` became a folder the
-    UI then asked for as `/api/lecture/Lecture_` -- 404, and the editor never
-    opened.
+    Every character outside a safe set is replaced, not only spaces:
+    `Lecture #3.pdf` would otherwise become a folder the UI asks for as
+    `/api/lecture/Lecture_`, which 404s.
     """
     stem = Path(re.split(r"[\\/]", filename or "")[-1]).stem
     pid = _PID_OK.sub("_", stem)
@@ -657,8 +645,8 @@ def project_id_from(filename: str, fallback: str = "lecture") -> str:
 def safe_filename(name: str | None, fallback: str) -> str:
     """The base name of an upload, with nothing that can leave the folder.
 
-    Starlette passes `filename` through untouched, so `../../x.pdf` was
-    joined to the project directory as written.
+    Starlette passes `filename` through untouched, so `../../x.pdf` would
+    otherwise be joined to the project directory as written.
     """
     # Split on both separators: on Linux (Colab) a backslash is not one,
     # and the name would keep it.
@@ -670,8 +658,8 @@ def safe_filename(name: str | None, fallback: str) -> str:
 def project_dir(pid: str) -> Path:
     root = PROJECTS.resolve()
     p = (root / pid).resolve()
-    # `startswith` accepted a sibling folder that merely shares the prefix
-    # (`projects_x`); is_relative_to does not.
+    # `startswith` would accept a sibling folder that merely shares the
+    # prefix (`projects_x`); is_relative_to does not.
     if p == root or not p.is_relative_to(root) or not pid or "/" in pid or "\\" in pid:
         raise HTTPException(400, "Bad project id")
     return p
@@ -680,10 +668,9 @@ def project_dir(pid: str) -> Path:
 def new_project(filename: str) -> tuple[str, Path, str]:
     """A folder for a NEW lecture made from `filename`: (id, dir, note).
 
-    Never an existing project's folder. Taking the id straight from the file
-    name meant drafting or importing `Week3.pdf` a second time wrote into
-    the `Week3` project already there -- its approved narration replaced by
-    a fresh draft, with nothing said. The deck's name is kept and numbered
+    Never an existing project's folder, so drafting or importing `Week3.pdf`
+    a second time cannot overwrite the approved narration in the `Week3`
+    project already there. The deck's name is kept and numbered
     instead (`Week3_2`, `Week3_3`, ...); revising an existing lecture is
     what the Revise path is for. `note` says so when it happens.
 
@@ -732,10 +719,8 @@ def index():
 def doctor():
     # Re-read .env on every check, not once at import.
     #
-    # Otherwise the obvious thing to do after setting a key -- refresh the page
-    # -- cannot possibly work: the process cached the environment at startup,
-    # so the browser re-renders the same stale answer and it looks like the key
-    # was never saved. Reading a small file per status call costs nothing.
+    # A key saved after startup then shows up on a page refresh. Reading a
+    # small file per status call is cheap.
     _load_env()
 
     from realme.pipeline import pdfdoc
@@ -757,8 +742,8 @@ def doctor():
         except AdapterUnavailable as e:
             writers[nm] = {"ok": False, "detail": str(e)}
 
-    # "No key" is a dead end unless it also says where it looked. These are the
-    # three paths env.candidates() searches, in order, with what each holds.
+    # Report where the key was looked for: the three paths
+    # env.candidates() searches, in order, with what each holds.
     from realme.core.env import candidates, data_home
     key_search = [{"path": str(c), "exists": c.is_file(),
                    "has_gemini": bool(c.is_file() and "GEMINI_API_KEY" in
@@ -769,11 +754,8 @@ def doctor():
     voices = {}
     have_ref = bool(profile.data.get("voice_reference"))
     # Only the engines this project actually sets up, and asked the cheap
-    # question. This loop used to walk the whole registry calling
-    # `preflight()`, which for qwen3cpp IS the 2 GB model load -- so every
-    # page refresh loaded the model, threw it away, and the first render
-    # then loaded it again. It also tried to import torch on behalf of
-    # engines nobody here has installed.
+    # question. `preflight()` is not used: for qwen3cpp it IS the 2 GB model
+    # load, and for other registry entries it would try to import torch.
     for nm in DEVELOPED:
         cls = TTS_REGISTRY[nm]
         try:
@@ -797,16 +779,16 @@ def doctor():
                           "placeholder": getattr(cls, "is_placeholder", False)}
     from realme.core import textio
     return {"binaries": bins, "writers": writers, "voices": voices,
-            # Named, not probed. They stay selectable from the command line;
-            # what would be dishonest is a status pill for an engine this
-            # project neither installs nor tests.
+            # Named, not probed. They stay selectable from the command line,
+            # but get no status pill: this project neither installs nor
+            # tests them.
             "other_engines": NOT_DEVELOPED,
             "engine_warm": dict(WARM),
             "pdf_backend": pdfdoc.backend(),
-            # Files this session found written in the old Windows encoding and
-            # rewrote as utf-8. Worth surfacing: it explains why a project made
-            # before September 2026 opened after a pause, and it is the only
-            # trace of a repair that deliberately leaves no other mark.
+            # Files this session found written in a legacy Windows encoding
+            # and rewrote as utf-8. Reported here because the repair leaves
+            # no other trace, and it explains a slow first open of an older
+            # project.
             "repaired_encoding": [Path(f).name for f in textio.REPAIRED[-8:]],
             "key_search": key_search,
             "key_write_to": str(data_home() / ".env"),
@@ -850,10 +832,10 @@ async def set_profile(patch: dict):
 def lexicon_list():
     """Your pronunciations, and the ones that ship with the project.
 
-    Both, and marked, because only yours survive an update -- a list that did
-    not distinguish them would invite someone to rely on a built-in entry that
-    the next release quietly replaces. Yours are editable here; the built-ins
-    are shown so you can see a term is already handled before adding it again.
+    Both, and marked, because only the user's own survive an update; a
+    built-in entry may change in the next release. User entries are editable
+    here; the built-ins are shown so a term already handled is not added
+    again.
     """
     from realme.text.lexicon import (Lexicon, load_user_entries,
                                      user_lexicon_path)
@@ -907,7 +889,7 @@ def lexicon_remove_query(term: str = ""):
 
     The form the page uses. A term may contain "/" ("and/or", "w/o"), and
     in the path form below a slash -- even sent as %2F -- splits the term
-    into two segments, so such an entry could be added but never removed.
+    into two segments, so the path form cannot remove such an entry.
     """
     if not term.strip():
         raise HTTPException(400, "Say which term to remove: ?term=...")
@@ -955,11 +937,9 @@ def draft_voices():
     current = draft_voice()
     # `piper_status`, not `piper_voice_file(...).is_file()`.
     #
-    # A piper voice is the .onnx AND its .onnx.json, and the two answers
-    # disagreed: this endpoint checked the model alone, while the loader
-    # checks the pair. A voice with a missing .json therefore showed as
-    # installed here and failed at load -- and one whose folder was not where
-    # this looked showed as missing with nowhere to look it up.
+    # A piper voice is the .onnx AND its .onnx.json. The loader checks the
+    # pair, so this endpoint must too, or a voice with a missing .json shows
+    # as installed and then fails at load.
     voices = [{"name": n, "label": label,
                "installed": piper_status(home, n)["voice_present"]}
               for n, label in DRAFT_VOICES.items()]
@@ -977,15 +957,12 @@ def api_models(writer: str = "gemini"):
     """
     Which Gemini models this key can call -- asked, not remembered.
 
-    The Studio's model list was three hardcoded ids, one of them labelled
-    "free tier" and one of them (`gemini-3-pro-preview`) shut down by Google
-    while it sat in the dropdown. A list written into a web page is out of date
-    the moment a preview retires, and the failure is a bare HTTP 404 from a URL
-    containing the model name, which reads like a broken endpoint.
+    A hardcoded list goes out of date whenever Google retires a preview, and
+    a retired model fails as a bare HTTP 404 that reads like a broken
+    endpoint.
 
     So the page asks. If the key is missing or the call fails, the configured
-    default is offered alone, with the reason -- a dropdown with one working
-    entry beats a dropdown of plausible dead ones.
+    default is offered alone, with the reason.
     """
     from realme.adapters.script_writer import list_models, DEFAULT_MODEL
     from realme.adapters.script_writer_more import WRITERS, models_for
@@ -1043,8 +1020,8 @@ async def upload_profile_audio(kind: str = Form(...), file: UploadFile = File(..
                     profile.update({"reference_wpm": drift["wpm"]})
             elif text:
                 # The transcript describes the PREVIOUS recording. Dividing
-                # its word count by this recording's speech time is how a
-                # 323 words-a-minute "measurement" happened.
+                # its word count by this recording's speech time would give
+                # a meaningless rate.
                 drift = {"note": profile.transcript_note}
         except Exception as e:                     # never block an enrolment
             drift = {"note": "", "error": str(e)[:200]}
@@ -1060,8 +1037,8 @@ async def upload_profile_audio(kind: str = Form(...), file: UploadFile = File(..
 def _deck_readable(name: str) -> None:
     """Turn away a deck this machine cannot open, before any folder or job.
 
-    PDF always works. A .pptx needs LibreOffice, which most colleagues do
-    not have -- so the answer asks for the PDF version.
+    PDF always works. A .pptx needs LibreOffice, which is often not
+    installed -- so the answer asks for the PDF version.
     """
     why = slides_mod.deck_problem(name)
     if why:
@@ -1114,17 +1091,17 @@ def list_projects():
 def old_deck_path(pdir: Path) -> Path | None:
     """The deck file this project was last built from, or None.
 
-    `deck_path.txt` is written by every path that ingests a deck. Projects made
-    before it existed fall back to whatever deck is sitting in the project
-    folder, which is where all three ingest paths put it.
+    `deck_path.txt` is written by every path that ingests a deck. A project
+    without it falls back to whatever deck is sitting in the project folder,
+    which is where all three ingest paths put it.
     """
     recorded = pdir / "_work" / "deck_path.txt"
     if recorded.is_file():
         p = Path(read_text(recorded).strip())
         if p.is_file():
             return p
-        # Recorded but moved: the folder is the next best guess, and saying
-        # nothing here is what made the last failure so hard to see.
+        # Recorded but moved: the folder is the next best guess. Say so,
+        # so a wrong guess is traceable.
         stray = p.name
         if (pdir / stray).is_file():
             return pdir / stray
@@ -1169,9 +1146,9 @@ async def lecture_revise(pid: str, file: UploadFile = File(...),
 
     # The upload lands in the staging folder, NOT beside the old deck. Two
     # reasons: re-exporting under the same filename is the normal way to revise
-    # a deck, and writing the upload to `pdir / file.filename` destroyed the old
-    # one before it could be read; and nothing a comparison produces belongs in
-    # the project until the Save button says so.
+    # a deck, and writing the upload to `pdir / file.filename` would destroy
+    # the old one before it could be read; and nothing a comparison produces
+    # belongs in the project until the Save button says so.
     staged = pending.begin(pdir)
     deck = staged / "deck" / safe_filename(file.filename, "deck.pdf")
     try:
@@ -1192,9 +1169,8 @@ async def lecture_revise(pid: str, file: UploadFile = File(...),
                 f"lecture was written from.")
         words = sum(len(t.split()) for t in old_texts)
         if words < 3 * max(1, len(old_texts)) // 2:
-            # Loud, because this is the condition that used to pass silently.
-            # Matching on empty text falls back to pixels, and pixels report a
-            # re-themed deck as forty new slides.
+            # Reported prominently. Matching on empty text falls back to
+            # pixels, and pixels report a re-themed deck as all new slides.
             job.say(f"  ! only {words} words of text came out of "
                     f"{old_deck.name}. If these are scanned images, slides "
                     f"will be matched on appearance alone and small edits will "
@@ -1249,9 +1225,9 @@ async def lecture_revise(pid: str, file: UploadFile = File(...),
             # A slide carrying no text -- a full-page figure -- is matched on
             # appearance, and appearance cannot survive a theme that repaints
             # the background behind it. When that happens the same slide is
-            # reported as one removal and one addition. Saying so is honest;
-            # pairing them automatically would move narration onto a slide that
-            # only looks similar, which is the one mistake worth avoiding here.
+            # reported as one removal and one addition. They are not paired
+            # automatically, which could move narration onto a slide that
+            # only looks similar.
             job.say(f"  note: {len(plan.removed)} slide(s) went and "
                     f"{len(added)} arrived. If any of those are really the "
                     f"same slide -- a figure page usually is, since it has no "
@@ -1287,10 +1263,9 @@ async def lecture_script_import(file: UploadFile = File(...),
     """
     A deck plus narration you already wrote.
 
-    The importer and its strict 1..N validation existed from the start; the
-    lecture page just never offered a way in, so anyone with their own notes
-    had to use the command line or let the model rewrite what they had
-    already written.
+    The Studio's route to the importer and its strict 1..N validation, so
+    existing notes can be used without the command line and without the
+    model rewriting them.
     """
     from realme.pipeline.script_import import (parse_slide_script, to_manifest,
                                                ScriptImportError)
@@ -1327,8 +1302,7 @@ async def lecture_script_import(file: UploadFile = File(...),
         if len(m.segments) != len(pages):
             # Refused rather than rendered: a script with more or fewer
             # sections than the deck has slides maps onto the wrong pictures,
-            # and that is the one failure nobody notices until the video is
-            # watched.
+            # which is easy to miss in the finished video.
             raise ValueError(
                 f"The notes have {len(m.segments)} slide sections but the deck "
                 f"has {len(pages)} slides. Fix the markers and import again.")
@@ -1487,8 +1461,8 @@ async def draft_additions(pid: str, script_writer: str = Form("gemini"),
         writer.log = job.say
         slide_pngs = slides_mod.slide_pages(pending.slides_dir(pdir))
         if len(slide_pngs) != len(m.segments):
-            # Loud, because the alternative is narration written against the
-            # wrong pictures -- the failure nobody notices until they watch it.
+            # Reported prominently: otherwise narration is written against
+            # the wrong pictures, which is easy to miss in the finished video.
             raise ValueError(
                 f"{len(slide_pngs)} slide images but {len(m.segments)} "
                 f"segments. Re-run the revision before drafting.")
@@ -1563,8 +1537,8 @@ async def voice_analyze(file: UploadFile = File(...)):
     VOICE_DIR.mkdir(parents=True, exist_ok=True)
     tmp = await save_upload(file, VOICE_DIR / ("_upload" + suffix), "audio")
     # The analysis runs ffmpeg several times and beautifies once per preset;
-    # under `async def` that blocked the event loop and froze every tab's
-    # job polling for the duration. Off the loop, into the thread pool.
+    # under `async def` that would block the event loop and every tab's job
+    # polling. Off the loop, into the thread pool.
     from starlette.concurrency import run_in_threadpool
     return await run_in_threadpool(_voice_analyze_sync, tmp)
 
@@ -1589,8 +1563,8 @@ def _voice_analyze_sync(tmp: Path):
     try:
         V.compare(raw, VOICE_DIR)
     except Exception as e:
-        # Swallowing this made the preview endpoint later say "upload a
-        # reference recording first" about a recording that had been uploaded.
+        # Not swallowed: otherwise the preview endpoint would later say
+        # "upload a reference recording first" about one that was uploaded.
         presets_error = f"{type(e).__name__}: {e}"
     return {"report": asdict(report),
             "presets": [{"name": k, "label": v["label"]} for k, v in V.PRESETS.items()],
@@ -1602,8 +1576,9 @@ def voice_tune(body: dict):
     """
     Render the reference through one custom Treatment so it can be heard.
 
-    Sliders are useless without this: nobody can predict what "vividness +0.12"
-    does by reading it. One render per change, straight back to the browser.
+    Lets the sliders be judged by ear, since a value like "vividness +0.12"
+    is not meaningful on its own. One render per change, straight back to
+    the browser.
     """
     from realme.enrollment import voice as V
     raw = VOICE_DIR / "reference_raw.wav"
@@ -1687,9 +1662,8 @@ def voice_bake(body: dict):
         raise HTTPException(400, "Upload a reference recording first")
     baked = profile.root / "baked_assets" / "voice_reference.wav"
     # Do not bake a stale take over a newer one. Enrolling from the command
-    # line now refreshes the raw copy, so this should never fire -- but if it
-    # does, the alternative is silently replacing the voice you are using with
-    # one you recorded weeks ago.
+    # line refreshes the raw copy, so this should not fire; it guards
+    # against silently replacing the enrolled voice with an older recording.
     if baked.exists() and raw.stat().st_mtime < baked.stat().st_mtime - 5:
         raise HTTPException(409,
             f"The recording in {raw.parent.name}\\ is OLDER than the voice you "
@@ -1757,9 +1731,8 @@ def _gemini_state() -> dict:
                                 if g.get("max_chars") is None
                                 else (g["max_chars"] or 260)),
         "measured_default": G.MEASURED_MAX_CHARS,
-        # The EFFECTIVE correction, not the stored one. The Studio's badge
-        # read "pace retimed by 1.25" off the stored field while the adapter
-        # was free to ignore it -- a number on screen that no render used.
+        # The EFFECTIVE correction, not the stored one: the adapter may
+        # ignore the stored value, and the badge must show what renders use.
         "rate_match": G.effective_rate_match(g)[0] if g.get("rate_match") else None,
         "rate_match_stored": g.get("rate_match"),
         "rate_match_for": g.get("rate_match_for"),
@@ -1841,10 +1814,9 @@ def gemini_check():
 def gemini_voices():
     """Every replicated voice in the Google project.
 
-    Exists because a voice can be created there and lost here: the first
-    version of the creation parser did not recognise the response shape and
-    reported a failure for a voice that had been made. Without this the only
-    remedy was paying to make another one.
+    A voice can exist there without being recorded here, e.g. when an
+    enrolment reported failure after Google had created the voice. This
+    lists it so it can be adopted or deleted.
     """
     _load_env()
     from realme.adapters import tts_gemini as G
@@ -1884,8 +1856,8 @@ def gemini_use(body: dict):
 def gemini_pace(body: dict | None = None):
     """Measure the clone's actual speaking rate and store the correction.
 
-    Costs one short render -- about a cent. The alternative is choosing a
-    number by listening, which is how a lecture ends up 5% slow for a term.
+    Costs one short render -- about a cent -- and is more accurate than
+    choosing a number by ear.
     """
     _load_env()
     from realme.enrollment.pace import calibrate_engine
@@ -1982,8 +1954,8 @@ def gemini_forget(body: dict | None = None):
 
 
 # Request bodies, declared so that /docs and /openapi.json say what each
-# route takes. Extra fields are ignored, as they were when these were dicts;
-# a wrong TYPE is now a 422 naming the field, instead of a 500 later on.
+# route takes. Extra fields are ignored; a wrong TYPE is a 422 naming the
+# field, instead of a 500 later on.
 
 class PreviewRequest(BaseModel):
     text: str = Field("", description="A sentence or two of narration")
@@ -2007,10 +1979,9 @@ def preview_utterance(req: PreviewRequest):
     pace = float(body.get("pace") or 1.0)
     # The same engine the render builds -- `engine_for`, so the saved voice
     # speed is applied -- and given the pace the same way the render gives
-    # it: as an argument to `synthesize`. `speak.preview` called it with no
-    # pace, so on an engine that realises pace itself (qwen3cpp, piper) the
-    # line was heard at 1.0 while the render spoke it at the slide's pace --
-    # and the take was then filed in the ledger under the slide's pace.
+    # it: as an argument to `synthesize`. On an engine that realises pace
+    # itself (qwen3cpp, piper), a preview without it would be heard at 1.0
+    # yet filed in the ledger under the slide's pace.
     tts = _PacedSynth(engine_for(body.get("tts")
                                  or profile.data["adapters"]["tts"]), pace)
     try:
@@ -2027,8 +1998,7 @@ def preview_utterance(req: PreviewRequest):
     if pid:
         # A lecture keeps its takes in _work/audio under _work/ledger.json --
         # the same ledger its render reads, so a sentence heard here is not
-        # bought again. (This looked only for an explainer's narration folder,
-        # so a lecture's previews were thrown away while the page said "kept".)
+        # bought again.
         pdir = project_dir(pid)
         if (pdir / "_work" / "manifest.json").is_file():
             from realme.core.ledger import RenderLedger
@@ -2085,8 +2055,8 @@ def render_lecture(pid: str, body: dict | None = None):
     pdir = project_dir(pid)
     if pending.exists(pdir):
         # Refused rather than rendered. Rendering would have to pick one of two
-        # decks, and picking silently is how someone ends up with a video of
-        # the version they had not agreed to.
+        # decks, and picking silently could render a version the user has not
+        # approved.
         raise HTTPException(409,
             "A revised deck is waiting to be accepted. Save the notes to apply "
             "it, or discard the revision, then render.")
@@ -2106,10 +2076,9 @@ def render_lecture(pid: str, body: dict | None = None):
                           if body.get("layout") is not None else {}))
     except ValueError as e:
         raise HTTPException(400, str(e))
-    # Through the helper, which already knows how to find a deck for a
-    # project made before `deck_path.txt` existed. Reading the file directly
-    # here meant an older project -- exactly the kind somebody reopens to
-    # re-record -- died on a bare FileNotFoundError shown as a 500.
+    # Through the helper, which knows how to find a deck for a project
+    # without `deck_path.txt`. Reading the file directly would fail on such
+    # a project with a bare FileNotFoundError shown as a 500.
     deck = old_deck_path(pdir)
     if deck is None:
         raise HTTPException(400,
@@ -2177,8 +2146,8 @@ def render_lecture(pid: str, body: dict | None = None):
 # A finished lecture can be kept as its video and its text files only (the
 # narration, every sentence's words and timing, where each slide starts and
 # ends), downloaded as one .zip, removed, and brought back from the .zip.
-# The work is in pipeline/lean.py; a lecture nobody slims down renders
-# exactly as before.
+# The work is in pipeline/lean.py; a lecture that is not slimmed down
+# renders as usual.
 
 def _slide_level(pdir: Path, name: str, tts, *, layout: str, signalling: str,
                  video: dict, fresh: bool) -> bool:
@@ -2319,7 +2288,7 @@ def delete_project(pid: str):
 
 # ------------------------------------------------------- inserted videos
 #
-# A video that plays between two slides -- an Anim Studio explainer, a screen
+# A video that plays between two slides -- an animated explainer, a screen
 # recording -- remembered by the lecture, so every render puts it back. The
 # Tools tab drives these; the work is in pipeline/inserts.py.
 
@@ -2473,8 +2442,8 @@ def splittable():
     """Rendered videos that carry a cut list, so their slide times are known.
 
     Only these can be split at a slide boundary. A video without its
-    `_segments.json` is just a video, and guessing where slide 21 begins is
-    exactly what this tool exists not to do.
+    `_segments.json` has no known slide times, and this tool does not
+    guess them.
     """
     out = []
     if PROJECTS.is_dir():
@@ -2503,8 +2472,8 @@ def split_points(pid: str, video: str):
     """Every slide with its exact start time and the opening of its narration.
 
     The times come from the sidecar, measured when the video was assembled.
-    The words come from the script if it is still there -- they are what makes
-    a list of timestamps choosable, since nobody remembers what slide 21 was.
+    The words come from the script if it is still there, so each timestamp
+    can be recognised by what is said at it.
     """
     from realme.pipeline.split import load_cuts
     pdir = project_dir(pid)
@@ -2758,10 +2727,8 @@ async def make_narration(text: str = Form(""), tts: str = Form(""),
     """
     Read a text file aloud. No deck, no model call, no script to approve.
 
-    The cheapest thing the system does and the last to reach the Studio, which
-    is backwards: it is the step you want when checking a pronunciation, a
-    reference clip, or how a paragraph lands -- the loop you run twenty times
-    an afternoon, and the one that least deserves a command line.
+    The cheapest thing the system does: a quick loop for checking a
+    pronunciation, a reference clip, or how a paragraph sounds.
     """
     from realme.pipeline import narrate as N
 
@@ -2795,9 +2762,9 @@ async def make_narration(text: str = Form(""), tts: str = Form(""),
     # Blank means the voice the profile reads with (Gemini unless changed).
     tts = tts.strip() or profile.data["adapters"]["tts"]
     engine_name, _voice_file = casting.split_spec(tts)
-    # Per-request settings used to be written into os.environ and never
-    # cleared, so a later request asking for the default inherited whatever
-    # the previous one set. Temperature is read at construction, so it is
+    # Per-request settings must not leak into os.environ, or a later request
+    # asking for the default would inherit them. Temperature is read at
+    # construction, so it is
     # set only for the duration of the build; the spelling mode is passed
     # down as an argument.
     try:
@@ -2858,9 +2825,8 @@ async def make_dialogue(topic: str = Form(...), mode: str = Form("debate"),
                           if src.suffix.lower() in (".pdf", ".docx") else "text")
 
     writer = make_writer(script_writer, gemini_model)
-    # Through the shared caster, exactly as `realme dialogue` does. Building
-    # the two adapters here by hand is why the web page ignored every dialogue
-    # setting the CLI had -- pace, guest voice, the lot.
+    # Through the shared caster, exactly as `realme dialogue` does, so the
+    # page honours the same settings as the CLI -- pace, guest voice and so on.
     from realme.pipeline import casting
     from realme.adapters.base import AdapterUnavailable
     try:
@@ -2938,11 +2904,9 @@ def get_slide(pid: str, idx: int):
     slides = slide_pages(pending.slides_dir(project_dir(pid)))
     if not slides:
         raise HTTPException(404, "No slides rendered")
-    # No clamp. `min(idx, len-1)` quietly served the last slide for any index
-    # past the end, which is exactly how a one-off in the manifest looked like
-    # "the last slide is duplicated" instead of like an error -- the editor
-    # showed a plausible picture for an impossible index, and the real fault
-    # stayed hidden a level up.
+    # No clamp. `min(idx, len-1)` would serve the last slide for any index
+    # past the end, hiding an off-by-one in the manifest behind a plausible
+    # picture. An impossible index is an error.
     if not 0 <= idx < len(slides):
         raise HTTPException(
             404, f"Slide {idx} does not exist; this deck has {len(slides)} "
@@ -2973,8 +2937,8 @@ def serve(host="127.0.0.1", port=8000, allow_network: bool = False):
     import uvicorn
     if not is_loopback(host):
         # Refused by default: the API is unauthenticated, so a bind address
-        # other machines can reach hands it to them. `--host 0.0.0.0` alone
-        # used to do that with one line of explanation.
+        # other machines can reach hands it to them. `--host 0.0.0.0` also
+        # needs `--allow-network`.
         if not allow_network:
             raise ValueError(
                 f"Refusing to listen on {host}: the Studio has no login, and "

@@ -1,10 +1,8 @@
 """
 Gemini TTS with a replicated (cloned) voice.
 
-The first cloning engine in RealMe that is NOT on your machine, which is the
-whole of what is different about it. Everything it speaks, and the clip it was
-cloned from, leaves the computer. That is a trade, not an upgrade, and the
-adapter is written to keep the trade visible rather than convenient:
+A cloning engine that is NOT local: everything it speaks, and the clip it was
+cloned from, leaves the computer. The adapter keeps that visible:
 
   * `check()` refuses unless the project has been acknowledged as a PAID
     Gemini project. On the free tier Google's terms say human reviewers may
@@ -20,8 +18,7 @@ adapter is written to keep the trade visible rather than convenient:
     the Qwen3 weights on your disk are yours. `realme voice gemini --status`
     says which, and when it expires.
 
-Two things about delivery are different from every local engine here, and both
-are handled rather than hidden:
+Two things about delivery are different from every local engine here:
 
   1. **There is no numeric speaking-rate field.** Gemini steers delivery with a
      natural-language style string. RealMe's pace is a measured float that goes
@@ -41,7 +38,7 @@ are handled rather than hidden:
      text -- not from this docstring and not from Google's limit. Until it is
      measured the pipeline default stands.
 
-API shape, for the next person reading this against Google's docs:
+API shape, as in Google's docs:
   create a voice   POST /v1beta/voices       (source_audio + consent_audio)
   speak            POST /v1beta/interactions (generation_config.speech_config)
 """
@@ -77,44 +74,29 @@ TOKENS_PER_SECOND = 32.0
 #: because the pipeline's 260 is tuned for local autoregressive engines that
 #: drift past twenty seconds, which this one does not.
 #:
-#: Where 738 comes from. A ladder of calls from 113 to 1345 characters, each a
-#: prefix of the same passage, every size compared against the same sentences
-#: synthesized one at a time:
+#: Nothing is dropped at any size, but a long call says the words faster, which
+#: is audible as muddiness. 738 is the largest size, compared against the same
+#: sentences synthesized one at a time, that is not hurried; 839 and above
+#: come out 8-9% faster.
 #:
-#:     chars   speaking time   content (syllables)
-#:       598       0.95x             1.01x        intact
-#:       738       0.95x             0.96x        intact      <- here
-#:       839       0.92x             0.92x        rushed by 8%
-#:      1345       0.91x             0.92x        rushed by 9%
-#:
-#: Nothing is dropped at any size -- the syllables are all there. What a long
-#: call does is say them faster, and that is audible as muddiness. 738 is the
-#: last size that is not hurried, confirmed on a second take and by listening.
-#:
-#: It is NOT rescued by retiming a larger size. The hurry varies with the text
-#: -- a list of short clauses is not a paragraph of prose -- so a single
-#: correction cannot track it, and an unpredictable 8% is worse than a
-#: predictable extra API call. Measure your own with probe_gemini_tts.py; this
-#: is the default, not a constant of nature.
+#: Retiming a larger size does not fix it. The hurry varies with the text --
+#: a list of short clauses is not a paragraph of prose -- so a single
+#: correction cannot track it. Measure your own with probe_gemini_tts.py;
+#: this is the default.
 MEASURED_MAX_CHARS = 738
 
 # How many requests a day this account may make is NOT known here.
 #
 # The API reports no balance and no limit; the only time a number arrives is
 # in a refusal ("limit: 100 requests per day on Tier 1"), and that number
-# belongs to the tier the account was on at that moment. A constant was worse
-# than nothing: 100 was written down from one Tier 1 refusal, and the next day
-# the account was on Tier 2 and the Studio was confidently telling its owner
-# how many of a hundred requests were left.
+# belongs to the tier the account was on at that moment; the tier can change.
 #
-# So: the calls are COUNTED, which is a fact, and the limit is QUOTED only
-# when Google has just stated it. Everything else is a warning in words --
-# there is a daily limit, it can run out, and running out costs nothing but
-# time.
+# So: the calls are COUNTED, and the limit is QUOTED only when Google has just
+# stated it. Everything else is a warning in words -- there is a daily limit,
+# it can run out, and running out costs nothing but time.
 #
-# For scale, measured rather than assumed: one chunk of narration is one
-# request, and the thirteen-slide guide is thirty-three of them, counted from
-# that render's own cue list.
+# For scale: one chunk of narration is one request, and the thirteen-slide
+# guide is thirty-three of them.
 
 #: Where `realme gemini-parallel` keeps how many requests this Google project
 #: takes at once, in the data folder.
@@ -125,8 +107,8 @@ GEMINI_PARALLEL_MAX = 8
 
 
 def gemini_parallel_saved() -> dict:
-    """The saved choice and measurement, `{}` if none. A file from the first
-    version of the probe holds only `safe`, which was its measurement."""
+    """The saved choice and measurement, `{}` if none. An older file holds
+    only `safe`, which is its measurement."""
     try:
         from realme.core.env import data_home
         saved = json.loads((data_home() / GEMINI_PARALLEL_FILE)
@@ -222,8 +204,8 @@ def _usage(when=None):
     if not isinstance(state, dict):
         state = {}
     today = state.get(day)
-    # The first version of this file stored a bare integer per day. Read both,
-    # so an update does not silently reset a count it could have kept.
+    # An older file stores a bare integer per day. Read both, so the count is
+    # kept.
     if isinstance(today, int):
         today = {"calls": today}
     elif not isinstance(today, dict):
@@ -233,8 +215,8 @@ def _usage(when=None):
 
 def _write_usage(state: dict, day: str, today: dict) -> None:
     state[day] = today
-    # The last fortnight only: this answers "how much have I used today", and
-    # an unbounded file nothing reads is just a file that grows.
+    # The last fortnight only: this answers "how much have I used today", so
+    # older days are dropped.
     keep = sorted(state)[-14:]
     try:
         f = _usage_file()
@@ -242,7 +224,7 @@ def _write_usage(state: dict, day: str, today: dict) -> None:
         f.write_text(json.dumps({k: state[k] for k in keep}, indent=2),
                      encoding="utf-8")
     except Exception:
-        pass            # a counter that fails is a counter, not a dependency
+        pass            # a failed counter write must not stop a render
 
 
 #: Requests can be in flight several at once (`pipeline/prerecord.py`), and the
@@ -253,9 +235,9 @@ _CALLS_LOCK = threading.Lock()
 def record_call(when=None) -> int:
     """Count one request against today, and return today's total.
 
-    Counting is the only honest part of this. The API reports no balance and
-    no limit, so what can be known here is how many requests THIS
-    installation has made since midnight -- not how many remain.
+    The API reports no balance and no limit, so what can be known here is how
+    many requests THIS installation has made since midnight -- not how many
+    remain.
     """
     with _CALLS_LOCK:
         state, day, today = _usage(when)
@@ -269,10 +251,9 @@ def note_limit_reached(limit: int | None = None, when=None) -> None:
 
     Not the number -- the fact. A limit quoted in a refusal belongs to the
     tier the account was on at that moment, and an account can be upgraded
-    between one render and the next; a stored 100 then becomes the Studio
-    telling its owner how many of a hundred requests are left on a tier that
-    allows far more. The time is what stays true: the allowance ran out today,
-    at this hour, and it resets on a date boundary.
+    between one render and the next, so a stored number would mislead. The
+    time stays true: the allowance ran out today, at this hour, and it resets
+    on a date boundary.
     """
     state, day, today = _usage(when)
     today["exhausted"] = _dtime.datetime.now().strftime("%H:%M")
@@ -296,16 +277,14 @@ def exhausted_today(when=None) -> str:
 def budget_note(needed: int, when=None) -> str:
     """What to say before a render that may not have the requests to finish.
 
-    Said beforehand because the alternative is finding out in the middle. A
-    render that stops at the limit loses nothing -- every take already made is
-    cached -- but it is a surprise, and a surprise at slide nine of thirteen
-    reads like a fault.
+    Said beforehand so a stop mid-render is expected. A render that stops at
+    the limit loses nothing -- every take already made is cached.
 
     No arithmetic about what remains, because the limit is not known here: it
     depends on the account's tier, Google reports it only when refusing, and
-    the tier can change. What is said is what is true -- how many this render
-    needs, how many have been made today, and that there is a daily ceiling
-    which costs time rather than work when it is hit.
+    the tier can change. What is said is how many this render needs, how many
+    have been made today, and that there is a daily ceiling which costs time
+    rather than work when it is hit.
     """
     if needed <= 0:
         return ""
@@ -341,7 +320,7 @@ def _spell_wait(seconds: float) -> str:
 #: create a replicated voice -- their wording, not ours, and it is rejected if
 #: it is paraphrased. RealMe's own consent recording (enrollment/voice.py) says
 #: something broader and is kept for your institution; this one is for Google.
-#: Two clips, because one sentence cannot serve two readers.
+#: Two clips, because the two serve different purposes.
 CONSENT_SENTENCE = (
     "I am the owner of this voice and I consent to Google using this voice "
     "to create a synthetic voice model."
@@ -368,15 +347,13 @@ TIER_NOTICE = (
 def api_key(explicit: str | None = None) -> str:
     """The key, from the environment or from wherever RealMe keeps .env files.
 
-    The fallback is not belt-and-braces; it is the whole point. A key normally
-    lives in a .env file, and `core.env.load()` is what puts it into the
-    environment -- the Studio calls it at import, the CLI calls it in `main`.
-    A standalone script calls neither, so `probe_gemini_tts.py` told someone
-    who had set a key perfectly well that there was no key, and sent him
-    looking for a file that was exactly where it should be.
+    A key normally lives in a .env file, and `core.env.load()` is what puts it
+    into the environment -- the Studio calls it at import, the CLI calls it in
+    `main`. A standalone script such as `probe_gemini_tts.py` calls neither,
+    and would otherwise report no key.
 
     Loading here means every caller gets the same answer: the Studio, the CLI,
-    the probe, and whatever is written next.
+    the probe, and any other script.
     """
     key = explicit or os.environ.get("GEMINI_API_KEY", "")
     if not key:
@@ -490,12 +467,10 @@ def require_wav(path: Path, log=None) -> Path:
     """A RIFF WAV, converting the file if it is not one already.
 
     Google documents what it wants -- "resample input audio to 24kHz mono
-    16-bit PCM WAV before encoding" -- so WAV is what gets sent. It does not
-    follow that the person has to do the converting. A phone records .m4a;
-    that is the normal input, not an edge case, and this project has already
-    written that sentence twice (`core.media.ensure_reference_wav`, and again
-    in `verify.acoustic.read_wav`). Refusing with instructions was the third
-    time, and three is enough.
+    16-bit PCM WAV before encoding" -- so WAV is what gets sent, converted
+    here rather than by the user. A phone records .m4a, so that is the normal
+    input (as in `core.media.ensure_reference_wav` and
+    `verify.acoustic.read_wav`).
 
     Converting costs nothing in quality. Whatever a lossy recorder discarded
     was discarded at the microphone; this only changes the container. The
@@ -536,17 +511,15 @@ def _inline_audio(path: Path) -> dict:
 # the same microphone in the same acoustic setting so the speaker verification
 # check succeeds reliably."
 #
-# That is easy to violate without noticing. The first attempt here used a
-# 62-second reference recorded on a good microphone and a consent sentence
-# recorded on an iPhone. Same person, same room, obviously the same voice to a
-# listener -- and measurably not the same recording: spectral centroid 1593 Hz
-# against 1076 Hz, a third of the brightness gone to a different capsule and a
-# different distance. Verification compares the spectral envelope, so it said
-# "different speaker" and was, in its own terms, right.
+# That is easy to violate without noticing. A reference recorded on a good
+# microphone and a consent sentence recorded on a phone are the same voice to
+# a listener, but a different microphone or distance shifts the spectral
+# centroid by a third, and verification compares the spectral envelope, so it
+# reports "different speaker".
 #
 # So the two length rules Google documents are enforced here, before the
 # upload, and the acoustic distance is MEASURED and reported rather than
-# discovered as an HTTP 500 three minutes later.
+# discovered as an HTTP 500 minutes later.
 
 #: Google documents 10-30 seconds for the reference clip.
 SOURCE_MIN_S, SOURCE_MAX_S = 10.0, 30.0
@@ -767,15 +740,13 @@ def with_voice(g: dict, voice: str, **fields) -> dict:
     There are five ways the enrolled voice changes -- enrol and forget in the
     Studio, enrol, adopt (`--use`) and forget on the command line -- and each
     one invalidates the measured pace correction, because a correction is a
-    fact about one clone and one reference. Each of them used to update its
-    own set of fields, so "what a new voice invalidates" was a decision taken
-    five times, and the stale number that retimed a whole guide video 25%
-    fast was left behind by one of them.
+    fact about one clone and one reference. All five go through here, so
+    "what a new voice invalidates" is decided once.
 
     `effective_rate_match` refuses to apply a correction it cannot tie to the
-    voice in use, so nothing renders wrong either way. This is about the file:
-    a wrong number sitting in a profile is an invitation to resurrect it by
-    hand or by migration.
+    voice in use, so nothing renders wrong either way. This keeps the file
+    clean: a stale number left in a profile could be revived by hand or by a
+    migration.
     """
     out = dict(g)
     out.update(fields)
@@ -788,16 +759,13 @@ def with_voice(g: dict, voice: str, **fields) -> dict:
 def effective_rate_match(g: dict) -> tuple[float, str]:
     """The stored pace correction, if it was measured for the voice in use.
 
-    A correction is a fact about one pair -- this clone, that reference -- and
-    nothing about re-enrolling invalidated it. Re-recording the reference and
-    building a new voice from it left the previous voice's number in place,
-    applied to every sentence of every render, and the only visible sign was a
-    badge in the Studio reading "pace retimed by 1.25" as though someone had
-    chosen it.
+    A correction is a fact about one pair -- this clone, that reference. After
+    re-recording the reference and building a new voice from it, the previous
+    voice's number does not apply.
 
     So the correction carries the voice it was measured for, and a correction
-    whose provenance does not match -- including one from before this field
-    existed, where it cannot be checked -- is not applied. Ignoring it is the
+    whose provenance does not match -- including an older one with no
+    `rate_match_for`, where it cannot be checked -- is not applied. Ignoring it is the
     safe direction: an unretimed clone speaks at the pace of its reference,
     which is wrong by a few per cent at worst, while a correction from another
     recording is wrong by as much as the two recordings differ.
@@ -828,17 +796,15 @@ def effective_rate_match(g: dict) -> tuple[float, str]:
 def voice_from(resp: dict) -> dict:
     """The identifier out of a voices response, whatever shape it arrives in.
 
-    This was written to one documented shape -- {"replicated_voice": {"id":…}}
-    -- and the API returned another: the fields flat at the top level, with
-    `name`/`id` and an `expire_time`. The adapter then reported "the voice was
-    not created" about a voice that HAD been created, charged for, and left
-    sitting in the project with nothing in RealMe pointing at it. Two of them,
-    before anyone noticed.
+    The documented shape is {"replicated_voice": {"id":…}}, but the API can
+    return the fields flat at the top level, with `name`/`id` and an
+    `expire_time`. Misreading it would report "the voice was not created"
+    about a voice that was created and charged for.
 
-    So the rule here is the one the audio parser already follows: look for the
-    thing in every shape it could plausibly be in, and only then say it is
-    absent. An identifier that starts with voice_ or voicekey_ is unambiguous,
-    which makes a tolerant search safe rather than sloppy.
+    So, as the audio parser does, look for the identifier in every shape it
+    could plausibly be in, and only then say it is absent. An identifier that
+    starts with voice_ or voicekey_ is unambiguous, which makes a tolerant
+    search safe.
     """
     for wrapper in ("replicated_voice", "replicatedVoice", "voice"):
         inner = resp.get(wrapper)
@@ -875,10 +841,8 @@ def get_voice(voice: str, *, key: str | None = None) -> dict:
 def list_voices(*, key: str | None = None) -> list[dict]:
     """Every replicated voice in the project, newest-looking first.
 
-    The recovery path for a voice that exists at Google and not here -- which
-    is a state this adapter has already produced once, by mis-reading a
-    creation response. Something has to be able to find them again, or the
-    only remedy is paying to make another.
+    The recovery path for a voice that exists at Google and not here, so it
+    can be adopted rather than paid for again.
     """
     resp = _get("voices", api_key(key))
     rows = (resp.get("voices") or resp.get("replicated_voices")
@@ -1017,9 +981,7 @@ class GeminiTTS(BaseTTS):
         #: Audio tokens billed so far by this adapter, and whether every one
         #: of them was counted by Google rather than inferred from duration.
         #: Reported as money by `spend_usd`, which the renderer prints after
-        #: each slide. A number nobody can see is a number nobody can budget
-        #: against -- this engine is the first one here that costs money per
-        #: sentence, and a lecture should say what it spent while it spends it.
+        #: each slide, because this engine costs money per sentence.
         self.audio_tokens: float = 0.0
         self.all_metered: bool = True
         self._profile = profile
@@ -1076,29 +1038,23 @@ class GeminiTTS(BaseTTS):
         #: one's, so it is cleared at the start of every synthesis.
         self._last_rush: float | None = None
         #: Articulation rate of each chunk this adapter has spoken. A hurried
-        #: chunk is the one failure here that nothing else would notice: the
-        #: text is all present, so no length check fires, and it is only
-        #: audible to someone listening to the whole lecture. Measured per
-        #: chunk and reported when one is out of line with the rest.
+        #: chunk has all its text present, so no length check fires. Measured
+        #: per chunk and reported when one is out of line with the rest.
         self._articulation: list[float] = []
 
     # -- identity ----------------------------------------------------------
 
     def voice_fingerprint(self) -> str:
         # The voice id AND the model AND the style. The ledger keys on this,
-        # and all three change the audio for identical text. Leaving the model
-        # out would have served Flash-Lite audio for a Flash render after a
-        # one-word config change, silently, and reported a clean run.
-        # The rate correction is NOT here any more, and that is the point.
-        # It no longer changes what Google is asked for or what Google sends
-        # back -- `speak.py` applies it afterwards and caches the stretched
-        # copy under its own key. Keeping it here made a paid take depend on
-        # a number that has nothing to do with the engine, so re-measuring a
-        # pace invalidated every utterance in every project.
+        # and all three change the audio for identical text (without the
+        # model, Flash-Lite audio could be served for a Flash render).
+        # The rate correction is NOT here: it does not change what Google is
+        # asked for or sends back -- `speak.py` applies it afterwards and
+        # caches the stretched copy under its own key -- so re-measuring a
+        # pace does not invalidate any paid take.
         #
-        # The thing that guarantee protected is still protected, one layer
-        # down: `_timed` keys on the factor, so audio at the old speed is
-        # never served at the new one.
+        # `_timed` keys on the factor, so audio at the old speed is never
+        # served at the new one.
         return f"{self.name}:{self.model}:{self.voice}:{self.style}"
 
     #: See `BaseTTS.retimes_after`. Gemini has no numeric rate field at all
@@ -1190,18 +1146,16 @@ class GeminiTTS(BaseTTS):
         The style string. Manner only -- rate is handled by retiming.
 
         Gemini has no numeric rate, and a style string is not reproducible:
-        the same words can land differently between calls, which would make
-        the render ledger's pace key a lie. So the deterministic part of pace
-        is done with ffmpeg afterwards. The one case where the style string
+        the same words can land differently between calls, so the render
+        ledger's pace key would not describe the audio. So the deterministic
+        part of pace is done with ffmpeg afterwards. The one case where the style string
         has to help is a pace so far from 1.0 that retiming would be audible
         as an artefact rather than as a speed.
 
-        The AUTHORED pace only. The measured `rate_match` correction used to
-        be folded in here, which coupled it to the synthesis and therefore to
-        the paid cache key: changing a correction then re-charged for every
-        utterance. A correction that survives `calibrate_engine` is inside
-        0.55-1.25 and modest by construction, so it has no business reaching
-        for a style word.
+        The AUTHORED pace only. The measured `rate_match` correction is kept
+        out, so it does not reach the synthesis or the paid cache key. A
+        correction that survives `calibrate_engine` is inside 0.55-1.25 and
+        modest by construction, so it never needs a style word.
         """
         parts = [p for p in (self.style,) if p]
         if pace <= 0.78:
@@ -1298,12 +1252,10 @@ class GeminiTTS(BaseTTS):
         return self.audio_tokens / 1e6 * rate
 
     #: How much faster than this voice's own median a chunk may be before it
-    #: is re-recorded in smaller pieces. The measured spread BETWEEN sizes was
+    #: is re-recorded in smaller pieces. The measured spread BETWEEN sizes is
     #: 8-9% and take-to-take variation at one size is a couple of per cent, so
-    #: 10% is outside the noise and is the point at which a listener called it
-    #: muddy. One number, used both to report and to act -- a warning
-    #: threshold and an action threshold that differ is a way to be told about
-    #: something nothing then does anything about.
+    #: 10% is outside the noise and is where it is audibly muddy. One number,
+    #: used both to report and to act.
     RUSH_TOLERANCE = 1.10
     #: Chunks needed before a median means anything. The first few of a
     #: lecture cannot be judged, and are not.
@@ -1314,8 +1266,7 @@ class GeminiTTS(BaseTTS):
 
         Chunk size is chosen to avoid this, but the hurry depends on the text
         as well as its length -- a run of short clauses is not a paragraph --
-        so it cannot be ruled out by a setting. The alternative to measuring
-        is finding it while watching the finished lecture.
+        so it cannot be ruled out by a setting; it is measured instead.
         """
         if os.environ.get("REALME_GEMINI_NO_RATE_CHECK") == "1":
             return

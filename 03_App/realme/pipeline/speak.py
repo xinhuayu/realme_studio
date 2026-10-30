@@ -1,19 +1,14 @@
 """
 Utterance-level synthesis.
 
-v2 treated one slide as one TTS call. Two problems with that, both measured
-rather than assumed:
+A segment is a group of utterances, and the utterance is the unit of
+synthesis, caching and repair:
 
-  * Almost every current engine degrades past roughly 20 seconds of continuous
-    generation -- energy discontinuities, drifting speaking rate, loss of
-    prosodic structure. The one public long-form benchmark (MagpieTTS-LF,
-    arXiv 2606.18485) finds even models advertising 90-minute single-pass
-    generation degrade WORSE than chunked alternatives. IndexTTS documents its
-    own chunking honestly. Single-pass length is not a virtue by itself.
-  * Editing one sentence forced a re-render of three minutes of audio.
-
-So a segment is a group of utterances, and the utterance is the unit of
-synthesis, caching and repair.
+  * Most engines degrade past roughly 20 seconds of continuous generation
+    (energy discontinuities, drifting speaking rate, loss of prosodic
+    structure). The MagpieTTS-LF long-form benchmark (arXiv 2606.18485) finds
+    single-pass long-form generation degrades more than chunked generation.
+  * Editing one sentence re-renders only that sentence's utterance.
 """
 from __future__ import annotations
 import os
@@ -56,9 +51,8 @@ def split_utterances(text: str, target: int = TARGET_CHARS,
         # Pack only the units that are too long, not the whole passage. The
         # blanket fallback below is right for text with no punctuation at all,
         # but applying it because ONE sentence ran long would throw away every
-        # real clause boundary in the paragraph and cut the rest at character
-        # counts. Scoped to the coalescing path so that no engine which was
-        # chunking happily yesterday chunks differently today.
+        # real clause boundary in the paragraph. Scoped to the coalescing
+        # path; engines at the default size keep the blanket fallback.
         if any(len(u) > hard_max for u in units):
             out = []
             for u in units:
@@ -85,10 +79,9 @@ def chunk_sizes(tts) -> tuple[int, int]:
     """
     (target, hard_max) for this engine.
 
-    One place, because the renderer and the preview both ask and an engine
-    that chunked differently in Preview than in Render would make the preview
-    worth nothing -- the ledger keys on the chunk text, so the two would also
-    never share a cache entry.
+    One place, because the renderer and the preview both ask and must chunk
+    alike: the ledger keys on the chunk text, so they share cache entries only
+    if the chunks match.
     """
     want = getattr(tts, "max_chars_per_call", None)
     if not want or want <= TARGET_CHARS:
@@ -163,9 +156,9 @@ class Utterance:
 def spend_of(tts) -> float | None:
     """Dollars this adapter has billed so far, or None if it does not charge.
 
-    One definition, because three pipelines report it and a fourth will. The
-    adapter owns the arithmetic; this only knows that a number means money and
-    an absence means a local engine.
+    Shared by every pipeline that reports cost. The adapter owns the
+    arithmetic; this only knows that a number means money and an absence
+    means a local engine.
     """
     value = getattr(tts, "spend_usd", None)
     return float(value) if isinstance(value, (int, float)) else None
@@ -291,12 +284,10 @@ def spend_capped(tts, cap=None):
 
 def took_and_cost(seconds: float, before: float | None,
                   after: float | None, tts) -> dict:
-    """The two lines every finished render owes the person who ran it.
+    """Render time and estimated cost of a finished render.
 
     Returned as report fields rather than printed, so the Studio can show them
-    beside the file and the CLI can print them -- the numbers used to exist
-    only in a scrolling log, which is the one place nobody looks once a render
-    has finished.
+    beside the file and the CLI can print them.
     """
     out = {"render_s": round(seconds, 1)}
     if before is not None and after is not None and after - before >= 0.0005:
@@ -311,12 +302,9 @@ def took_and_cost(seconds: float, before: float | None,
 def plan_calls(texts, tts, *, mode: str = "natural") -> int:
     """How many engine calls this narration will take.
 
-    Measured with the same splitter that will do the splitting, rather than
-    with an estimate from character counts: at a 738-character budget, clause
-    coalescing stops well short of it, so chars/budget put the guide deck at
-    14 calls where the real chunker makes 33 -- and an estimate wrong by a
-    factor of two is worse than no estimate. Checked against that render's
-    own cue list: 33 predicted, 33 made.
+    Counted with the same splitter that will do the splitting, rather than
+    estimated from character counts: clause coalescing stops well short of a
+    large budget, so chars/budget can undercount by half.
 
     Takes no account of what is already cached, so it is an upper bound: a
     re-run after a stoppage needs fewer. Said as "about" for that reason.
@@ -437,9 +425,8 @@ def speak_segment(text: str, tts, workdir: Path, seg_id: int, ledger,
             for w in prepared.warnings:
                 log(f"  lint seg{seg_id}.{index}: {w}")
 
-            # Everything the engine is actually given belongs in the key.
-            # `pace` (the segment's prosody, or `narrate --pace`) was not, so
-            # a pace edit re-served the old audio and reported a clean run.
+            # Everything the engine is actually given belongs in the key,
+            # `pace` included (the segment's prosody, or `narrate --pace`).
             #
             # It stays in the key even for an engine that realises pace
             # downstream, because it still reaches the engine as a manner word
@@ -452,8 +439,7 @@ def speak_segment(text: str, tts, workdir: Path, seg_id: int, ledger,
                 tts.voice_fingerprint())
             # `reuse=False` is "say it again": the ledger is still WRITTEN,
             # so the next render is cheap again, but nothing is read from it.
-            # For asking the same text and voice for a different take, which
-            # is the one thing a cache makes impossible.
+            # For asking the same text and voice for a different take.
             just_made = bool(prerecorded) and key in prerecorded
             hit = ledger.get(key) if (reuse or just_made) else None
             if hit:
@@ -463,17 +449,13 @@ def speak_segment(text: str, tts, workdir: Path, seg_id: int, ledger,
                 else:
                     reused += 1
             else:
-                # Counted, not announced. One line per utterance was accurate
-                # and unreadable: a twelve-slide lecture filled the Studio's
-                # log box with sixty lines nobody wanted. The caller reports
-                # the totals once per slide.
+                # Counted, not logged per utterance: the caller reports the
+                # totals once per slide.
                 _t0 = _time.perf_counter()
                 wav = workdir / f"{RenderLedger.stem(key)}.wav"
-                # A [[fr-FR]] block was parsed, recorded on the utterance, and
-                # then never passed to the engine -- so the text was rendered
-                # with the default language's phonetics and nothing said so.
-                # Same shape as [[slow]] before it: understood, stored,
-                # dropped at the last step.
+                # A [[fr-FR]] block's language is passed to an engine that
+                # speaks it; otherwise the log says it is rendered in the
+                # default voice.
                 lang = (unit.language or "").split("-")[0].lower()
                 speaks = getattr(tts, "speaks_languages", ())
                 if lang and lang != "en" and lang in speaks:
@@ -495,10 +477,9 @@ def speak_segment(text: str, tts, workdir: Path, seg_id: int, ledger,
                 synth_s += _time.perf_counter() - _t0
 
                 # On-the-spot QC. A hurried take contains every word, so no
-                # length or content check will ever fire on it; the only other
-                # thing that notices is a person watching the finished
-                # lecture. Ask the engine, and if it says the take came out
-                # fast, record this chunk again in smaller pieces.
+                # length or content check fires on it. Ask the engine, and if
+                # it says the take came out fast, record this chunk again in
+                # smaller pieces.
                 rush = _rush_of(tts) if retryable else None
                 if rush:
                     pieces = split_utterances(
@@ -535,9 +516,9 @@ def speak_segment(text: str, tts, workdir: Path, seg_id: int, ledger,
                 reference_pause_seconds=rhythm.get("median_pause_s"),
                 reference_longest_pause_seconds=rhythm.get("longest_pause_s"),
                 breath_pause_candidates=rhythm.get("breaths", 0))
-            # The queue being empty is what "last piece of this unit" means
-            # now: a retry turns one chunk into several, so counting against
-            # the original list would hang the unit's pause on the wrong one.
+            # An empty queue means "last piece of this unit": a retry turns
+            # one chunk into several, so the original chunk list cannot say
+            # which piece carries the unit's pause.
             last_of_unit = not queue
             gap = max(auto_gap, unit.pause_after_ms) if last_of_unit else auto_gap
             utterances.append(Utterance(
@@ -553,14 +534,14 @@ def speak_segment(text: str, tts, workdir: Path, seg_id: int, ledger,
         # A [[pause]] BEFORE a unit lands as extra gap on the previous one.
         # `spoken_here` rather than len(chunks): a retry means this unit
         # produced more utterances than it had chunks, and counting back by
-        # the old number would move someone else's pause.
+        # len(chunks) would move another utterance's pause.
         spoken_here = index - unit_started_at
         if unit.pause_before_ms and len(utterances) > spoken_here:
             prior = utterances[-spoken_here - 1]
             prior.gap_ms = max(prior.gap_ms, unit.pause_before_ms)
 
-    # Attached to the list rather than returned separately: every existing
-    # caller keeps working, and the one that wants the numbers can read them.
+    # Attached to the list rather than returned separately, so callers that
+    # unpack a plain list are unaffected.
     try:
         utterances.cost = {"spoken": spoke, "reused": reused,
                            "rerecorded": discarded,
@@ -572,13 +553,10 @@ def speak_segment(text: str, tts, workdir: Path, seg_id: int, ledger,
 
 #: How many sentence files go into one ffmpeg call.
 #:
-#: Windows refuses a command line longer than about 32,000 characters, and a
-#: ten-minute narration is a few hundred utterances with long absolute paths:
-#: one call over all of them failed with "WinError 206: The filename or
-#: extension is too long". A lecture never hit it because it joins per slide;
-#: `narrate` joins the whole document at once, so the explainer and the
-#: Narrate Text tab did. Thirty keeps the longest call to a few thousand
-#: characters with room to spare.
+#: Windows refuses a command line longer than about 32,000 characters
+#: ("WinError 206"), and `narrate` joins a whole document of utterances with
+#: long absolute paths at once. Thirty keeps each call to a few thousand
+#: characters.
 JOIN_BATCH = 30
 
 
@@ -673,9 +651,8 @@ def preview(text: str, tts, out_wav: Path, *, lexicon: Lexicon | None = None,
     """
     Synthesize ONE utterance so it can be heard before a full render is paid for.
 
-    The cheapest possible loop for the thing that actually goes wrong: you hear
-    "the or was 2.3", add a lexicon entry, and hear it again -- in seconds,
-    without re-rendering twenty minutes of video.
+    For checking pronunciation: hear "the or was 2.3", add a lexicon entry,
+    and hear it again in seconds, without re-rendering the video.
 
     Given a `ledger` and a `workdir`, **the take you hear is the take the
     render uses.** It is recorded under the key `speak_segment` would compute
@@ -716,10 +693,8 @@ def preview(text: str, tts, out_wav: Path, *, lexicon: Lexicon | None = None,
         shutil.copy2(take, out_wav)
     else:
         tts.synthesize(prepared.engine_text, out_wav)
-    # So that a preview is what the lecture will sound like. The engine no
-    # longer stretches its own output, and a preview at the engine's natural
-    # rate would be the one thing this loop exists to avoid: a cheap check
-    # that does not match the expensive result.
+    # The same pace stretch the render applies, so a preview sounds like the
+    # lecture. The engine does not stretch its own output.
     apply_timing(tts, out_wav, pace)
     return {"utterance": index, "of": len(chunks), "text": chunk,
             "reused": reused, "pace": pace,

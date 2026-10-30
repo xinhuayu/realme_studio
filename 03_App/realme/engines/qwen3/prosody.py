@@ -53,7 +53,7 @@ def _punctuation_units(text: str) -> list[tuple[str, bool]]:
 def split_delivery_units(text: str, *, mode: str = "natural") -> list[str]:
     """Return sentence/clause units while keeping hard sentence boundaries.
 
-    ``stable`` preserves the old one-request behavior. ``natural`` and
+    ``stable`` sends the whole text as one request. ``natural`` and
     ``expressive`` split likely clauses and only merge clauses within the same
     sentence when a long passage would otherwise create too many model calls.
     Sentences are never merged together merely to meet the soft unit target.
@@ -145,8 +145,8 @@ def delivery_gap_ms(
     """Return a bounded pause that preserves the sample's spacing.
 
     Sentence and clause units are rendered separately by the worker. This
-    join-time silence is deliberately longer than the old 95 ms default and
-    is lifted by the retained sample's measured pause/breath candidates,
+    join-time silence (110-255 ms by punctuation and mode; none for
+    ``stable``) is lifted by the retained sample's measured pause/breath candidates,
     without copying one unusually long recording pause everywhere.
     """
 

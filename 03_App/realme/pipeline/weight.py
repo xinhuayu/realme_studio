@@ -2,45 +2,32 @@
 How much a slide has to say, measured from the slide.
 
 The length setting says what an ORDINARY slide should run to. It cannot say
-what any particular slide should run to, and treating it as if it could
-produces both of the complaints this feature has had: notes that all come out
-the same length, and then -- after the first fix -- a demand that every slide
-reach the median whether or not it has the material.
+what any particular slide should run to: applied uniformly it makes every
+note the same length, or pads slides that lack the material.
 
 A simple slide with one claim on it is finished in seventy words. A dense
 table, a derivation, or a figure that has to be walked through is not. The
 difference is visible in the slide itself, so it is measured there rather than
 guessed at by the model or imposed by a global number.
 
-CALIBRATED ON REAL DECKS, not invented. Across four versions of one lecture the
-on-slide word counts were:
+The thresholds are calibrated on real decks, whose pages fall into clear
+groups: figures with no prose; diagrams with ~30 words of labels; list pages
+around 44 words; dense list pages around 90; and very dense pages at 130-170.
 
-    0, 0, 3, 3, 28, 44, 44, 86, 91, 91, 96, 129, 131, 131, 156, 168, 168
+A slide with NO TEXT is not a divider. Text-less pages are usually full-page
+figures -- a flow diagram, a process chart -- and a figure needs the MOST
+explaining, because nothing on screen reads itself.
 
-with a clear structure: pages carrying a figure and no prose; a diagram page
-with 28 words of labels; list pages around 44; dense list pages around 90; and
-very dense pages at 130-170.
-
-TWO THINGS THAT MEASUREMENT CORRECTED.
-
-A slide with NO TEXT is not a divider. In these decks the text-less pages are
-full-page figures -- an academic research flow diagram, a process chart -- and a
-figure is the case that needs the MOST explaining, because nothing on screen
-reads itself. An earlier version of this treated "few words on the slide" as
-"nothing to say" and would have excluded exactly the slides the instructor
-asked to have expanded.
-
-IMAGE COUNTS ARE NOT FIGURE COUNTS. Every page of one deck reported two or
-three images; the re-themed version of the same deck reported zero or one. That
-is a logo and a background, not content. `is_visual` -- little text AND
-something drawn -- is the reliable signal, and it is already in the codebase.
+IMAGE COUNTS ARE NOT FIGURE COUNTS. A page's image count includes logos and
+backgrounds and varies with the theme. `is_figure_slide` -- little text AND a
+picture that is not a logo -- is the reliable signal.
 """
 from __future__ import annotations
 from dataclasses import dataclass
 
 #: At or below this many words, with nothing drawn, the slide is a divider: a
-#: title and perhaps a subtitle. His section headers sit at 3 words; the
-#: lightest real content slide at 28.
+#: title and perhaps a subtitle. Section headers are typically ~3 words;
+#: the lightest real content slides ~28.
 DIVIDER_WORDS = 12
 
 #: At or above this, the slide is carrying a lot -- dense lists, a table, a
@@ -57,9 +44,8 @@ FIGURE_MIN_SHARE = 1.0
 #: Where the ordinary band starts, as a fraction of the setting's band, for
 #: the LIGHTEST ordinary slide. A slide with fifteen words of bullets is not a
 #: divider and is not a dense table either, and giving it the same band as a
-#: 79-word slide is what made simple slides get padded. 0.55 of the low end
-#: puts a light slide around 55-100 words on the Standard setting, which is
-#: where a one-claim slide actually finishes.
+#: 79-word slide would pad it. 0.55 of the low end puts a light slide around
+#: 55-100 words on the Standard setting, where a one-claim slide finishes.
 LIGHT_LOW_SHARE, LIGHT_HIGH_SHARE = 0.55, 0.65
 
 
@@ -79,8 +65,8 @@ class Weight:
         divider and a dense slide, which on a real deck runs from fifteen words
         of bullets to seventy-nine, and those do not want the same narration.
         It scales with what is on the slide, so a simple slide is allowed to
-        finish under a hundred words -- which is correct, and which a single
-        band for the whole middle of the range made impossible.
+        finish under a hundred words, which a single band for the whole
+        middle of the range would not allow.
         """
         if self.kind == "divider":
             # No floor worth enforcing: ten words can be a finished title.
@@ -127,8 +113,8 @@ def from_content(content, page=None) -> Weight:
     notes = getattr(content, "speaker_notes", "") or ""
     lines = len([l for l in text.splitlines() if l.strip()])
     # `is_figure_slide`, not `is_visual`: the latter counts any image, so a
-    # section divider carrying a department logo was classed as a diagram and
-    # owed a figure's worth of narration.
+    # section divider carrying a logo would be classed as a diagram and given
+    # a figure's worth of narration.
     visual = bool(getattr(page, "is_figure_slide", False)) if page is not None else False
     return weigh(words_on_slide=len(text.split()), lines=lines, visual=visual,
                  note_words=len(notes.split()))

@@ -210,9 +210,6 @@ and adds one for the changes. GGML is MIT (`ggml/LICENSE`, the ggml authors).
 The Qwen3-TTS weights are not included and carry their own licence. See
 [NOTICE.md](NOTICE.md).
 
-The changes that give identical sound (threads, `ffn_down`, broadcast) are
-general fixes that could equally be offered upstream.
-
 ## About RealMe Studio
 
 RealMe Studio, by Xinhua Yu, turns a slide deck into a narrated lecture video

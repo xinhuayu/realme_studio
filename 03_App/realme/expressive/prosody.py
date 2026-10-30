@@ -19,14 +19,10 @@ Rate excludes silence deliberately. A turn with a long pause in the middle is
 not a slow turn; it is a normal turn with a pause, and averaging over the
 silence turns one into the other.
 
-NUMPY AND THE STANDARD LIBRARY, NOTHING ELSE. The first version of this file
-used librosa and soundfile, which are installed in the author's sandbox and not
-on the machine this has to run on -- it failed on the first real attempt with
-ModuleNotFoundError. An exploratory module is not worth a dependency, and the
-project already owns everything needed: `verify.acoustic.read_wav` reads a WAV
-to mono float, and `enrollment.voice` has been tracking pitch by
-autocorrelation over the same 60-400 Hz band since enrollment was built. One
-reader, one method.
+NUMPY AND THE STANDARD LIBRARY, NOTHING ELSE. librosa and soundfile are not
+part of a RealMe install, and an exploratory module does not justify a new
+dependency. `verify.acoustic.read_wav` reads a WAV to mono float, and pitch is
+tracked by autocorrelation over the same 60-400 Hz band as `enrollment.voice`.
 
 Everything here is measurement only. Nothing in this module changes audio, and
 nothing in the application calls it.
@@ -37,8 +33,7 @@ from pathlib import Path
 
 #: Voiced-frame floor and ceiling in hertz. The same band the enrollment
 #: analysis uses, and wide enough for any adult speaker of either sex; a
-#: tighter band would silently discard the ends of an expressive contour,
-#: which is precisely what this is trying to see.
+#: tighter band would silently discard the ends of an expressive contour.
 F0_MIN, F0_MAX = 60.0, 400.0
 
 #: A frame quieter than this below the clip's loudest counts as silence.
@@ -87,9 +82,9 @@ def _semitones(hi: float, lo: float) -> float:
 def _pitch_track(frames, sr: int):
     """F0 per frame by autocorrelation, NaN where the frame is not voiced.
 
-    The same method the enrollment analysis uses, vectorised over frames. It is
-    crude next to YIN and entirely consistent, which is what a comparison
-    between two renders of the same words needs.
+    The same method the enrollment analysis uses, vectorised over frames.
+    Cruder than YIN but consistent, which is what comparing two renders of
+    the same words needs.
     """
     import numpy as np
     lo, hi = int(sr / F0_MAX), int(sr / F0_MIN)
@@ -117,9 +112,8 @@ def measure(wav: Path, words: int = 0) -> TurnProsody:
     """
     Measure one rendered turn.
 
-    Returns a result with ok=False and a note rather than raising: a run over
-    forty turns should report the one that could not be measured and carry on,
-    not lose the other thirty-nine.
+    Returns a result with ok=False and a note rather than raising, so a run
+    over many turns reports the one that could not be measured and carries on.
     """
     import numpy as np
     try:
@@ -168,8 +162,8 @@ def measure(wav: Path, words: int = 0) -> TurnProsody:
 
     f0 = _pitch_track(frames, sr)
     # Keep frames that are both voiced by the tracker and not silence; an
-    # out-of-band reading inside a pause is the tracker guessing, and those
-    # guesses are what make a steady voice look wild.
+    # out-of-band reading inside a pause is the tracker guessing, and would
+    # inflate the pitch spread of a steady voice.
     good = voiced_frames & np.isfinite(f0)
     p.voiced_fraction = float(good.sum() / max(1, len(f0)))
     if good.sum() >= 8:

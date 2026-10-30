@@ -2,11 +2,10 @@
 """
 The render path, exercised with a fake engine that records what it was asked.
 
-Every check here is one that passed with the code broken: the pace edit that
-re-served old audio, the dialogue guest played at the instructor's sample
-rate, the pause-only segment that crashed Piper, the renumbered segment that
-re-rendered everything after it. None of the other tests build a ledger or a
-TTS, so none could have caught them.
+Guards against: a pace edit re-serving old audio, the dialogue guest played
+at the main voice's sample rate, a pause-only segment crashing Piper, and a
+renumbered segment re-rendering everything after it. Each needs a real
+ledger and a TTS to show.
 
 Needs ffmpeg. Everything else is the real pipeline.
 """
@@ -18,9 +17,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 #: Where this file lives. Every path below is relative to it, never to the
 #: working directory: these suites are run from the project root as often as
-#: from 03_App, and `Path("realme/...")` silently means a different thing in
-#: each. `verify_tree.py` already anchored on __file__; the t_*.py files did
-#: not, so t_render died with FileNotFoundError when run from the root.
+#: from 03_App, and `Path("realme/...")` means a different thing in each.
 HERE = Path(__file__).resolve().parent
 os.environ.setdefault("REALME_HOME", tempfile.mkdtemp(prefix="realme_t_render_"))
 
@@ -96,9 +93,8 @@ def main():
     # A pace correction belongs to the voice, not to the words, and for an
     # engine that realises pace with ffmpeg it can be applied after the fact.
     # The guarantee: changing it rebuilds the stretched copy and buys nothing.
-    # Before this, the factor sat in `voice_fingerprint`, so re-measuring a
-    # correction invalidated every utterance in the project -- which cost a
-    # whole guide video to put right once.
+    # The factor is kept out of `voice_fingerprint`, so re-measuring a
+    # correction does not invalidate every utterance in the project.
     class Retimes(FakeTTS):
         retimes_after = True
 
@@ -139,12 +135,10 @@ def main():
     print("stopping at a quota loses nothing")
     # A hosted engine's daily allowance runs out mid-render. The ledger is
     # written after every take, so the requests already spent are recorded
-    # and the same command resumes from there. Checked, because "it should
-    # resume" is exactly the kind of claim that is true until it is not.
+    # and the same command resumes from there.
     from realme.adapters.base import QuotaExceeded
-    # Every sentence distinct. A first draft repeated one sentence fourteen
-    # times, and the repeats were cache hits on the first take -- so the
-    # segment finished having bought two calls and the test proved nothing.
+    # Every sentence distinct: repeats would be cache hits on the first take,
+    # and the segment would finish without reaching the quota.
     long_text = " ".join(
         f"Point number {n} concerns the design of the study and what it can "
         f"support." for n in range(1, 25))
@@ -185,10 +179,9 @@ def main():
           "and the finished segment is whole")
 
     print("a deck that is not there says where it looked")
-    # `realme lecture RealMe_Guide_narrated_v2.pdf` run from 00_Windows
-    # instead of the project root arrived as a pymupdf FileNotFoundError
-    # thirteen lines down, naming the file -- which the reader knew -- and not
-    # the directory, which was the whole mistake.
+    # `realme lecture deck.pdf` run from 00_Windows instead of the project
+    # root must name the directory it looked in, not only the file, and not
+    # as a pymupdf FileNotFoundError deep in a traceback.
     from realme.core.media import MediaError
     from realme.cli import main as cli_main
     from realme.pipeline import slides as slides_mod
@@ -311,10 +304,9 @@ def main():
           "and a key that was never recorded is still a miss")
 
     print("what the log box shows")
-    # One line per slide, not per utterance. Sixty lines for a twelve-slide
-    # lecture was accurate and unreadable; nothing at all for minutes looked
-    # like a hang. The totals come back with the utterances so the caller can
-    # say it once.
+    # One line per slide, not per utterance: enough to show progress without
+    # flooding the log. The totals come back with the utterances so the
+    # caller can say it once.
     seen = []
     n = len(tts.calls)
     u = speak_segment("One sentence here. And a second one.", tts,
@@ -330,11 +322,10 @@ def main():
     check(u2.cost["synth_s"] == 0.0, "and charges no synthesis time for them")
 
     print("how much silence goes between units")
-    # Measured from one instructor's enrolled clip: 0.336 s median pause,
-    # 1.192 s longest, 18 breath-length gaps in 62 s. The old lift turned
-    # that into 442 ms after EVERY sentence against a 185 ms floor -- his own
-    # mid-sentence breathing applied at sentence boundaries, on top of the
-    # trailing breath the engine already renders per utterance.
+    # A typical enrolled clip: 0.336 s median pause, 1.192 s longest, 18
+    # breath-length gaps in 62 s. Mid-sentence breathing must not be applied
+    # in full at sentence boundaries, on top of the trailing breath the
+    # engine already renders per utterance.
     from realme.pipeline.prosody import gap_ms
     HIS = dict(reference_pause_seconds=0.336,
                reference_longest_pause_seconds=1.192,
@@ -363,9 +354,9 @@ def main():
           "and is clamped rather than letting a typo silence the gaps")
 
     print("the scale reaches the renderer")
-    # The wrapper's own docstring records this exact bug: `mode` was added to
-    # `render` and to the CLI and not to `build_lecture`, so every
-    # `realme lecture` died on a TypeError before rendering a frame.
+    # Every keyword `render` and the CLI pass must also be accepted by
+    # `build_lecture`, or `realme lecture` fails on a TypeError before
+    # rendering a frame.
     import inspect as _i
     from realme.pipeline.lecture import render as _r, build_lecture as _bl
     from realme.pipeline.speak import speak_segment as _ss
@@ -440,10 +431,9 @@ def main():
           f"the default is 3.8-flash (got {SW.DEFAULT_MODEL})")
     check("preview" not in SW.DEFAULT_MODEL,
           "a preview retires on someone else's schedule, so it is never the default")
-    # The profile does not store a model. It used to, which gave the id two
-    # homes and let the saved one rot: a profile was still holding
-    # `gemini-3-flash-preview` months after that preview was switched off,
-    # influencing nothing and contradicting the menu.
+    # The profile does not store a model, so the id has one home. A model
+    # an older profile still holds is ignored rather than contradicting
+    # the menu.
     from realme.app.profile import Profile, DEFAULTS
     check("gemini_model" not in DEFAULTS["adapters"],
           "a new profile stores no script model")
@@ -529,8 +519,7 @@ def main():
 
     # The gaps are applied when utterances are JOINED, not when they are
     # synthesised, so they have to be in the video key or a re-render with a
-    # different pause_scale is a cache hit and the knob does nothing. This is
-    # the third time a key has been missing something that changes the output.
+    # different pause_scale is a cache hit and the knob does nothing.
     print("changing the gaps re-renders the video, not the speech")
     try:
         import pymupdf
@@ -567,8 +556,7 @@ def main():
               f"({len(gt.calls) - spoke} extra calls)")
 
         # What it took, in the report, so the Studio can show it beside what
-        # it produced. These numbers existed only in the scrolling log, which
-        # is the one place nobody looks after a render finishes.
+        # it produced rather than only in the scrolling log.
         rep = a["report"]
         check(rep.get("render_s", 0) > 0,
               f"the report says how long the render took ({rep.get('render_s')}s)")
@@ -589,10 +577,9 @@ def main():
               f"{b['report'].get('takes_reused')} of {utterances} reused)")
 
     print("re-recording an existing project")
-    # There was no way back into a project: PROJECT was set only by drafting,
-    # importing or revising, so after a page reload the only route to Render
-    # was re-drafting -- a model call that REPLACES the script. The render
-    # endpoint could already do it from the saved manifest.
+    # An existing project can be rendered again after a page reload, from
+    # its saved manifest, without re-drafting (a model call that REPLACES
+    # the script).
     import inspect as _i2
     from realme.pipeline.lecture import render as _r2, build_lecture as _bl2
     from realme.pipeline.speak import speak_segment as _ss2
@@ -632,10 +619,9 @@ def main():
     check(len(got) == 2 and got[1]["draft"] is True,
           "including a draft take, marked as one")
 
-    # An older project is exactly what somebody reopens, and the oldest ones
-    # have no `deck_path.txt`. `old_deck_path` has always known how to cope;
-    # the render endpoint read the file directly and died on a bare
-    # FileNotFoundError, surfaced as a 500.
+    # An older project may have no `deck_path.txt`. The render endpoint goes
+    # through `old_deck_path`, which copes, rather than reading the file and
+    # failing with a 500.
     old_proj = S2.PROJECTS / "no_pointer"
     (old_proj / "_work").mkdir(parents=True, exist_ok=True)
     (old_proj / "slides.pdf").write_bytes(b"%PDF-1.4 ")

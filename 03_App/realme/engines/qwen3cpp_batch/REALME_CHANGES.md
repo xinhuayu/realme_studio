@@ -9,14 +9,9 @@ switch that turns it off, and how it was checked. The base is upstream commit
 `b3ba14077cf1` with GGML `3af5f5760e19`. The Qwen3-TTS weights are the Qwen
 team's and carry their own licence; nothing here changes them.
 
-**Inside RealMe**, the vendored upstream (`realme/engines/qwen3cpp/`) is never
-edited. `realme/engines/cpp.py` applies each change to the copy it builds
-(`PATCHES`, and `apply_sgemm_patch` for GGML), so a `git diff` against
-upstream stays meaningful and each change can be dropped on its own. Every
-build and rebuild (`3_Get_Voice_Engine.bat`, `_Rebuild_Voice_Engine.bat`)
-applies all of them. **As a standalone release** (realme-qwen3-tts.cpp,
-written by `realme engine cpp --cpp-action export-release`), the same changes
-are already applied in the source; this file is its CHANGES.md.
+In RealMe Studio the changes are applied to a copy of the unmodified
+upstream source each time the engine is built; in the standalone release,
+realme-qwen3-tts.cpp, they are already applied in the source.
 
 ## Results
 
@@ -45,7 +40,6 @@ seconds of work per second of speech (1.0 is real time):
 | **32-bit vocoder.** Convolutions unrolled and multiplied in F32 (weights converted once at load, about 220 MB) instead of rounding the signal to F16 at every layer; each transposed convolution as one matrix multiply plus an overlap-add that also trims and adds the bias, instead of GGML's one-thread rearrangement and per-sample dot products; outputs padded to a multiple of 4 samples so tinyBLAS takes every product. Working memory is about 1.8 times upstream's per second of speech (20 s: 4.6 GB against 2.5), so sentences longer than `QWEN3_TTS_VOCODER_F32_MAX_FRAMES` codes (12.5 a second; default 250, 20 s) are decoded as upstream does. CPU backend only; off in low-memory mode. | `realme_vocoder.inc`, `audio_tokenizer_decoder.{h,cpp}` | the same convolutions rounded differently: 50–60 dB below the speech (reordering a 32-bit sum alone gives about that through the vocoder's ~30 layers); the codes the transformers produce are unchanged | `QWEN3_TTS_VOCODER_F32=1` (off in the engine; RealMe sets it, with the length limit by the machine's memory: 30 s from 32 GB, 20 s from 16 GB, 10 s below) |
 | **GGML's tinyBLAS (`GGML_LLAMAFILE`) for the vocoder's products only**: a gate in GGML's `ggml-cpu.c` lets tinyBLAS take a product only when it is named `realme_sgemm`. Every other product in the engine is computed as upstream GGML computes it. Build GGML with `-DGGML_LLAMAFILE=ON` only with this gate; on an ungated GGML that flag changes every product. | GGML's `src/ggml-cpu/ggml-cpu.c` | with the 32-bit vocoder off: identical to upstream | `QWEN3_TTS_SGEMM=0` |
 | **Unicode paths on Windows**: model and audio files opened with `ggml_fopen` instead of `fopen`, so a folder with non-ASCII letters (a user name in Chinese, say) opens. | `gguf_loader.cpp`, `tts_transformer.cpp`, `qwen3_tts.cpp` | identical | none |
-| RealMe's timing copy only: a per-operation stopwatch for the vocoder. | (`cpp_timing.py`) | n/a | `QWEN3_TTS_OP_PROFILE=1` |
 
 ## How they were checked
 
@@ -75,6 +69,3 @@ seconds of work per second of speech (1.0 is real time):
   broadcast, snake and vocoder changes switch themselves off; the `ffn_down`
   change stays on, using about 0.4 GB more GPU memory, and falls back to
   upstream's per-step conversion if that memory is not there.
-
-The changes that give identical sound (threads, `ffn_down`, broadcast) are
-general fixes that could equally be offered upstream as pull requests.

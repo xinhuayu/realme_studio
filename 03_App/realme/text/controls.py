@@ -1,21 +1,19 @@
 """
 Inline delivery controls: [[emphasis]], [[pause:400ms]], [[hedging]], [[mask]].
 
-Ported from `real_voice_qwen3`, whose design is right in three ways worth
-stating, because each is a decision a naive implementation gets wrong:
+Ported from `real_voice_qwen3`. Three design rules:
 
 1. **An unrecognised `[[...]]` marker is left in the text, not deleted.** A typo
-   like `[[pasue:400]]` must not silently vanish and change nothing — you would
-   never find out. It stays visible so you can see it. This is the same rule as
-   the text normalizer: never silently drop something the author wrote.
+   like `[[pasue:400]]` must not silently vanish and change nothing. It stays
+   visible and is reported. This is the same rule as the text normalizer:
+   never silently drop something the author wrote.
 
 2. **Masked text is never sent to the speech engine at all.** `[[mask]]...[[/mask]]`
    does not synthesize and mute; the words never leave the machine. A short
    softened tone is assembled into the audio in their place.
 
 3. **Everything is bounded.** Pauses cap at 2 s, masks at 2 s, slow/fast at
-   ±8%. A control that can be pushed to an extreme becomes a way to ruin a
-   lecture by typo.
+   ±8%, so a typo cannot push a control to an extreme.
 
 ORDER MATTERS. This runs *before* normalization, because the normalizer turns
 `[` into `(` and would destroy every marker. Pipeline order is:
@@ -80,16 +78,11 @@ def normalize_language(value: str | None, default: str = "en-US") -> str:
     """
     A language tag in any reasonable spelling, or the default.
 
-    The table lists "fr" and "french" but listed no regional form except
-    "en-us" -- so `[[fr-FR]]`, which is how these are written everywhere
-    including this module's own examples, fell through to the default and the
-    block was rendered in English. Every language but English was affected,
-    and nothing reported it: the text was still spoken, just in the wrong
-    voice for it.
-
-    Falling back to the base code also handles the regional variants nobody
-    enumerated: fr-CA, pt-BR, zh-TW, es-MX all reach the voice this engine
-    actually has for that language.
+    The table lists base codes and names ("fr", "french") but few regional
+    forms, so a regional tag such as `[[fr-FR]]` falls back to its base code
+    rather than to the default. That way fr-CA, pt-BR, zh-TW, es-MX all reach
+    the voice this engine has for that language, instead of being silently
+    rendered in English.
     """
     v = str(value or default).strip().lower().replace("_", "-")
     if v in LANGUAGE_ALIASES:
@@ -199,15 +192,10 @@ def parse_controls(text: str, *, language: str = "en-US") -> ControlPlan:
             plan.mask_count += 1
             return _MASK.format(ms=min(int(val or DEFAULT_MASK_MS), MAX_MASK_MS))
         # A delivery marker written WITHOUT a closing tag -- `[[slow]]` on its
-        # own, which is how everyone actually writes it, including me in the
-        # instructions I handed the author. This used to emit a start and an
-        # end back to back: an empty scope covering no words, so the marker
-        # vanished and the delivery never changed. Silently, which is precisely
-        # what this module's first rule forbids.
-        #
-        # A bare one now opens a scope that runs to the end of the text, which
-        # is what "read this slowly" plainly means. `[[/slow]]` still closes it
-        # early, and `[[normal]]` closes whatever is open.
+        # own, the usual way of writing it -- opens a scope that runs to the
+        # end of the text, which is what "read this slowly" plainly means.
+        # `[[/slow]]` closes it early, and `[[normal]]` closes whatever is
+        # open.
         return _SCOPE.format(action="start", name=name)
 
     cleaned = CONTROL_RE.sub(repl, text)
@@ -217,12 +205,11 @@ def parse_controls(text: str, *, language: str = "en-US") -> ControlPlan:
     for m in re.finditer(r"\[\[[^\]]{0,40}\]\]", cleaned):
         token = m.group(0)
         if not _LANG_BLOCK.search(token) and token not in plan.unknown_markers:
-            # A simple `[[word]]` used to be exempt here, which exempted
-            # exactly the typos most likely to be made: `[[normal]]`,
-            # `[[emphasise]]`, `[[Pause]]` with a stray space. Exempt only what
-            # is genuinely a language tag -- a bare `[[fr-FR]]` opening a block
-            # closed elsewhere -- and report everything else, because the
-            # alternative is the marker being read aloud in the finished audio.
+            # Exempt only what is genuinely a language tag -- a bare
+            # `[[fr-FR]]` opening a block closed elsewhere -- and report
+            # everything else, including simple `[[word]]` typos such as
+            # `[[emphasise]]` or `[[Pause]]`, which would otherwise be read
+            # aloud in the finished audio.
             if not re.fullmatch(r"\[\[/?[a-z]{2}(?:-[A-Za-z]{2,4})?\]\]", token):
                 plan.unknown_markers.append(token)
 
@@ -290,8 +277,8 @@ def parse_controls(text: str, *, language: str = "en-US") -> ControlPlan:
     if pending_pause and plan.units:
         plan.units[-1].pause_after_ms += pending_pause
     # A unit with no words cannot be synthesised (Piper refuses with
-    # "produced no audio"). `[[pause:500]]` on its own used to produce one;
-    # now its pause lands on the neighbour instead.
+    # "produced no audio"). So a wordless unit such as a lone `[[pause:500]]`
+    # is dropped and its pause lands on the neighbour instead.
     kept: list[Unit] = []
     for u in plan.units:
         if u.is_mask or u.text.strip():
@@ -312,8 +299,8 @@ def write_mask_tone(path: Path, duration_ms: int = DEFAULT_MASK_MS,
     """
     A short softened tone standing in for masked words.
 
-    Faded in and out over 12 ms so it does not click, which is what makes it
-    read as a deliberate bleep rather than a fault in the recording.
+    Faded in and out over 12 ms so it does not click and reads as a
+    deliberate bleep rather than a fault in the recording.
     """
     import numpy as np
     duration_ms = max(80, min(int(duration_ms), MAX_MASK_MS))

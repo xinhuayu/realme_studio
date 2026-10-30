@@ -1,16 +1,13 @@
 """
 Live argument mode: you against an interlocutor, in real time.
 
-This is a different thing from the scripted debate in `dialogue.py`, and the
-difference matters. A scripted debate is a model arguing with itself in two
-voices -- pleasant to listen to, but you are not in it, so it cannot surprise
-you. Live mode puts you in the exchange, which is where the ideas actually come
-from. Afterwards the transcript can be rendered to audio, so you get both.
+Unlike the scripted debate in `dialogue.py`, where a model argues with itself
+in two voices, live mode puts the user in the exchange. Afterwards the
+transcript can be rendered to audio.
 
-The interlocutor is deliberately not agreeable. Most of the value in arguing
-with a model is lost the moment it starts saying "that's a great point" -- so
-the system prompt forbids exactly that, and requires it to name the specific
-step in your reasoning it is attacking.
+The interlocutor is deliberately not agreeable: the system prompt forbids
+praise such as "that's a great point" and requires it to name the specific
+step in the user's reasoning it is attacking.
 """
 from __future__ import annotations
 import json

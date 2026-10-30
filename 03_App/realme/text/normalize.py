@@ -7,15 +7,14 @@ Why this module exists, in one example:
     $ espeak-ng -v en-us --ipa=3 -q "β̂"             ->  bˈeɪɾə
 
 The combining circumflex is silently dropped, so the ESTIMATOR becomes the
-PARAMETER. That is not a mispronunciation; it is a false statement, delivered
-confidently, with no error anywhere in the pipeline. The same silent deletion
-happens to "<", ">" and "|":
+PARAMETER: a false statement, with no error anywhere in the pipeline. The same
+silent deletion happens to "<", ">" and "|":
 
     "p < 0.05"        -> "p zero point zero five"       (the claim is gone)
     "Pr(T>t|X=x)"     -> "P R T T X equals X"           (word salad)
 
-Every TTS front-end normalizes differently and they all fail quietly. So we do
-it ourselves, and we FAIL LOUDLY: after normalization the text must contain
+Every TTS front-end normalizes differently and they all fail quietly. So this
+module does it, and FAILS LOUDLY: after normalization the text must contain
 nothing but letters, digits and a small set of safe punctuation. Anything else
 is an unhandled symbol and raises, rather than being silently eaten downstream.
 """
@@ -33,12 +32,11 @@ def _is_safe(ch: str) -> bool:
     """
     ASCII, any precomposed letter, and any letter of a script without case.
 
-    Hernán, Šidák and Poisson pass on the second rule. The third is for the
-    scripts this engine actually speaks: Chinese, Japanese and Korean letters
-    are Unicode category Lo -- "letter, other", the category for writing
-    systems with no upper and lower case -- so a rule accepting only Ll and Lu
-    deleted every character of a [[zh-CN]] block and reported it as having no
-    spoken form. The engine has a Chinese voice; the text never reached it.
+    Šidák and Poisson pass on the second rule. The third is for the scripts
+    this engine speaks: Chinese, Japanese and Korean letters are Unicode
+    category Lo -- "letter, other", the category for writing systems with no
+    upper and lower case -- so a rule accepting only Ll and Lu would delete
+    every character of a [[zh-CN]] block.
 
     A letter in a script the selected voice cannot speak is the engine's
     problem to report, not something to silently remove here.
@@ -74,7 +72,7 @@ COMBINING = {
 
 SUPERSCRIPT = {"⁰": "0", "¹": "1", "²": "2", "³": "3", "⁴": "4", "⁵": "5",
                "⁶": "6", "⁷": "7", "⁸": "8", "⁹": "9", "ⁿ": "n",
-               "⁻": "-"}    # 10⁻³ -- the minus was deleted, read "10 cubed"
+               "⁻": "-"}    # 10⁻³ -- keep the minus, not "10 cubed"
 SUBSCRIPT = {"₀": "0", "₁": "1", "₂": "2", "₃": "3", "₄": "4", "₅": "5",
              "₆": "6", "₇": "7", "₈": "8", "₉": "9"}
 
@@ -89,8 +87,8 @@ OPERATORS = [
     ("√", " the square root of "), ("∞", " infinity "), ("∂", " partial "),
     ("±", " plus or minus "), ("×", " times "), ("÷", " divided by "),
     # U+2212 is the true minus sign: never a hyphen or a range dash, so it is
-    # always "minus" (as "-" is inside math). It used to be deleted, so
-    # "−3" was read "3" and "a − b" as "a b".
+    # always "minus" (as "-" is inside math). Deleting it would read "−3"
+    # as "3" and "a − b" as "a b".
     ("−", " minus "),
     ("·", " dot "), ("⊥", " independent of "), ("∼", " distributed as "),
     ("∀", " for all "), ("∃", " there exists "), ("∩", " intersect "),
@@ -148,16 +146,17 @@ def _expand_combining(text: str) -> tuple[str, list]:
         elif marks:
             # Distinguish spelling from notation, without a hand-maintained list.
             # If base+mark composes to a single real Unicode character, it is a
-            # letter of some language's alphabet -- "Hernan" + acute is Hernán,
+            # letter of some language's alphabet -- "e" + acute is é,
             # "n" + tilde is enye -- and must pass through untouched. If it does
             # NOT compose, no alphabet uses it, so it is mathematical notation:
             # beta+circumflex is an estimator, x+macron is a sample mean. Those
-            # get spoken. This is why "Hernán" survives and "beta hat" is heard.
+            # get spoken. So "é" survives and "beta hat" is heard.
             #
             # Except a marked Latin letter standing ALONE: ŷ and ȳ compose (to
-            # Welsh and Livonian letters; ᾱ to a Greek one), so "ŷ" was passed through and read
-            # as a plain "y" -- the fitted value said as the outcome. A single
-            # letter with a hat or bar between non-letters is notation; inside
+            # Welsh and Livonian letters; ᾱ to a Greek one), so "ŷ" would pass
+            # through and be read as a plain "y" -- the fitted value said as
+            # the outcome. A single letter with a hat or bar between
+            # non-letters is notation; inside
             # a word ("tŷ", "Māori") it is still spelling.
             composed = unicodedata.normalize("NFC", ch + "".join(marks))
             alone = ((ch.isascii() or ch in GREEK)
@@ -209,8 +208,8 @@ def _markup(text: str) -> tuple[str, list]:
     """Markdown, links, HTML tags, code operators and the like, as spoken.
 
     Narration is pasted from slides, notes and chat, and carries their
-    formatting. Each rule here was a mis-reading heard or measured: "## Methods"
-    as "number number Methods", a link read out as its URL with the slashes
+    formatting. Each rule prevents a specific mis-reading: "## Methods" as
+    "number number Methods", a link read out as its URL with the slashes
     deleted, `<br>` as "is less than br is greater than", `fit <- glm()` as
     "fit is less than minus glm", "#MeToo" as "number MeToo", "€50" as "euros
     50", and "24/7" as "24 out of 7".
@@ -223,10 +222,9 @@ def _markup(text: str) -> tuple[str, list]:
         if n:
             changes.append((label, rep if isinstance(rep, str) else label))
 
-    # Marks meant for the reader's eye, never the ear. Each was read out:
-    # "<!-- check -->" as "is less than !-- check - goes to", "~~old~~ new"
-    # as "tilde tilde old tilde tilde new", and "teh [sic]" as "teh (sick)".
-    # A comment and struck-through text are, by definition, not narration.
+    # Marks meant for the reader's eye, never the ear: "<!-- check -->",
+    # "~~old~~ new" and "teh [sic]" would otherwise be read out symbol by
+    # symbol. A comment and struck-through text are not narration.
     sub(r"<!--.*?-->", " ", "html comment", flags=re.S)
     sub(r"~~(?=\S)[^~\n]*?(?<=\S)~~", " ", "struck-through text")
     sub(r"<(del|s|strike)>[^<]*</\1>", " ", "struck-through text",
@@ -239,7 +237,7 @@ def _markup(text: str) -> tuple[str, list]:
     # [text](url) -> text; ![alt](img) -> alt.
     sub(r"!?\[([^\]]+)\]\((?:[^)\s]+)\)", r"\1", "markdown link")
     # A bare web address is said by its site: "https://www.cdc.gov/flu/x.html"
-    # -> "cdc.gov". Nobody reads a path aloud, and the slashes were deleted.
+    # -> "cdc.gov". Nobody reads a path aloud.
     # The host never ends in a dot and the path never does either, so the
     # full stop after "Visit https://www.cdc.gov." stays a full stop.
     path = r"(?:/(?:[^\s)\]>,;]*[^\s)\]>,;.])?)?"
@@ -259,7 +257,7 @@ def _markup(text: str) -> tuple[str, list]:
     # A hash sign on its own, as in "In R, # starts a comment".
     sub(r"(?<!\S)#(?=\s)", "hash", "hash sign")
     # Escapes in code: "\n" is "backslash n". A longer \word is LaTeX and is
-    # read as the word, as before.
+    # read as the word.
     sub(r"\\([A-Za-z])\b", r" backslash \1 ", "escape")
     # Money in other currencies, number first, as with dollars.
     sub(r"([€£¥])\s?(\d[\d,]*(?:\.\d+)?)(\s?(?:thousand|million|billion)\b)?",
@@ -338,8 +336,8 @@ def _slashes(text: str) -> tuple[str, list]:
       mg/dL      -> "milligrams per deciliter"
       and/or     -> "and or"
       24/7       -> "twenty-four seven"
-    We handle the two unambiguous cases and REFUSE the rest, because guessing
-    silently is exactly the failure mode this module exists to prevent.
+    The two unambiguous cases are handled and the rest REFUSED, rather than
+    guessed silently.
     """
     changes = []
     text = re.sub(r"\band\s*/\s*or\b", "and or", text, flags=re.I)
@@ -353,18 +351,19 @@ def _slashes(text: str) -> tuple[str, list]:
     if n:
         changes.append(("n/n", "out of"))
     # word/word -- "retrospective/prospective", "hazard ratio / rate ratio".
-    # In academic prose this is almost always "or". We take that reading and
-    # RECORD it, so the decision shows up in the change log and in the script
-    # editor, rather than being either a silent guess or a hard stop that makes
-    # the tool unusable on ordinary writing.
+    # In academic prose this is almost always "or". That reading is taken and
+    # RECORDED, so the decision shows up in the change log and in the script
+    # editor, rather than being a silent guess or a hard stop on ordinary
+    # writing.
     text, n = re.subn(r"(?<=[A-Za-z])\s*/\s*(?=[A-Za-z])", " or ", text)
     if n:
         changes.append(("word/word", "or"))
     return text, changes
 
 
-# Everyday prose symbols. Separate from OPERATORS because these are unambiguous
-# and boring; the operators above are the ones that change meaning when eaten.
+# Everyday prose symbols. Separate from OPERATORS because these are
+# unambiguous; the operators above are the ones that change meaning when
+# dropped.
 PROSE = [
     ("&", " and "), ("@", " at "), ("+", " plus "), ("~", " approximately "),
     ("[", " ("), ("]", ") "), ("{", " ("), ("}", ") "), ("|", " given "),
@@ -409,8 +408,8 @@ def normalize(text: str, *, strict: bool = True) -> NormalizationReport:
     """
     Turn written academic prose into text that is safe to speak.
 
-    strict=True (default) raises UnspokenSymbol if anything unhandled remains.
-    That is the point of the module: a loud failure beats a silent deletion.
+    strict=True (default) raises UnspokenSymbol if anything unhandled remains,
+    rather than letting it be silently deleted downstream.
     """
     original = text
     changes: list[tuple[str, str]] = []
@@ -436,10 +435,8 @@ def normalize(text: str, *, strict: bool = True) -> NormalizationReport:
                 f"Do NOT ignore this: the TTS front-end will delete these silently."
             )
         # Pipeline behaviour: drop them, but REPORT every one. The instructor
-        # sees "I removed ` from slide 2" in the script editor rather than being
-        # blocked by a stack trace naming a Python file they have never opened.
-        # The invariant that matters is not "never delete" - it is "never delete
-        # without saying so".
+        # sees "I removed ` from slide 2" in the script editor rather than a
+        # stack trace. The invariant is "never delete without saying so".
         for c in bad:
             text = text.replace(c, " ")
         dropped = [f"removed {c!r} (U+{ord(c):04X} {unicodedata.name(c, '?')}) "

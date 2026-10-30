@@ -1,11 +1,10 @@
 """What every test suite here shares: one `check`, one summary.
 
-Before this, each suite had its own `check`, and two of them disagreed on
-the arguments -- `check(cond, what)` in one, `check(cond, name, detail)` in
-another -- which is a silent-pass waiting to happen when a check is copied
-from one file to the other. New suites import from here; the older ones keep
-their own until they are next edited, and `run_tests.py` reads them all the
-same way (exit code, and the count of FAIL lines).
+Some suites define their own `check`, with the label first
+(`check(name, cond, detail)`); this one takes the condition first. A check
+copied between the two orders could pass silently, so this one guards its
+argument types. New suites import from here, and `run_tests.py` reads every
+suite the same way (exit code, and the count of FAIL lines).
 """
 from __future__ import annotations
 
@@ -16,9 +15,9 @@ PASSED: list[str] = []
 def check(cond, name, detail="") -> bool:
     """Condition first, then what it means. The order is guarded.
 
-    A suite once called this the other way round for fourteen checks and
-    every one printed `ok True`: a non-empty string is truthy and a bool is a
-    perfectly good label. So the types are checked rather than trusted.
+    Called the other way round, every check would print `ok True`: a
+    non-empty string is truthy and a bool is a usable label. So the types
+    are checked rather than trusted.
     """
     if not isinstance(name, str) or isinstance(cond, str):
         raise TypeError(f"check(cond, name): got cond={cond!r}, name={name!r}")

@@ -1,18 +1,15 @@
 #!/usr/bin/env python3
 """
-The fixes from the agent-developer review (October 2026).
+The server and CLI as another program sees them.
 
   1. The server answers only to loopback host names.
   2. `--json` gives a program one object to parse.
   3. A spending cap stops a paid render before it goes past it.
-  5. The routes declare what they take.
+  4. The routes declare what they take.
 
-(Item 1's scenes-module check and 4's authoring contract went with the
-animation engine, archived in October 2026.)
-
-Each section has a control: the same input against what would happen
-without the fix (a host on the list, no cap), so a check that passes because
-nothing was exercised shows up as a failed control.
+Each section has a control: the same input under the permissive setting (a
+host on the list, no cap), so a check that passes because nothing was
+exercised shows up as a failed control.
 """
 from __future__ import annotations
 import contextlib, io, json, math, os, struct, sys, tempfile, wave
@@ -321,7 +318,7 @@ def _wait(S, job_id, secs=30.0):
 
 
 def section_review_fixes():
-    """The Studio findings of the October 2026 review."""
+    """Studio routes and page: project ids, uploads, origins, lexicon, profile."""
     S, c = _client()
     ui = (HERE / "realme/app/ui.html").read_text(encoding="utf-8")
     src = (HERE / "realme/app/server.py").read_text(encoding="utf-8")
@@ -797,7 +794,7 @@ class BrokenStub(FreeStub):
 
 
 def section_plain_language():
-    """The non-programmer walkthrough (October 2026): what the page says."""
+    """What the page says to someone who is not a programmer."""
     S, c = _client()
     ui = (HERE / "realme/app/ui.html").read_text(encoding="utf-8")
     start = (HERE.parent / "START_HERE.md").read_text(encoding="utf-8")

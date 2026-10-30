@@ -6,9 +6,9 @@ REM
 REM  Not the update zip and not the colleague package. Those two carry a
 REM  working installation -- a compiled engine, 2.5 GB of weights, ffmpeg,
 REM  the piper voices. A repository carries none of it: whoever clones it
-REM  runs two commands and their own machine fetches or builds its own,
-REM  which is smaller, more honest, and the only way a compiled engine is
-REM  meaningful (a build is tied to the instruction set it was made for).
+REM  runs two commands and their own machine fetches or builds its own.
+REM  That keeps the repository small, and a compiled engine is tied to
+REM  the instruction set it was built for.
 REM
 REM  Before it copies anything it reads every file it is about to publish
 REM  and refuses on a key, a token, a home directory or an email address.

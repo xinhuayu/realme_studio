@@ -7,16 +7,14 @@ breaks in a cloud adapter: the shape of the request, what goes into the cache
 key, which question is asked when, and whether a surprising response fails
 loudly or quietly.
 
-Three of these exist because of faults this project has already had once:
+Three invariants in particular:
 
   * `voice_fingerprint` must carry the MODEL as well as the voice. The ledger
     keys on it, and a Flash -> Flash-Lite change that did not alter the key
     would re-serve the old audio and report a clean run.
-  * `check()` must cost nothing. The last engine whose status check did real
-    work loaded two gigabytes on every page refresh.
+  * `check()` must cost nothing: the status page asks it on every refresh.
   * Declaring a bigger chunk size must not change any OTHER engine's
-    chunking, because that would silently invalidate every cached utterance
-    Qwen3 ever rendered.
+    chunking, because that would invalidate every cached Qwen3 utterance.
 """
 from __future__ import annotations
 import base64, io, json, os, pathlib, sys, tempfile, wave
@@ -30,16 +28,12 @@ sys.path.insert(0, str(HERE))
 _ISO = tempfile.mkdtemp(prefix="realme_t_gem_")
 os.environ["REALME_HOME"] = _ISO
 os.environ["REALME_TOOLS"] = str(Path(_ISO) / "tools")
-# HOME and USERPROFILE as well, and this is not belt-and-braces.
+# HOME and USERPROFILE as well.
 #
 # `core.env.candidates()` reads FOUR places, and only one of them is under
 # REALME_HOME. Another is `Path.home()/"RealMeStudio"/".env"`, which on a real
-# installation holds a real API key -- so the checks below that assert "with no
-# key anywhere, this fails" passed here and failed on the machine that had one.
-# Four red lines, all of them the suite reading the installation it was meant
-# to be isolated from. That is the fourth time this project has had this bug:
-# `measured_speed()` read the real profile, `collect()` found the real tools
-# directory, and now this. Isolating the data home was never enough on its own.
+# installation holds a real API key, so the checks below that assert "with no
+# key anywhere, this fails" would read it.
 #
 # `Path.home()` resolves through USERPROFILE on Windows and HOME elsewhere, so
 # both are set, before anything imports realme.
@@ -195,24 +189,21 @@ def main() -> int:
         print("\nthe key is found wherever RealMe keeps it, not only in the shell")
         # A key normally lives in a .env file; `core.env.load()` is what puts
         # it in the environment, and the Studio and the CLI each call it. A
-        # standalone script calls neither -- so probe_gemini_tts.py reported
-        # "No GEMINI_API_KEY" to someone whose key was exactly where it
-        # belonged. Loading in api_key() means every caller gets one answer.
+        # standalone script such as probe_gemini_tts.py calls neither, so
+        # api_key() loads it too and every caller gets one answer.
         import realme.core.env as _E
         saved = os.environ.pop("GEMINI_API_KEY")
         dotenv = Path(os.environ["REALME_HOME"]) / ".env"
         dotenv.write_text("GEMINI_API_KEY=from-the-dotenv\n", encoding="utf-8")
-        # The search list itself is replaced for these checks, and redirecting
-        # HOME was not enough to make them honest.
+        # The search list itself is replaced for these checks; redirecting
+        # HOME is not enough.
         #
         # `candidates()` reads four places. REALME_HOME covers one, HOME and
-        # USERPROFILE cover another -- and the fourth is `app_dir()/.env`, the
-        # INSTALLATION DIRECTORY, which is wherever this file happens to live
-        # and which no environment variable can move. On a real install that
-        # file exists and holds a real key, so "with no key anywhere" was a
-        # claim this suite could never make truthfully by setting variables.
-        # What is being tested here is what `api_key()` does with a list of
-        # places, so the list is the thing to control.
+        # USERPROFILE cover another, and the fourth is `app_dir()/.env`, the
+        # INSTALLATION DIRECTORY, which no environment variable can move. On
+        # a real install that file may hold a real key. What is tested here
+        # is what `api_key()` does with a list of places, so the list is the
+        # thing to control.
         _real_candidates = _E.candidates
         _E.candidates = lambda: [dotenv]
         try:
@@ -322,11 +313,10 @@ def main() -> int:
               str(ann))
 
         print("\nrunning out of requests is a wait, not a fault")
-        # His 429, verbatim: "limit: 100 requests per day on Tier 1. Please
-        # retry in 11h51m44s". The old code retried it four times with
-        # exponential backoff -- spending four more of a hundred daily
-        # requests to learn the same thing twice -- and then reported the raw
-        # JSON.
+        # A real daily-quota 429: "limit: 100 requests per day on Tier 1.
+        # Please retry in 11h51m44s". Retrying it with backoff would spend
+        # more of the day's requests for the same answer, so it is raised
+        # at once, as a readable message rather than the raw JSON.
         daily = ('{"error":{"message":"Rate limit exceeded for model '
                  'gemini-3.8-flash-tts (limit: 100 requests per day on Tier '
                  '1). Please retry in 11h51m44s or upgrade your tier at '
@@ -423,9 +413,8 @@ def main() -> int:
         # What the local count can and cannot know. It counts requests, which
         # is a fact. It does NOT know the ceiling: the API reports no balance
         # and no limit, the only number ever quoted is in a refusal, and it
-        # belongs to the tier the account was on at that moment. A constant
-        # was worse than nothing -- 100 was taken from one Tier 1 refusal, and
-        # the account moved to Tier 2 the next day.
+        # belongs to the tier the account was on at that moment. An account
+        # can change tier at any time, so no limit is stored as a constant.
         check(not hasattr(G, "DAILY_CALLS_TIER1"),
               "no tier's limit is written down here as if it were ours")
         # A day with no record of its own: an earlier section in this suite
@@ -526,9 +515,8 @@ def main() -> int:
               "a refusal is reported in Google's own words", said[:80])
 
         # A phone recording is the normal input. Google documents WAV, so WAV
-        # is what gets sent -- but the converting is the adapter's job, not the
-        # user's. Refusing with instructions was the third time this project
-        # made someone convert a .m4a by hand.
+        # is what gets sent, and the adapter converts a .m4a itself rather
+        # than asking the user to.
         phone = WORK / "phone.m4a"
         from realme.core.media import require as _req, run as _run
         _run([_req("ffmpeg"), "-y", "-f", "lavfi", "-t", "20", "-i",
@@ -566,11 +554,10 @@ def main() -> int:
               said[:100])
 
         print("\nthe clips are checked against Google's rules before upload")
-        # The first real enrolment failed with an HTTP 500 whose readable sentence
-        # was four lines in: "Voice mismatch detected." Two measurable causes, both
-        # visible from here: a 62-second reference (Google documents 10-30) and a
-        # consent clip recorded on a phone rather than on the reference's
-        # microphone. Neither should cost three minutes and a 500 to discover.
+        # Google answers a bad pair with an HTTP 500 ("Voice mismatch
+        # detected."). Two causes are measurable before upload: a reference
+        # outside the documented 10-30 s, and a consent clip recorded on a
+        # different microphone from the reference.
         from realme.core.media import require, run, duration_of
 
         def tone(path, seconds, hz):
@@ -636,10 +623,9 @@ def main() -> int:
 
         print("\na voice that was created is never dropped on the floor")
         # The exact body Google returned for a voice it HAD made: flat, no
-        # wrapper, `expire_time` rather than a ttl. The parser was written to
-        # the documented {"replicated_voice": {...}} and said "the voice was
-        # not created" -- about two voices that existed, were paid for, and
-        # had nothing in RealMe pointing at them.
+        # wrapper, `expire_time` rather than a ttl. It differs from the
+        # documented {"replicated_voice": {...}}, and the parser accepts both
+        # so a created, paid-for voice is always recorded.
         # A redacted stand-in for the id a real enrolment returned. No
         # digits, so the secret scanner in make_github_package.py has
         # nothing to think about: a genuine id always carries some.
@@ -692,10 +678,9 @@ def main() -> int:
 
         print("\na clone inherits the pace of the clip it was cloned from")
         # The enrolment recording is read for the microphone, not for a
-        # lecture hall. One measured pair: 193.8 words a minute of speech in
-        # the first enrolment and 183.1 in a more careful re-recording of the
-        # same passage -- 5%, which is forty seconds on a fifteen-minute
-        # lecture and is inherited by every render from then on.
+        # lecture hall. Two takes of the same passage can differ by 5% in
+        # words a minute, which is forty seconds on a fifteen-minute lecture
+        # and is inherited by every render.
         plain = G.GeminiTTS(voice="voice_a")
         matched = G.GeminiTTS(voice="voice_a", rate_match=1.06)
         check(plain.voice_fingerprint() == matched.voice_fingerprint(),
@@ -706,11 +691,10 @@ def main() -> int:
               "the render pace and the correction multiply",
               str(matched.timing_factor(0.9)))
 
-        # The whole point of moving the stretch out of the adapter: a pace
-        # correction can be re-measured without paying for the lecture again.
-        # Before this, the factor was inside `voice_fingerprint`, so changing
-        # it invalidated every utterance in every project -- which is how a
-        # corrected 1.25 cost a whole guide video to put right.
+        # The stretch is outside the adapter so that a pace correction can be
+        # re-measured without paying for the lecture again. Were the factor
+        # in `voice_fingerprint`, changing it would invalidate every
+        # utterance in every project.
         from realme.core.ledger import RenderLedger
         from realme.core.media import duration_of
         from realme.pipeline.speak import apply_timing
@@ -809,8 +793,8 @@ def main() -> int:
               str(r2["pace"]))
 
         # A correction larger than retiming can carry is a failed
-        # measurement. Clamping it to MAX_SPEED and storing that is how 1.846
-        # became a 1.25 that looked like somebody's choice.
+        # measurement. It is refused, not clamped to MAX_SPEED and stored as
+        # though it were measured.
         _F.build = lambda name, **kw: SlowClone()
         try:
             PC.calibrate_engine("gemini-tts", ref_wav, words,
@@ -828,10 +812,9 @@ def main() -> int:
               "and both measurements are in the refusal", why[:120])
 
         print("\nand it belongs to the voice it was measured for")
-        # Re-recording the enrolment and building a new voice from it left
-        # the previous voice's correction in place, applied to every sentence
-        # of every render. The only visible sign was a Studio badge reading
-        # "pace retimed by 1.25" as though it had been chosen.
+        # A correction is applied only to the voice it was measured for.
+        # Guards against a new voice, built from a re-recorded enrolment,
+        # inheriting the previous voice's correction on every sentence.
         same = {"voice": "voice_new", "rate_match": 1.07,
                 "rate_match_for": "voice_new"}
         check(G.effective_rate_match(same) == (1.07, ""),
@@ -851,7 +834,7 @@ def main() -> int:
         check(G.effective_rate_match({"voice": "voice_new"}) == (1.0, ""),
               "and no correction at all is silent, because that is normal")
 
-        # Not applying it is not the same as not keeping it. A wrong number
+        # Not applying it is not the same as not keeping it. A stale number
         # left in a profile is one hand-edited `rate_match_for` away from
         # being live again, so the five ways the voice changes all drop it.
         had = {"voice": "voice_old", "rate_match": 1.25,
@@ -914,9 +897,8 @@ def main() -> int:
               "and a first enrolment has nothing to compare against")
 
         print("\nwhat it spends is counted while it spends it")
-        # The first engine here that charges per sentence. A cost nobody sees
-        # until an invoice arrives is a cost nobody can budget against, so the
-        # render log says it per slide and once at the end.
+        # This engine charges per sentence, so the render log reports the
+        # spend per slide and once at the end.
         meter = G.GeminiTTS(voice="voice_a")
         check(meter.spend_usd == 0.0, "a new adapter has spent nothing")
         meter._bill({"candidates_token_count": 1920}, None)
@@ -935,7 +917,7 @@ def main() -> int:
               f"{lite.spend_usd:.5f}")
 
         # No usage in the response: fall back to duration, and say so, because
-        # 32 tokens a second is a measurement of somebody else's billing.
+        # the 32 tokens a second used for it is an estimate, not a bill.
         silent = WORK / "half_second.wav"
         silent.write_bytes(wav_bytes(0.5))
         fallback = G.GeminiTTS(voice="voice_a")
@@ -955,10 +937,9 @@ def main() -> int:
 
         print("\nthe line printed before a render tells the truth about this engine")
         # factory.announce reasons from a local reference file. For a hosted
-        # clone that reasoning is wrong in BOTH directions: it would report
-        # "no reference enrolled" for an enrolled hosted voice, and -- worse --
-        # "cloning from voice_reference.wav" for a voice that was never
-        # created at Google.
+        # clone that is wrong in BOTH directions: it would report "no
+        # reference enrolled" for an enrolled hosted voice, and "cloning from
+        # voice_reference.wav" for a voice that was never created at Google.
         from realme.adapters import factory
         import io as _io, contextlib as _ctx
         enrolled = G.GeminiTTS(voice="voice_abc")
@@ -1026,8 +1007,8 @@ def main() -> int:
     check(" ".join(big).split() == " ".join(small).split(),
           "and merging loses no words")
     check(all(len(u) <= 900 for u in big), "while respecting the size asked for")
-    # The regression that would be expensive and silent: Qwen3's chunking is
-    # keyed into every cached utterance ever rendered.
+    # Qwen3's chunking is keyed into every cached utterance, so the default
+    # split must not change.
     check(split_utterances(prose) == small,
           "the default split is byte-identical after all of this")
     check(max(len(u) for u in small) <= MAX_CHARS,
@@ -1036,7 +1017,7 @@ def main() -> int:
     print("\nand the renderer really does send fewer, larger calls")
     # chunk_sizes() being right is not the same as speak_segment() calling it.
     # This is the wiring, measured by counting what the engine was asked to
-    # say -- the same way the two-resident-copies bug was finally pinned down.
+    # say.
     from realme.pipeline.speak import speak_segment
     from realme.core.ledger import RenderLedger
 
@@ -1095,8 +1076,8 @@ def main() -> int:
     check(explicit.max_chars_per_call == 400, "and a number is obeyed")
     print("\na chunk that comes back hurried is reported, not left to be found")
     # Chunk size makes this rare, not impossible: the hurry depends on the
-    # text as well as its length. Nothing else would notice -- every word is
-    # present, so no length or content check fires.
+    # text as well as its length. Every word is present, so no length or
+    # content check would fire.
     import io as _io2, contextlib as _ctx2
     watcher = G.GeminiTTS(voice="voice_a")
     normal = [6.4, 6.5, 6.3, 6.6, 6.4]
@@ -1123,8 +1104,7 @@ def main() -> int:
         watcher._watch_pace(calm, "The slide where it hurried badly today.")
         rush = watcher.last_rush()
         # Reported as a NUMBER to the renderer rather than as a line on
-        # stderr. A warning is something a person has to notice while a render
-        # scrolls past; this is something the pipeline acts on.
+        # stderr, so the pipeline can act on it.
         check(rush is not None and abs(rush - 1.25) < 0.02,
               "a chunk 25% faster than the median is reported as 1.25",
               str(rush))
@@ -1166,10 +1146,9 @@ def main() -> int:
     check(_D["adapters"]["draft_tts"] == "piper"
           and _D["adapters"]["guest_tts"].startswith("piper"),
           "while drafting and the podcast guest stay local and free")
-    # The one that matters. A profile already pointing at a local engine must
-    # not be migrated onto a hosted one: that would start sending someone's
-    # voice and their lectures to a company, and start charging them, because
-    # they installed an update.
+    # A profile already pointing at a local engine must not be migrated onto
+    # a hosted one: an update must not start sending a user's voice and
+    # lectures to a provider, or start charging them.
     import json as _json
     home = Path(os.environ["REALME_HOME"]) / "stay_local"
     (home / "profile").mkdir(parents=True, exist_ok=True)
@@ -1228,9 +1207,8 @@ def main() -> int:
     check(" ".join(kept).split() == " ".join(
               [t for t in eng.said if len(t) <= 400]).split(),
           "the words that were kept are the words that were spoken")
-    # The important one. A cached rushed take would be served by every later
-    # render of the same words and the QC would never run again -- the cache
-    # would make the fault permanent.
+    # A cached rushed take would be served by every later render of the
+    # same words and the QC would never run on it again, so it is not cached.
     cached = {rec["path"] for rec in led.state.values()}
     check(len(led.state) == len(kept),
           "only the takes that were kept are in the ledger",
@@ -1280,11 +1258,10 @@ def main() -> int:
     joined = " ".join(sents)
     check(joined.split() == probe.FALLBACK.split(),
           "splitting the sample loses nothing")
-    # The verdicts, anchored on the numbers from the first real run. The
-    # listener heard "complete but rushed" at 839 and 1345 characters; the
-    # probe called both "text was probably dropped", because it compared wall
-    # durations -- which count the lead-in and tail silence of every one of
-    # the eleven single-sentence calls it was summing.
+    # The verdicts, anchored on measured numbers: a listener hears "complete
+    # but rushed" at 839 and 1345 characters. The probe compares speech
+    # time, not wall durations, which would count the lead-in and tail
+    # silence of every single-sentence call it sums.
     check(probe.verdict_for(0.906, 0.918).startswith("RUSHED"),
           "1345 characters: complete but hurried, which is what it sounded like",
           probe.verdict_for(0.906, 0.918))
@@ -1293,8 +1270,7 @@ def main() -> int:
     check(probe.verdict_for(0.945, 0.961) == "intact",
           "738 characters: intact, which is where the ear landed too")
     # The default exists because of that pair of verdicts. If a change ever
-    # makes 839 "intact", the default should move with it -- deliberately,
-    # not by this test quietly continuing to pass.
+    # makes 839 "intact", the default should be moved deliberately with it.
     check(G.MEASURED_MAX_CHARS == 738
           and probe.verdict_for(0.924, 0.919).startswith("RUSHED"),
           "which is why 738 is the engine's default and 839 is not")
@@ -1331,7 +1307,8 @@ def main() -> int:
     check(how == "metered", "and a metered token count is preferred when given")
 
     print("\nthe bill counts the drafting too, and in the right unit")
-    # Two ways to under-report a cost, both of which happened here first.
+    # Two ways to under-report a cost: leaving out the drafting, and the
+    # wrong unit.
     from realme.adapters.script_writer import (GeminiScriptWriter,
                                                DRAFT_PRICE_IN, DRAFT_PRICE_OUT)
     w = GeminiScriptWriter(api_key="not-real")
@@ -1351,9 +1328,8 @@ def main() -> int:
           "and the manifest carries it, because drafting and rendering are "
           "different days")
 
-    # The unit, which is where the real mistake was: PRICE is dollars per
-    # million CHARACTERS, and a value in dollars per hour quoted a lecture at
-    # one cent.
+    # The unit: PRICE is dollars per million CHARACTERS; read as dollars per
+    # hour it would quote a lecture at about one cent.
     from realme.app.server import PRICE
     from realme.pipeline.lecture import estimate_cost
 
@@ -1409,9 +1385,8 @@ def main() -> int:
     check(Path(GUIDE_VIDEO) in shipped_files(tree),
           "where shipped_files then finds it")
 
-    # Both packagers, not just the update one. `ensure_guide_video` says in
-    # its own docstring that it is called by both; migrate did not call it,
-    # so a migration package carried the guide's deck with no video.
+    # Both packagers, not just the update one: `ensure_guide_video` is called
+    # by both, so a migration package carries the video with the guide's deck.
     from realme import migrate as _M
     tree2 = Path(os.environ["REALME_HOME"]) / "ship2"
     (tree2 / Path(GUIDE_VIDEO_SOURCES[0]).parent).mkdir(parents=True, exist_ok=True)
@@ -1424,9 +1399,9 @@ def main() -> int:
           "migrate collects it to the root as the update packager does")
 
     print("\nthe documents say what the code does")
-    # Documentation drifts silently and a privacy claim that drifts is worse
-    # than no claim. These are the sentences that would be WRONG, not merely
-    # stale, if the engine list changed again.
+    # The documents' privacy claims are checked against the code. These are
+    # the sentences that would be WRONG, not merely stale, if the engine
+    # list changed.
     root = HERE.parent
     from realme.core.textio import read_text
     readme = read_text(root / "README.md")

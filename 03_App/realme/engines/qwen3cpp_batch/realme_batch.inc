@@ -335,8 +335,8 @@ struct realme_batch {
             return false;
         }
         if (!ggml_backend_is_cpu(t.state_.backend)) {
-            // Checked sample for sample on the CPU backend only; a GPU build
-            // records one sentence at a time, as it always has.
+            // Verified sample for sample on the CPU backend only; a GPU build
+            // records one sentence at a time.
             err = "batch: checked on the CPU backend only";
             return false;
         }

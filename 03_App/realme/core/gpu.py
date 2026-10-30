@@ -1,8 +1,7 @@
 """
 Finding a GPU, and deciding whether RealMe can use it.
 
-Three separate questions, and conflating them is how "GPU support" turns into
-a support burden:
+Three separate questions:
 
   1. **Is there a GPU?** A driver query. Cheap, and true or false.
   2. **Can we BUILD for it?** Needs a toolkit that is not installed by default
@@ -84,12 +83,10 @@ def any_gpu() -> dict | None:
 
 
 #: Integrated graphics, by name -- they share system memory with the CPU, which
-#: is the whole story for a bandwidth-bound workload.
+#: decides the matter for a bandwidth-bound workload.
 #:
 #: Names arrive as "Intel(R) Iris(R) Xe Graphics" and "AMD Radeon(TM) 780M
-#: Graphics", so the trademark marks are stripped before matching. Getting that
-#: wrong put Iris Xe in the "old integrated" bucket and Radeon 780M in the
-#: "discrete" one, on a first attempt that looked right until it was tested.
+#: Graphics", so the trademark marks are stripped before matching.
 INTEGRATED = re.compile(
     r"\b(?:uhd|hd) graphics\b|\biris\b|\barc graphics\b|"
     r"\bvega \d+ graphics\b|\bradeon(?: \d{3}m)? graphics\b|\bapu\b")
@@ -161,7 +158,7 @@ def recommend() -> dict:
     What this machine could do, and what is missing to do it.
 
     Returns a decision plus the reason, so a caller can print the reason rather
-    than a bare "no GPU support" that gives nobody anywhere to go.
+    than a bare "no GPU support".
     """
     mac = apple_silicon()
     if mac:
@@ -188,8 +185,7 @@ def recommend() -> dict:
                 "why": f"{label} with the Vulkan SDK installed. Vulkan works "
                        f"on any vendor; on NVIDIA, CUDA would be faster still."}
 
-    # An old integrated GPU is not an opportunity, and saying "install the
-    # Vulkan SDK" to someone who has one is bad advice dressed as help.
+    # An old integrated GPU gains nothing, so do not suggest the Vulkan SDK.
     #
     # Autoregressive decode is bound by memory bandwidth, and an iGPU reads the
     # SAME system memory as the CPU -- there is no bandwidth to win. On a 2018
@@ -209,8 +205,7 @@ def recommend() -> dict:
                        f"install from https://vulkan.lunarg.com/ and run "
                        f"`realme bench`."}
 
-    # A GPU with no way to build for it. Say which toolkit and how big it is,
-    # because "install a toolkit" without that is not actionable advice.
+    # A GPU with no way to build for it. Say which toolkit and how big it is.
     if gpu["vendor"] == "nvidia":
         missing = ("the CUDA Toolkit (~3 GB) from "
                    "https://developer.nvidia.com/cuda-downloads\n"

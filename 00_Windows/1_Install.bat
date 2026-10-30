@@ -87,9 +87,8 @@ REM  into a defaults-based Anaconda environment is a well-known source of
 REM  Windows DLL errors ("gdk_pixbuf-2.0-0.dll not found" and similar). A
 REM  static build has no dependency tree at all.
 REM  No "already present" check here on purpose. _get_ffmpeg.bat owns that
-REM  decision and reports it; duplicating it here meant this script tested only
-REM  ffmpeg.exe while the helper tested ffmpeg.exe AND ffprobe.exe - so a run
-REM  that fetched one but not the other was reported as done.
+REM  decision (it checks ffmpeg.exe AND ffprobe.exe) and reports it, so the
+REM  test lives in one place.
 call "%~dp0_get_ffmpeg.bat" quiet
 REM  Verify, don't assume. Both binaries: RealMe needs ffprobe for every
 REM  duration measurement, and a folder with only ffmpeg.exe is not working.

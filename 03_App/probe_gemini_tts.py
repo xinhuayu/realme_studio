@@ -23,8 +23,8 @@ same sentences TOGETHER in one call and compare. Audio that comes back
 materially shorter than the sum of its parts has lost text. Audio materially
 longer has stalled or repeated. The size at which that starts is the answer.
 
-It is a screen, not a proof: every WAV is kept, numbered, so the two or three
-sizes that matter can be listened to. Listening is the proof.
+Duration only flags a problem: every WAV is kept, numbered, so the two or
+three sizes that matter can be listened to.
 
     python 03_App\\probe_gemini_tts.py --prebuilt Kore
     python 03_App\\probe_gemini_tts.py              # your enrolled voice
@@ -40,15 +40,15 @@ HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 
 #: The rate and the token-per-second figure come from the adapter, which is
-#: also what the renderer bills against. Two copies of a price is how a probe
-#: comes to quote one number and a render log another.
+#: also what the renderer bills against, so the probe and a render log quote
+#: the same price.
 from realme.adapters.tts_gemini import (  # noqa: E402
     PRICE_PER_MTOK, TOKENS_PER_SECOND)
 
 #: Twelve sentences of the kind of prose this tool actually narrates: defined
 #: terms, numbers with decimal points, an abbreviation, a parenthesis, a
-#: question. Deliberately not a tongue-twister -- the failure being looked for
-#: is dropped text over length, and ordinary text finds it honestly.
+#: question. Not a tongue-twister: the failure being looked for is dropped
+#: text over length, which ordinary text shows.
 FALLBACK = """\
 Confounding is the central problem of observational epidemiology, and it is \
 worth being precise about what it is. A confounder is a common cause of both \
@@ -79,7 +79,8 @@ def sentences(text: str) -> list[str]:
 
 
 def narration_from_projects() -> tuple[str, str]:
-    """The newest project's narration, so the measurement is on HIS prose."""
+    """The newest project's narration, so the measurement is on the user's
+    own prose."""
     try:
         from realme.core.env import data_home
         from realme.core.textio import read_text
@@ -123,23 +124,18 @@ def money(model: str, seconds: float, metered: int | None) -> tuple[float, str]:
 def verdict_for(speech_ratio: float, syllable_ratio: float | None = None) -> str:
     """What a rendering did, from two measurements rather than one.
 
-    The first version of this compared WALL durations and called anything 8%
-    short "text was probably dropped". Both halves of that were wrong, and the
-    person listening to the files caught it before the arithmetic did.
-
       * Wall duration counts the lead-in and tail silence of every call, so a
         long call is compared against N copies of that padding -- about 0.7 s
-        each, which is most of the apparent shortfall on its own. Speaking
-        time is the comparable quantity.
+        each, which can be most of an apparent shortfall. Speaking time is the
+        comparable quantity.
       * A shortfall in speaking time with the SYLLABLES still there is not a
-        drop, it is a hurry. Measured on the run that prompted this: 1345
-        characters came back 9% short of speech time while carrying 92% of the
-        syllables and sounding, to the listener, complete but rushed.
+        drop, it is a hurry: complete but rushed.
 
     So the content question and the pace question are answered separately.
     Syllable counting undercounts slightly when speech is fast -- nuclei merge
-    -- so the drop threshold sits at 0.88, well below one missing sentence in
-    seven (0.86) and well clear of the 0.92 that brisk delivery produces.
+    -- so the drop threshold sits at 0.88: one missing sentence in seven
+    (0.86) falls below it, and the ~0.92 that brisk delivery produces stays
+    clear of it.
     """
     if syllable_ratio is not None and syllable_ratio < 0.88:
         return (f"DROPPED -- only {syllable_ratio * 100:.0f}% of the content "
@@ -269,8 +265,8 @@ def main() -> int:
     tts = GeminiTTS(**kw)
 
     # Where the key came from, named. A standalone script does not load .env
-    # the way the Studio and the CLI do, and the first run of this said "No
-    # GEMINI_API_KEY" to someone who had one -- in the right place.
+    # automatically the way the Studio and the CLI do, so it is loaded here
+    # and its source printed.
     try:
         from realme.core.env import load as _load_env
         used = [str(p_) for p_ in _load_env()]
@@ -300,8 +296,8 @@ def main() -> int:
     if a.prebuilt:
         # A prebuilt voice is not a clone of anyone, so the tier question --
         # which is about YOUR voice and YOUR lecture text leaving the machine
-        # -- is still live for the text but not for the biometrics. The check
-        # is not skipped; it is answered honestly for this one run.
+        # -- still applies to the text but not to the biometrics. The check
+        # is not skipped; it runs against the prebuilt voice for this run.
         tts.voice = a.prebuilt
     try:
         tts.check()
@@ -394,9 +390,9 @@ def main() -> int:
 
     intact = is_intact
 
-    # The ladder brackets the answer; it does not find it. A rung at 839 that
-    # holds and one at 1158 that does not says only "somewhere in between",
-    # and the gap is wider than the thing being measured. Bisect by SENTENCE
+    # The ladder brackets the answer; it does not find it. A rung that holds
+    # and the next that does not say only "somewhere in between", and the gap
+    # can be wider than the thing being measured. Bisect by SENTENCE
     # COUNT, so every trial is still a prefix with a known expected duration.
     if a.refine:
         held = max((r["sentences"] for r in rows if intact(r)), default=0)
@@ -422,8 +418,8 @@ def main() -> int:
     good = [r for r in rows if intact(r)]
     largest = max((r["chars"] for r in good), default=0)
 
-    # One call is an anecdote. These models are sampled, so the size that
-    # matters is the one that holds TWICE -- and a second trial costs a cent.
+    # These models are sampled, so the size that matters is the one that
+    # holds TWICE; a second trial costs about a cent.
     confirmed = None
     if largest:
         winner = max(good, key=lambda r: r["chars"])
@@ -457,8 +453,7 @@ def main() -> int:
 
     if largest and confirmed is False:
         print(f"{largest} characters held once and not twice. These models are "
-              f"sampled,\nso that is a size that works sometimes, which is the "
-              f"worst kind.\nDrop to the next rung down, or keep the pipeline "
+              f"sampled,\nso that size works only sometimes.\nDrop to the next rung down, or keep the pipeline "
               f"default.")
     elif largest:
         best = max(good, key=lambda r: r["chars"])

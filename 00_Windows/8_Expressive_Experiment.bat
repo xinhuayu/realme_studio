@@ -3,11 +3,10 @@ REM ===================================================================
 REM  Runs the expressive-dialogue experiment with RealMe's OWN Python.
 REM
 REM  Why this file exists: `python 03_App\explore_expressive.py` from an
-REM  ordinary prompt picks whatever `python` is first on PATH. On the machine
-REM  this was first tried, that was a bare pythoncore 3.14 with none of
-REM  RealMe's packages in it. The cloned voice still worked -- it is a DLL
-REM  loaded through ctypes and needs no Python package -- so the run got all
-REM  the way to the guest voice before anything complained.
+REM  ordinary prompt picks whatever `python` is first on PATH, which may have
+REM  none of RealMe's packages. The cloned voice is a DLL loaded through
+REM  ctypes and needs no Python package, so such a run gets as far as the
+REM  guest voice before it fails.
 REM
 REM  _env.bat puts the right environment first on PATH, which is all it takes.
 REM

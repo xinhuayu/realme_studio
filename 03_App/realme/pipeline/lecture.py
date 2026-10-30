@@ -3,9 +3,8 @@ Lecture build, split into two phases.
 
 Phase 1 (write_script) is cheap: one LLM call, no audio. Phase 2 (render) is
 where the money and the minutes go. Keeping them separate means the instructor
-reads and fixes the narration BEFORE anything is synthesized -- which is the
-human-in-the-loop safeguard the architecture always called for, and also the
-single biggest cost control in the system.
+reads and fixes the narration BEFORE anything is synthesized: the
+human-in-the-loop review step, and the main cost control.
 """
 from __future__ import annotations
 import json
@@ -34,9 +33,8 @@ def write_script(deck: Path, outdir: Path, writer, *, style="", course_context="
     """Rasterize the deck and draft narration. No audio is produced.
 
     `seconds_per_slide` is an argument, not a process-wide environment
-    variable set by the caller: the Studio used to write it into `os.environ`
-    per request and never clear it, so the next draft inherited the previous
-    deck's setting. The environment remains the CLI's way in (`--seconds-per-
+    variable set by the caller, so one request's setting cannot carry over to
+    the next draft. The environment remains the CLI's way in (`--seconds-per-
     slide` sets it before this is called) and the fallback here.
     """
     deck, outdir = Path(deck), Path(outdir)
@@ -60,10 +58,9 @@ def write_script(deck: Path, outdir: Path, writer, *, style="", course_context="
     with_notes = sum(1 for c in content if c.speaker_notes)
     log(f"{len(slide_pngs)} slides at {width}px"
         + (f", {with_notes} with speaker notes" if with_notes else ""))
-    # Say so when a format that CAN carry notes carries none. The narration will
-    # still be produced, from the visible slide text alone -- which is the
-    # audience's copy of the material, not yours -- and the result reads like
-    # the slides being recited. Better to know that before waiting for a render.
+    # Say so when a format that CAN carry notes carries none. The narration is
+    # then drafted from the visible slide text alone, and tends to read like
+    # the slides being recited.
     if Path(deck).suffix.lower() in {".pptx", ".ppt"} and not with_notes:
         log("  ! This deck has no speaker notes. Narration will come only from "
             "the text visible")
@@ -74,7 +71,7 @@ def write_script(deck: Path, outdir: Path, writer, *, style="", course_context="
 
     if writer is None:
         # An imported or previously-approved script. Reuse it rather than
-        # regenerating: the whole point of importing is that you wrote it.
+        # regenerating it.
         manifest = load_script(outdir)
         log(f"Using the existing script ({len(manifest.segments)} segments, "
             f"source={manifest.script_source})")
@@ -84,12 +81,9 @@ def write_script(deck: Path, outdir: Path, writer, *, style="", course_context="
         return manifest, slide_pngs
 
     # What each slide should run to, measured from the slide. A global median
-    # cannot tell a section divider from a dense table from a full-page figure,
-    # and all three were being asked for the same length.
-    # This used to sit in a bare `except Exception: pass` with `pdfdoc`
-    # never imported, so the NameError was swallowed and every deck was
-    # weighted as if it had no pages at all. The measurement is worth having
-    # loudly or not at all.
+    # cannot tell a section divider from a dense table from a full-page figure.
+    # A PDF that cannot be read is logged, and every slide then gets the
+    # default band.
     pages = []
     try:
         pages = pdfdoc.read_pages(pdf)
@@ -116,8 +110,8 @@ def write_script(deck: Path, outdir: Path, writer, *, style="", course_context="
             + ", ".join(f"{n} {k}" for k, n in sorted(kinds.items())))
 
     log(f"Drafting narration via {writer.name}")
-    # The writer's diagnostics go to this job's log, not to a stderr nobody
-    # is watching. Attribute rather than argument so a writer without one
+    # The writer's diagnostics go to this job's log, not to stderr.
+    # Attribute rather than argument so a writer without one
     # (the placeholder) needs no change.
     writer.log = log
     import inspect
@@ -128,9 +122,9 @@ def write_script(deck: Path, outdir: Path, writer, *, style="", course_context="
                                         furniture=furniture,
                                         seconds_per_slide=secs)
     else:
-        # A writer from before per-slide bands existed. This was an
-        # `except TypeError` around the call, which also caught TypeErrors
-        # raised INSIDE the call and paid for the request twice.
+        # A writer without per-slide bands. Chosen by signature, not by
+        # catching TypeError, which would also catch a TypeError raised
+        # inside the call and repeat a paid request.
         manifest = writer.write_lecture(slide_pngs, notes, style, course_context)
     raw = getattr(writer, "last_response", None)
     if raw is not None:
@@ -186,8 +180,7 @@ def slide_targets(content, pages=None, seconds_per_slide: int | None = None) -> 
 SHORT_FRACTION = 0.8
 
 #: Fraction of the contentful slides that must be short before the whole deck
-#: is asked again. One short slide is a slide; a third of them is a habit, and
-#: only the habit is worth a second model call.
+#: is asked again; fewer short slides do not justify a second model call.
 SHORT_DECK_FRACTION = 0.34
 
 
@@ -196,24 +189,21 @@ def top_up_short(manifest, slide_pngs, content, writer, *, style="",
                  seconds_per_slide: int | None = None) -> int:
     """Measure the draft and ask again about the slides that came in short.
 
-    Prompting alone does not fix this. The model settles at about a hundred
-    words a slide whatever length is requested, so Standard and Full both
-    arrive at the bottom of their band or below it. Measuring the result and
-    asking again -- about specific slides, with their own words and their own
-    picture in front of it -- is the part that works.
+    The model tends to settle at about a hundred words a slide whatever
+    length is requested, so Standard and Full arrive at the bottom of their
+    band or below it; prompting alone does not fix this. Measuring the result
+    and asking again -- about specific slides, with their own words and their
+    own picture in front of it -- does.
 
     Each slide is judged against ITS OWN band, not the deck's median. A simple
     slide finished in seventy words is finished; a dense table or a figure that
-    got seventy words was summarised. Measured on four versions of one real
-    lecture, those are different slides with different amounts on them, and
-    treating them alike is what produced both complaints this feature has had.
+    got seventy words was summarised.
 
     A divider is never asked about. A FIGURE always can be: a full-page diagram
-    has almost no text of its own and is the case most in need of explaining,
-    which an earlier version of this had backwards.
+    has almost no text of its own and is the case most in need of explaining.
 
-    One pass, never a loop. If the second attempt is still short, that is worth
-    knowing rather than worth grinding at, and the report says so.
+    One pass, never a loop. If the second attempt is still short, the log
+    says so.
     """
     import os
     if os.environ.get("REALME_NO_TOPUP"):
@@ -275,24 +265,17 @@ def length_report(manifest, limit_words: int | None = None,
     """
     How the narration lengths came out across the deck.
 
-    Two faults are worth catching, and they pull in opposite directions.
+    Two faults are caught, and they pull in opposite directions.
 
     Uniformity: a deck whose title slide and whose densest derivation run the
     same length is being written to a quota rather than to the slides, and no
     individual block looks wrong when that happens.
 
-    The other is the whole deck sitting below the band for the setting that was
-    chosen. "Shorter than the LIMIT" is never a fault -- the limit is a
-    ceiling, and a section divider that gets fifty words is correct. But the
-    three settings each have a band an ordinary slide should land in, and a
-    median far below it means the setting had no effect, which is how this was
-    noticed: brief, standard and full all produced about a hundred words.
-
-    The fault worth catching is uniformity. When the instruction read "that is
-    a ceiling, not a quota", every slide came back at about 100 words whichever
-    limit was chosen; a deck whose title slide and whose densest derivation run
-    the same length is being written to a quota rather than to the slides, and
-    no individual block looks wrong when that happens.
+    A low median: the whole deck sitting below the band for the setting that
+    was chosen. "Shorter than the LIMIT" is never a fault -- the limit is a
+    ceiling, and a section divider that gets fifty words is correct. But each
+    of the three settings has a band an ordinary slide should land in, and a
+    median far below it suggests the setting is not reaching the model.
     """
     from statistics import median
     counts = [len(s.spoken_text.split()) for s in manifest.segments]
@@ -329,16 +312,14 @@ def load_script(outdir: Path, path: Path | None = None) -> Manifest:
     """The project's script, or a specific manifest file.
 
     `path` exists so a revision waiting to be accepted is read through the same
-    function as the live one. A second loader that knew about the staging
-    folder is how the two would drift apart.
+    function as the live one, so the two cannot drift apart.
     """
     p = Path(path) if path else Path(outdir) / "_work" / "manifest.json"
     if not p.is_file():
-        # `--script imported` with no imported script is a two-line mistake:
-        # the import went to one folder and the render was pointed at another.
-        # The raw FileNotFoundError from pathlib names the file that is absent
-        # and nothing about the file that exists, which is the one piece of
-        # information that ends it.
+        # `--script imported` with no imported script usually means the import
+        # went to one folder and the render was pointed at another. pathlib's
+        # FileNotFoundError names only the absent file, so list the project
+        # folders that do hold a script.
         from realme.core.env import data_home
         here = Path(outdir).resolve()
         seen = []
@@ -392,7 +373,7 @@ def estimate_cost(manifest: Manifest, usd_per_million_chars: float) -> dict:
 #: How many slide videos are made at once. Each is one ffmpeg process, and
 #: x264 already uses a few threads per process, so half the processors (at
 #: most four) keeps the machine responsive. REALME_VIDEO_WORKERS overrides it;
-#: 1 makes them one after another, in slide order, exactly as before.
+#: 1 makes them one after another, in slide order.
 def video_workers() -> int:
     import os
     env = os.environ.get("REALME_VIDEO_WORKERS", "").strip()
@@ -443,9 +424,9 @@ def early_video_plan(pre) -> tuple[int, int | None] | None:
 class _EarlyVideos:
     """Slide videos made while later slides are still being recorded.
 
-    Used when the voice is hosted: the computer spends a recording waiting
-    for Google, so encoding the slides already recorded costs no time at all.
-    Same encoder and the same jobs `_make_slide_videos` would run; the ledger
+    Used for a hosted voice, where the computer spends a recording waiting
+    for Google, and for a local one when the processor has threads the engine
+    leaves free (`early_video_plan`). Same encoder and the same jobs `_make_slide_videos` would run; the ledger
     is still written from the render's own thread, at `finish`, in slide
     order.
     """
@@ -496,7 +477,7 @@ def _make_slide_videos(jobs: list[dict], seg_videos: list, ledger, *,
     in `seg_videos` at their own slide's position whatever order they finish
     in, and the ledger is updated here, in the calling thread, so its file is
     never written by two threads at once. If one fails, the others are
-    cancelled and the first error is raised, as the one-at-a-time loop did.
+    cancelled and the first error is raised.
     """
     if not jobs:
         return
@@ -609,20 +590,18 @@ def render(deck: Path, outdir: Path, manifest: Manifest, tts, *, layout="slide_o
         """What this engine has spent so far, if it is the kind that spends.
 
         Asked of the adapter rather than switched on its name: a local engine
-        has no such attribute and the whole feature disappears for it, which
-        is what should happen.
+        has no such attribute, so it reports nothing.
         """
         from realme.pipeline.speak import spend_of
         return spend_of(engine)
 
     spend_before = _spent(tts)
 
-    # Said before the first call, not discovered at slide nine.
+    # The planned number of engine calls, logged before the first one.
     #
-    # A hosted engine has a request allowance, and `realme lecture` on a
-    # thirteen-slide deck is thirty-three requests. A daily limit of a hundred
-    # is three renders, and the one that runs out does so in the middle --
-    # which costs nothing (every take is cached) but reads like a fault.
+    # A hosted engine has a request allowance, and a render that runs out
+    # stops part-way. Nothing is lost (every take is cached), but the budget
+    # note says so in advance.
     try:
         from realme.pipeline.speak import plan_calls
         planned = plan_calls([sg.spoken_text for sg in manifest.segments],
@@ -638,9 +617,8 @@ def render(deck: Path, outdir: Path, manifest: Manifest, tts, *, layout="slide_o
     # recorded AHEAD of this loop into the files it would write and entered
     # in the ledger as they land. The loop waits only for the slide it is on,
     # so it finds that slide's sentences done; anything missed there, it
-    # records as it always has. For a hosted voice the slide videos are made
-    # as the loop goes, while later slides are still being recorded: the
-    # computer is otherwise idle, waiting for Google.
+    # records itself. Where `early_video_plan` allows, the slide videos are
+    # made as the loop goes, while later slides are still being recorded.
     pre = None
     early = None
     try:
@@ -673,7 +651,7 @@ def render(deck: Path, outdir: Path, manifest: Manifest, tts, *, layout="slide_o
     render_t0 = _time.perf_counter()
     spoke_total = reused_total = redone_total = 0
     synth_total = 0.0
-    # Slide videos are made AFTER every slide's audio, several at once.
+    # Otherwise slide videos are made AFTER every slide's audio, several at once.
     # Each is an independent ffmpeg run (a still picture over its own audio),
     # so they parallelise cleanly, and the speech engine -- one voice, one
     # account, one daily allowance -- stays strictly one slide at a time.
@@ -685,9 +663,8 @@ def render(deck: Path, outdir: Path, manifest: Manifest, tts, *, layout="slide_o
             # One line before the slide and one after, and nothing in between.
             #
             # A cloned utterance runs at about a fifth of real time, so a slide
-            # is minutes of work. Saying nothing until it finished made the
-            # Studio look hung; saying something per utterance filled the box
-            # with sixty lines. The slide is the unit somebody thinks in.
+            # is minutes of work: a line per slide shows progress without a
+            # line per utterance.
             _t0 = _time.perf_counter()
             slide_spend_before = _spent(tts)
             log(f"slide {seg.slide_index + 1} of {len(slide_pngs)} "
@@ -767,11 +744,10 @@ def render(deck: Path, outdir: Path, manifest: Manifest, tts, *, layout="slide_o
             if cost.get("rerecorded"):
                 how += ((", " if how else "")
                         + f"{cost['rerecorded']} re-recorded shorter")
-            # What the slide cost, where it costs anything. Said while it is
-            # being spent rather than on a bill a month later -- this is the first
-            # engine here that charges per sentence. Always called an estimate:
-            # even with Google's own token counts it is their published rate times
-            # their count, which is a good estimate and is not an invoice.
+            # What the slide cost, where it costs anything, logged as it is
+            # spent. Always called an estimate: even with Google's own token
+            # counts it is their published rate times their count, not an
+            # invoice.
             money = ""
             spent_now = _spent(tts)
             if spent_now is not None and slide_spend_before is not None:
@@ -830,43 +806,38 @@ def render(deck: Path, outdir: Path, manifest: Manifest, tts, *, layout="slide_o
             if not seg.rerender and seg.slide_digest:
                 # The author looked at what changed and said it does not matter.
                 # Keying on the old picture makes the ledger return the previous
-                # frame, which is the whole point: a removed logo is not worth
-                # three minutes of synthesis.
+                # frame, so a minor change such as a removed logo costs no
+                # re-render.
                 digest = seg.slide_digest
                 log(f"  slide {seg.slide_index + 1}: reusing the previous frame, "
                     f"as asked")
             else:
                 digest = actual
             # Pace, lead-in and tail shape the audio under this picture, so they
-            # are part of what the video IS; leaving them out let a pace edit
-            # re-serve the old mp4 after the utterances had correctly re-rendered.
+            # are part of what the video IS.
             pr = seg.prosody
             # The gaps BETWEEN utterances belong in the key too.
             #
             # They are applied when the utterances are joined, not when they are
             # synthesised, so a change to `pause_scale`, to `--prosody-mode`, or
             # to an authored [[pause]] leaves every cached utterance valid and
-            # only the join different. Without this the video is a hit and the
-            # knob silently does nothing on a re-render -- which is how the pace
-            # edit went unnoticed before it.
+            # only the join different. Without them in the key the video would
+            # be a cache hit and the change would not reach it.
             gaps = "+".join(str(u.gap_ms) for u in utts)
             # And the audio itself: which takes, at what length. The written
             # narration is not enough, because the audio is made from what the
             # text layer turns it into -- and that changes without the words
-            # changing: a lexicon entry, a fix to how money or markup is read, a
-            # saved voice speed, Gemini's pace correction. Each re-recorded or
-            # re-stretched the sentences correctly, and then the slide's OLD video,
-            # old audio and all, was reused, because its key had not moved. A
-            # 90-slide lecture ended "FAIL: duration_matches_script" that way, the
-            # check catching what the cache had hidden. A take's file is named by
-            # its own content key, so the names and lengths identify the audio.
+            # changing: a lexicon entry, a change to how money or markup is
+            # read, a saved voice speed, Gemini's pace correction. A take's file
+            # is named by its own content key, so the names and lengths identify
+            # the audio.
             heard = RenderLedger.key("audio", "|".join(
                 f"{Path(u.wav).name}:{(u.duration_s or 0):.3f}" for u in utts
                 if u.wav), "")
             # Everything else that is drawn into the picture: WHICH cues, where
-            # on the slide and when (a count alone let an edited cue word, or a
-            # cue moved by a re-timed sentence, re-serve the old highlight), and
-            # the frame rate the video is encoded at.
+            # on the slide and when (a count alone would miss an edited cue word,
+            # or a cue moved by a re-timed sentence), and the frame rate the
+            # video is encoded at.
             drawn = RenderLedger.key("cues", ";".join(
                 f"{c.phrase}|{c.style}|{c.start_s:.3f}-{c.end_s:.3f}|"
                 f"{c.box.x0:.4f},{c.box.y0:.4f},{c.box.x1:.4f},{c.box.y1:.4f}"
@@ -882,8 +853,8 @@ def render(deck: Path, outdir: Path, manifest: Manifest, tts, *, layout="slide_o
                 seg_videos.append(Path(vhit["path"]))
                 # Only a cache HIT actually reuses the old frame. Recording the
                 # old digest on a miss would claim the video holds a picture it
-                # does not, and the next revision would compare against a lie --
-                # which is exactly what happens when the narration is edited on a
+                # does not, and the next revision would compare against the
+                # wrong one. A miss happens when the narration is edited on a
                 # slide the author asked to reuse: the text is in the key, so
                 # there is no hit and the NEW picture gets rendered.
                 seg.slide_digest = digest
@@ -929,10 +900,8 @@ def render(deck: Path, outdir: Path, manifest: Manifest, tts, *, layout="slide_o
 
     log("Assembling master")
     (work / "manifest.json").write_text(manifest.model_dump_json(indent=2), encoding="utf-8")
-    # A draft render must not land on top of a finished one. Both are "the
-    # lecture", both are <project>.mp4, and the draft takes a fiftieth of the
-    # time -- so the cheap one would quietly replace the expensive one and the
-    # only sign would be the voice.
+    # A draft render must not land on top of a finished one: both would be
+    # <project>.mp4, so `suffix` gives the draft its own name.
     name = manifest.project_id + suffix
     # What this render was made of, so inserted videos can be added or taken
     # out later by re-joining these files, without rendering anything again.
@@ -950,8 +919,7 @@ def render(deck: Path, outdir: Path, manifest: Manifest, tts, *, layout="slide_o
     master, srt, vtt, ch, report, placed = _join_master(
         outdir, manifest, seg_videos, name, width=width, height=height,
         fps=fps, log=log)
-    # Which voice made this. A file on disk should be able to answer that
-    # without anyone having to remember which button they pressed.
+    # Which voice made this, recorded in the report file.
     report["voice"] = getattr(tts, "name", tts.__class__.__name__)
     report["is_draft"] = not getattr(tts, "is_voice_clone", False)
 
@@ -959,18 +927,15 @@ def render(deck: Path, outdir: Path, manifest: Manifest, tts, *, layout="slide_o
     # the only check in the system that inspects the WORDS rather than the file.
     if check_audio and audio_claims:
         # The video is already made. The acoustic check is a verification step
-        # on top of it, and losing a finished render to a missing optional
-        # package is the wrong failure: everything that took an hour succeeded,
-        # and the thing that took a second did not.
+        # on top of it, so a missing optional package must not lose the
+        # finished render.
         #
-        # Declining to verify is not the same as substituting a fake pass, so
-        # the report says NOT RUN and names what to install. It ran at all only
-        # because this deck used lexicon terms and the previous one did not --
-        # which is how a missing dependency hides through a whole first render.
+        # Declining to verify is not a pass, so the report says NOT RUN and
+        # names what to install. The check runs only when the deck uses
+        # lexicon terms.
         # The try covers the RUN, not just the import. `scipy.fft` is imported
         # inside the function that uses it, so importing this module succeeds
-        # on a machine without scipy and the failure arrives one call later --
-        # which is exactly where it arrived: at the end of a finished render.
+        # on a machine without scipy and the failure arrives one call later.
         try:
             from realme.verify.acoustic import AcousticVerifier, summarize
             av = AcousticVerifier(tts, lexicon, work / "templates")
@@ -1020,10 +985,9 @@ def render(deck: Path, outdir: Path, manifest: Manifest, tts, *, layout="slide_o
         report["takes_rerecorded"] = redone_total
 
     # The whole render's cost, once, at the end -- and in the report file, so
-    # a term's worth of lectures can be added up later without anyone having
-    # kept notes. "about" is not modesty: metered token counts make this a
-    # good estimate of Google's published rate, and an estimate is what it
-    # stays until an invoice says otherwise.
+    # a term's worth of lectures can be added up later. Metered token counts
+    # make this a good estimate at Google's published rate; it is still an
+    # estimate, not an invoice.
     spend_after = _spent(tts)
     drafted = float(getattr(manifest, "draft_cost_usd", 0.0) or 0.0)
     if drafted:
@@ -1104,9 +1068,8 @@ def _write_cut_list(outdir: Path, name: str, manifest: Manifest, master: Path,
     cut lands mid-word and accumulates down the file. The precision exists
     here and nowhere else, so it is written down while it is known.
 
-    Emitted for every render, including ones nobody plans to revise. A
-    sidecar that only appears when someone predicted they would need it is
-    a sidecar that is missing exactly when it turns out they do.
+    Emitted for every render, including ones nobody plans to revise, so it
+    exists whenever a splice is needed later.
 
     Inserted videos are listed apart from the slides (`inserts`), and every
     slide after one starts that much later, so `split` still cuts exactly at
@@ -1190,10 +1153,10 @@ def _write_json_atomic(path: Path, data: dict) -> None:
 def _record_assembly(work: Path, rec: dict) -> None:
     """Remember what a render was made of, under its own output name.
 
-    There used to be one `assembly.json`, overwritten by every render. A
-    draft (which saves to `<project>_draft.mp4` so it cannot replace the
-    finished video) therefore took it over, and applying inserts afterwards
-    re-joined the draft -- the finished render was no longer reachable.
+    Each output name keeps its own record, so a draft (which saves to
+    `<project>_draft.mp4`) cannot displace the finished render's. The default
+    `assembly.json` follows the finished render; a draft takes it only as
+    described below.
     """
     work = Path(work)
     _write_json_atomic(work / ASSEMBLY_DIR / f"{rec['name']}.json", rec)
@@ -1279,9 +1242,9 @@ def reassemble(pdir: Path, log=print, *, name: str | None = None) -> dict:
     else:
         f = pdir / "_work" / "assembly.json"
     if not f.is_file():
-        raise MediaError("This lecture has not been rendered since inserted "
-                         "videos became possible. Render it once; after that "
-                         "inserts can be added and applied without rendering.")
+        raise MediaError("This lecture's last render did not record what "
+                         "inserts need. Render it once; after that inserts "
+                         "can be added and applied without rendering.")
     try:
         a = json.loads(read_text(f))
         seg_videos = [Path(v) for v in a["seg_videos"]]
@@ -1300,7 +1263,7 @@ def reassemble(pdir: Path, log=print, *, name: str | None = None) -> dict:
         if len(seg_videos) != len(manifest.segments):
             changes.append("the render's record does not match its slides")
     else:
-        # Recorded before renders kept their script. The live script will
+        # An older record without the rendered script. The live script will
         # do only if it still lines up with the videos and still has the
         # measured durations a save would have cleared.
         manifest = current
@@ -1379,11 +1342,7 @@ def build_lecture(deck, outdir, writer, tts, *, style="", course_context="",
     """
     One-shot convenience wrapper (used by the CLI). No approval gate.
 
-    `mode` was added to `render` and to the CLI's --prosody-mode and not to
-    this wrapper in between, so every `realme lecture` run died on a TypeError
-    before rendering a single frame. It went unseen because `lecture --tts ...`
-    could not get past argparse either (see the allow_abbrev note in cli.py) --
-    two faults in series, the first hiding the second.
+    Passes on every `render` option the CLI exposes, `mode` included.
     """
     manifest, _ = write_script(deck, outdir, writer, style=style,
                                course_context=course_context, width=width, log=log)

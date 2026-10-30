@@ -1,12 +1,12 @@
 """
 What processor is this, and can a binary built here run somewhere else?
 
-The question that keeps coming up is not "how fast is this machine" but "will
-the engine I built on it start on the other one". Two facts settle that, and
-neither is visible once a binary is on disk:
+The question here is not "how fast is this machine" but "will an engine built
+on it start on another one". Two facts settle that, and neither is visible
+once a binary is on disk:
 
-* **Architecture.** An ARM64 Windows laptop (the Snapdragon XPS 13, say) and an
-  x86 NUC do not share binaries at all. This is not a tuning question.
+* **Architecture.** An ARM64 Windows laptop and an x86 desktop do not share
+  binaries at all. This is not a tuning question.
 * **Instruction set.** Among x86 machines, AVX2 is universal on Core-series
   chips since 2013, while AVX-512 comes and goes between consumer generations --
   11th gen had it, 12th through Lunar Lake do not. Building on a machine that

@@ -16,8 +16,8 @@
 // from upstream; the multiply, square, scale and add are done in upstream's
 // order. Off unless QWEN3_TTS_FAST_SNAKE is set (see realme_snake_mode).
 //
-// Measured with the real vocoder weights: the one-pass version with the
-// library's sine gives exactly upstream's samples; with this sine, or with a
+// With the real vocoder weights, the one-pass version with the library's
+// sine gives exactly upstream's samples; with this sine, or with a
 // correctly rounded one, about 70 dB below the signal -- the vocoder's ~30
 // layers turn any one-in-a-float difference into that, whichever sine.
 
@@ -52,7 +52,7 @@ static bool realme_fast_snake() { return realme_snake_mode() != 0; }
 // No fused multiply-add where upstream has a separate multiply and add: a
 // compiler allowed to contract `a * b + c` (GCC does by default when the
 // target has FMA) rounds once instead of twice, and the "exact" mode would
-// no longer give upstream's numbers.
+// not give upstream's numbers.
 #if defined(__GNUC__) && !defined(__clang__)
 #define REALME_NO_CONTRACT __attribute__((optimize("fp-contract=off")))
 #else

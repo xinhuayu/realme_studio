@@ -2,14 +2,11 @@
 """
 Dollar signs, markup, code and LaTeX: what each is said as.
 
-A 90-slide lecture failed on slide 84 ("Case 5  A county budget"), an hour
-into the render. The narration held "$150,000 ... $15,000", and two dollar
-signs were taken for a LaTeX span; building the math reader then imported a
-function from a module it has never lived in, and the render died. Fixing
-the import alone would have let it read "150,000 for a one-year pilot.
+Narration such as "$150,000 ... $15,000" holds two dollar signs that could be
+taken for a LaTeX span, which would read "150,000 for a one-year pilot.
 Coordination" as an equation. So:
 
-  * the math cache path resolves (the crash);
+  * the math cache path resolves;
   * an amount is money, said as people say it: "150,000 dollars";
   * real inline math beside an amount is still found as math;
   * math the converter cannot read is never half-read as a price.
@@ -92,7 +89,7 @@ def main() -> int:
           "$1-\\alpha$ is never read as 'one dollar'", p.engine_text)
     print("\nmarkup, code and web text, as a lecturer would say it")
     # (written, must contain, must not contain) -- the third column is the
-    # old reading of each, heard or measured before this was fixed.
+    # wrong, literal reading of each.
     said = [
         ("## Methods\nWe used Cox models.", "Methods", "number"),
         ("> A quoted line.", "A quoted line", "greater than"),

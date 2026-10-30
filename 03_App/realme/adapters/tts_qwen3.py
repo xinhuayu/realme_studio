@@ -2,20 +2,19 @@
 Qwen3-TTS running locally — the adapter that drives your own worker.
 
 This does not reimplement anything. It launches the worker from
-`real_voice_qwen3` and speaks its loopback protocol, so RealMe inherits, for
-free, everything already built and audited there: lazy model loading, the
-cached clone prompt, the per-profile synthesis cache, bounded codec-token
-budgets, warm-up, cancellation, and the CPU thread tuning.
+`real_voice_qwen3` and speaks its loopback protocol, so RealMe uses everything
+built there: lazy model loading, the cached clone prompt, the per-profile
+synthesis cache, bounded codec-token budgets, warm-up, cancellation, and the
+CPU thread tuning.
 
-Why this is the right default for a laptop:
+Why this suits a laptop:
 
   * It runs on CPU. Four threads on a four-core machine is the tuned setting.
   * Your voice never leaves the machine. No API key, no upload, no per-hour cost.
   * Apache 2.0 on the model.
-  * Cloning conditions on a reference clip **plus its exact transcript**, which
-    is a real constraint worth knowing before you record: you must type out
-    precisely what you said. It also makes the clone noticeably better than
-    audio alone.
+  * Cloning conditions on a reference clip **plus its exact transcript**, so
+    the transcript must match precisely what was said. It makes the clone
+    noticeably better than audio alone.
 
 Point `REALME_QWEN3_ROOT` at the real_voice_qwen3 folder and this adapter
 finds the venv, worker, model and profile store underneath it.
@@ -87,12 +86,8 @@ class Qwen3LocalTTS(BaseTTS):
         """
         Wherever the engine actually is -- the shared resolver, not a private one.
 
-        This used to compute its own answer by counting `.parent`s from this
-        file, which resolved to `03_App/tools/qwen3`. That was the old install
-        location. Once the payload moved to the project root, this adapter alone
-        kept looking in the empty folder and reported the engine missing, while
-        piper and qwen3cpp -- which ask `realme.core.paths` -- found it. Three
-        resolvers, three answers. Now there is one.
+        Asks `realme.core.paths` via `engine_home`, as piper and qwen3cpp do,
+        so every engine resolves the same tools folder.
         """
         from realme.engines.install import engine_home
         return engine_home()
@@ -133,11 +128,9 @@ class Qwen3LocalTTS(BaseTTS):
         """
         Where numba and librosa keep their compile caches.
 
-        Every other path here has an external/self-contained pair. This one did
-        not: `_start` reached for `self.root` directly, which is None unless
-        REALME_QWEN3_ROOT points at an external project. Nobody noticed because
-        the engine never got as far as starting -- preflight failed first, for
-        unrelated reasons, in every code path that could have reached it.
+        Like every other path here, it has an external/self-contained pair:
+        `self.root` is None unless REALME_QWEN3_ROOT points at an external
+        project.
         """
         if self._external:
             return self.root / "runtime" / "qwen3-tts-model-cache"
@@ -156,9 +149,9 @@ class Qwen3LocalTTS(BaseTTS):
         Force every path property to evaluate, here, where the error is legible.
 
         This class has two modes -- self-contained and external -- and each path
-        needs a branch for both. One of them did not have it, and the failure
-        surfaced mid-render as "unsupported operand type(s) for /: 'NoneType'
-        and 'str'", which names neither the property nor the mode. Touching them
+        needs a branch for both. A missing branch would otherwise surface
+        mid-render as "unsupported operand type(s) for /: 'NoneType' and
+        'str'", which names neither the property nor the mode. Touching them
         all in preflight turns that into a sentence.
         """
         for name in self.PATHS:

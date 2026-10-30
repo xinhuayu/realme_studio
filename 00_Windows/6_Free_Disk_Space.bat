@@ -20,7 +20,7 @@ if not defined REALME_ENV (
 set "R=%REALME_ENV%\Scripts\realme.exe"
 REM  From here on, paths are read as !VAR! inside ( ) blocks. cmd expands
 REM  %VAR% when it reads the whole block, so a folder like "Documents (work)"
-REM  ended the block in the middle of the path. Delayed expansion happens
+REM  ends the block in the middle of the path. Delayed expansion happens
 REM  after parsing. Turned on only now, after every %~dp0, so a `!` in the
 REM  folder name is not eaten.
 setlocal EnableDelayedExpansion
@@ -40,8 +40,8 @@ if defined REALME_LEGACY_QWEN3 (
 )
 REM  Explorer's "Copy as path" wraps the path in quotes. Removed with delayed
 REM  expansion, after cmd has parsed the line, so a `)` or `&` in the path is
-REM  never seen by the parser. The old for /f "%%~A" idiom put the quoted
-REM  value inside a second pair of quotes, which UN-quoted the path and let
+REM  never seen by the parser. A for /f "%%~A" idiom puts the quoted value
+REM  inside a second pair of quotes, which UN-quotes the path and lets
 REM  "C:\x (work)\real_voice_qwen3" end the for-list at its `)`.
 if defined OLD set "OLD=!OLD:"=!"
 if "!OLD!"=="" set "OLD=!REALME_LEGACY_QWEN3!"

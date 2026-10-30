@@ -7,11 +7,11 @@ REM  The vocoder turns the voice model's codes into sound; on the CPU it
 REM  is a large share of the recording time. RealMe can run its
 REM  convolutions in 32-bit floats through GGML's fast matrix multiply
 REM  (QWEN3_TTS_VOCODER_F32). That is the same calculation rounded
-REM  differently, so the sound differs slightly from today's: listen.
+REM  differently, so the sound differs slightly from the default: listen.
 REM
 REM  Run _Rebuild_Voice_Engine.bat first (the fast multiply comes with
-REM  the rebuild). Then this records the same sentences with the vocoder
-REM  as it is now ('fast') and in 32 bits ('voc'), using the stopwatch
+REM  the rebuild). Then this records the same sentences with the default
+REM  vocoder ('fast') and in 32 bits ('voc'), using the stopwatch
 REM  copy of the engine in tools\qwen3cpp_timing (built first if needed;
 REM  the engine the Studio uses is not touched), and leaves them side by
 REM  side to listen to. Takes about 20 minutes. Leave the computer alone

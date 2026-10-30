@@ -12,10 +12,10 @@ engine wants:
     Azure/ElevenLabs   PLS <lexeme><phoneme>           uploaded XML
     engines with none  "I P T W"                        respelling fallback
 
-Each entry also records the WRONG pronunciations we have actually observed.
-Those are not documentation — they become competing variants in a forced-
-alignment dictionary, which is how the verifier decides, from the audio itself,
-which one the model said. The lexicon and the verifier are one artifact.
+Each entry also records the WRONG pronunciations observed from the engines.
+They become competing variants in a forced-alignment dictionary, which is how
+the verifier decides, from the audio itself, which one the model said. The
+lexicon and the verifier share one data source.
 """
 from __future__ import annotations
 import json
@@ -32,16 +32,15 @@ def espeak_phonemes(text: str, voice: str = "en-us") -> str:
     """
     Ask espeak-ng for its OWN phoneme mnemonics for a piece of text.
 
-    This exists because of a trap worth stating plainly: espeak's `[[ ]]`
-    injection does NOT accept IPA, despite IPA being what `--ipa` prints. Feed
-    it IPA and it emits nothing at all for that word -- the term is deleted
-    from the audio, silently, which is a worse failure than mispronouncing it:
+    espeak's `[[ ]]` injection does NOT accept IPA, despite IPA being what
+    `--ipa` prints. Given IPA it emits nothing at all for that word -- the
+    term is silently deleted from the audio:
 
         espeak-ng -q --ipa=3 "the [[<IPA for IPTW>]] method"  ->  "the method"
         espeak-ng -q --ipa=3 "the [[a'Ipi:ti:d'VbLju:]] method" -> works
 
-    So we never hand-author mnemonics. A human writes a respelling they can
-    read and check ("I P T W", "HEN-sel"); this function converts it. The
+    So mnemonics are never hand-authored. A human writes a respelling they
+    can read and check ("I P T W", "HEN-sel"); this function converts it. The
     machine-generated string is the one that reaches the engine.
     """
     if not shutil.which("espeak-ng"):
@@ -69,8 +68,8 @@ class Entry:
 
         `Pre-ETS` is the case. espeak already says it correctly, so as a
         phoneme override it is a no-op -- but without the entry the speller
-        turns it into "Pre-E T S". Telling someone to remove it would break the
-        term it was written to protect, so `check` does not.
+        turns it into "Pre-E T S". Removing it would break the term it
+        protects, so `check` does not suggest that.
         """
         return bool(re.search(r"[A-Z]{2,}", self.term))
 
@@ -83,27 +82,25 @@ class Entry:
         return f"[[{ph}]]" if ph else self.spoken_fallback()
 
 
-# Seeded from measurement, not guesswork: each of these was phonemized with
-# `espeak-ng -v en-us --ipa=3 -q` and found wrong. Terms espeak already gets
-# right (DAG, RCT, HR, ANOVA, Bonferroni, heteroskedasticity, Hernán...) are
-# deliberately absent — an unnecessary override is its own kind of bug.
+# Each of these is phonemized wrongly by `espeak-ng -v en-us --ipa=3 -q`.
+# Terms espeak already gets right (DAG, RCT, HR, ANOVA, Bonferroni,
+# heteroskedasticity...) are deliberately absent: an unnecessary override
+# only adds noise.
 SEED: list[Entry] = [
-    # Vocational rehabilitation. These are the two the acronym speller gets
-    # wrong for this field, found by reading a real lecture script through it:
-    # practitioners say "why-OH-uh", not "double-you eye oh ay", and "pre-ets"
-    # rather than "pre-E-T-S". Everything else in that script -- PSE, IPE, IDD,
-    # RSA -- is correctly spelled letter by letter and needs no entry.
+    # Vocational rehabilitation. Practitioners say WIOA as "why-OH-uh", not
+    # "double-you eye oh ay", and Pre-ETS is one compound term. Other terms in
+    # the field -- PSE, IPE, IDD, RSA -- are correctly spelled letter by
+    # letter and need no entry.
     Entry("WIOA", ipa="waɪˈoʊə", respelling="why-oh-uh",
           wrong=["ˌdʌbəljuːˌaɪˌoʊˈeɪ"],
           note="Workforce Innovation and Opportunity Act; said as a word"),
     # No IPA: espeak already says this correctly, and an override that changes
-    # nothing is noise in `realme lexicon check`. The entry earns its place by
-    # stopping the acronym speller and by giving the engines without a phoneme
-    # interface a respelling.
+    # nothing is noise in `realme lexicon check`. The entry exists to stop the
+    # acronym speller and to give engines without a phoneme interface a
+    # respelling.
     Entry("Pre-ETS", respelling="Pre E T S",
-          note="Pre-Employment Transition Services. The letters, not 'pree-ets' "
-               "-- which is what this entry said until the person whose field "
-               "it is read it aloud."),
+          note="Pre-Employment Transition Services. Said as letters, "
+               "not 'pree-ets'."),
     Entry("CIE", ipa="ˌsiːˌaɪˈiː", respelling="C I E",
           note="competitive integrated employment; spelled out"),
 
@@ -145,8 +142,8 @@ SEED: list[Entry] = [
 def phoneme_syntax_for(engine: str) -> str | None:
     """
     Which inline pronunciation syntax this engine understands, from the adapter
-    that has to live with the answer. Falls back to the historical name map for
-    an engine that is not in the registry.
+    that has to live with the answer. Falls back to a fixed name map for an
+    engine that is not in the registry.
     """
     try:
         from realme.adapters.tts import REGISTRY
@@ -200,11 +197,9 @@ class Lexicon:
         """
         SEED, then the user's own file on top.
 
-        Every warning this system prints ends "add a lexicon entry", and until
-        now there was nowhere to add one: `Lexicon()` loaded SEED and nothing
-        else, so the documented override meant editing this file. A
-        pronunciation you decided on belongs in your data directory next to
-        your profile, not in a source tree that an update overwrites.
+        Warnings elsewhere end "add a lexicon entry"; this is where such
+        entries go. A user's pronunciations live in the data directory next to
+        the profile, not in a source tree that an update overwrites.
         """
         self.entries: dict[str, Entry] = {}
         self.user_terms: set[str] = set()
@@ -248,11 +243,9 @@ class Lexicon:
         Engines with no phoneme interface get the respelling instead, and the
         caller can see from the returned list exactly what was substituted.
 
-        Which syntax an engine takes is asked of the ADAPTER, not decided here.
-        It used to be decided here, from a hardcoded name list, and that list
-        disagreed with the adapter: `PiperTTS.phoneme_syntax` was corrected to
-        None and this went on emitting espeak blocks at piper regardless.
-        Two places holding the same fact is how it goes wrong; now there is one.
+        Which syntax an engine takes is asked of the ADAPTER, not decided here,
+        so the fact is held in one place (e.g. `PiperTTS.phoneme_syntax` is
+        None, and piper gets no espeak blocks).
         """
         used: list[str] = []
         syntax = phoneme_syntax_for(engine)
@@ -326,12 +319,12 @@ class Lexicon:
         """
         Montreal Forced Aligner dictionary with COMPETING VARIANTS.
 
-        Each term appears twice: once with the pronunciation we intended, once
-        with the failure we measured. After synthesis we align the audio against
-        this dictionary and read the phone tier: whichever variant the aligner
+        Each term appears twice: once with the intended pronunciation, once
+        with the observed failure. After synthesis the audio is aligned against
+        this dictionary and the phone tier read: whichever variant the aligner
         chose is what the model actually said. That turns open-set 'did it sound
-        wrong?' into closed-set 'which of these two did it say?', which is a far
-        easier question and needs no confidence threshold.
+        wrong?' into closed-set 'which of these two did it say?', which needs no
+        confidence threshold.
         """
         rows = []
         for e in self.entries.values():

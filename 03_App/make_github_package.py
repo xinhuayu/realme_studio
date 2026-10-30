@@ -5,22 +5,20 @@ Build the public source tree -- the thing that goes on GitHub.
 This is NOT the update zip and not the colleague package. Those two carry a
 working installation: a compiled engine, 2.5 GB of model weights, ffmpeg, the
 piper voices. A source repository carries none of it. Someone who clones this
-runs two commands and their machine fetches or builds its own, which is both
-smaller and more honest -- the binaries in a package are built for one
-machine's instruction set and were never redistributable in the first place.
+runs two commands and their machine fetches or builds its own. That keeps
+the repository small, and the binaries in a package are built for one
+machine's instruction set.
 
 What this adds over `git init && git add .`, and why each part exists:
 
   * **It refuses to publish a secret.** `.gitignore` already excludes `.env`,
-    which protects the file nobody was going to commit by hand. It does
-    nothing about a key pasted into a document, a test fixture or a comment --
-    and a published API key is not a mistake you can take back by deleting the
-    commit. Every shipped file is scanned for key-shaped strings.
-  * **It refuses to publish the author.** A tree written on one machine is
-    full of that machine: `C:\\Users\\<name>\\...` in an example, a path in a
-    docstring, a name in a fixture. On a private install that is helpful. In a
-    public repository it is someone's home directory and, usually, their real
-    name.
+    but not a key pasted into a document, a test fixture or a comment, and a
+    published API key is not undone by deleting the commit. Every shipped
+    file is scanned for key-shaped strings.
+  * **It refuses to publish personal details.** A tree written on one machine
+    can carry them: `C:\\Users\\<name>\\...` in an example, a path in a
+    docstring, a name in a fixture. Every shipped file is scanned for the
+    current username, its home paths and email addresses.
   * **It leaves out the installed payload and the big media** -- `tools/`, the
     demo video, the compiled engine -- by reusing the same exclusion list the
     update packager uses, so the two can never drift apart.
@@ -46,33 +44,28 @@ ROOT = HERE.parent
 from realme.core.build import (GUIDE_VIDEO, SHIP_DIRS, SHIP_FILES,  # noqa: E402
                                 _excluded, ensure_guide_video)
 
-#: The superseded introduction: a deck and demo video describing a tool with
-#: one voice that ran only locally. Neither ships any more and neither belongs
-#: in a repository.
+#: An introduction deck and demo video that no package ships; they are kept
+#: out of the repository too.
 NOT_IN_GIT = {"test_slides.mp4", "RealMe_Introduction.pdf"}
 
-#: The guide video DOES go in, by decision rather than by default, and it is
-#: worth being clear about the cost. It is ~26 MB of already-compressed
-#: binary: git cannot diff it, so every re-render adds another 26 MB to the
-#: history for ever, and every clone pays for all of them. The usual answer
-#: is to attach it to a GitHub Release instead and link that from the README,
-#: which keeps the repository small and the video one click away. `--no-video`
-#: does it that way; the default is to include it, because a reader who has to
-#: build the demo to see the demo usually does not.
+#: The guide video is included by default. It is ~26 MB of compressed binary:
+#: git cannot diff it, so every re-render adds another 26 MB to the history
+#: and every clone pays for all of them. `--no-video` leaves it out, to be
+#: attached to a GitHub Release and linked from the README instead; the
+#: default includes it so a reader can watch the demo without building it.
 INCLUDE_VIDEO = True
 
 #: Files whose whole purpose is to look like a key.
 KEY_FIXTURES = {"example.env"}
 
 #: Shapes of secret. Narrow on purpose: a pattern that fires on every long
-#: hex string makes the check noise, and noise gets switched off.
+#: hex string would bury real findings in false positives.
 SECRET_PATTERNS = (
     ("Google API key", re.compile(r"AIza[0-9A-Za-z_\-]{30,}")),
     ("OpenAI-style key", re.compile(r"\bsk-[A-Za-z0-9]{20,}")),
     ("ElevenLabs key", re.compile(r"\bxi-[A-Za-z0-9]{24,}")),
-    # A real id always carries digits; `voice_fingerprint`, which is a method
-    # name in six files here, does not. A scanner that cries wolf on its own
-    # source is a scanner somebody passes --force to by reflex.
+    # A real id always carries digits; `voice_fingerprint`, a method name
+    # used across this tree, does not.
     ("Gemini voice id",
      re.compile(r"\bvoice_(?=[a-z0-9]*\d)[a-z0-9]{10,}\b")),
     ("Gemini voice key", re.compile(r"\bvoicekey_[A-Za-z0-9_\-]{16,}")),

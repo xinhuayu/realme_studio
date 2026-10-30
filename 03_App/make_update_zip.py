@@ -1,7 +1,7 @@
 """
 Build RealMe_Update.zip.
 
-Two things this does that a plain `zip -r` does not, both of them scars:
+Two things this does that a plain `zip -r` does not:
 
 **Every entry is stamped 24 hours in the past.** ZIP timestamps are naive local
 times. The build machine is UTC; Windows reads them as local time, so a user
@@ -11,8 +11,8 @@ the cause looks like a broken toolchain rather than a broken archive. A day of
 slack covers every timezone including UTC+14.
 
 **The file list comes from realme.core.build.** The packager and the code that
-decides "is this update applied?" must agree on what a release contains, and the
-way to guarantee that is for there to be one list. That list also excludes
+decides "is this update applied?" must agree on what a release contains, so
+there is one list. That list also excludes
 `tools/`, which is the ~3 GB of installed payload an update must never touch.
 
 Usage:  python 03_App/make_update_zip.py [output.zip] [--for-others]
@@ -52,10 +52,8 @@ if FOR_OTHERS:
 
 # Refuse to package a tree that does not compile.
 #
-# This script happily built an archive from a file with a syntax error -- the
-# kind of thing `verify_tree.py` exists to catch, run separately and therefore
-# skippable. A packager that ships known-broken code is worse than one that is
-# slow, so the cheap half of that check runs here, unconditionally.
+# `verify_tree.py` runs separately and can be skipped, so the syntax half of
+# its checks runs here, unconditionally.
 import ast
 broken = []
 for rel in files:
@@ -67,9 +65,9 @@ for rel in files:
 if broken:
     sys.exit("refusing to package: " + "; ".join(broken[:3]))
 
-# The stamp is written only once the tree is known good. Writing it first left a
-# BUILD_ID for a package that was then refused, so every later command announced
-# an update that did not exist.
+# The stamp is written only once the tree is known good. A BUILD_ID written for
+# a package that is then refused would make every later command announce an
+# update that does not exist.
 build_id = compute_id(root)
 (root / STAMP_REL).write_text(build_id + "\n", encoding="utf-8")
 bad = [f.as_posix() for f in files if re.search(r"(^|/)tools/", f.as_posix())]

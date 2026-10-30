@@ -14,12 +14,9 @@ Three steps, each idempotent and each checked rather than assumed:
     convert    safetensors -> GGUF             -> tools/qwen3cpp/models/
     bench      measure it against the worker
 
-**This is an experiment, and the honest expectation is modest.** The upstream
-headline of "4.07x faster" is an Apple Silicon number with CoreML and Metal
-carrying part of the load. Upstream's own x86 CPU measurement is a real-time
-factor of 1.94 on a Ryzen 5 3600. That may still beat PyTorch on your machine by
-a wide margin -- `bench` exists to find out -- but it is not four times, and a
-50-minute lecture at RTF 1.94 is over an hour and a half of compute.
+Upstream's headline "4.07x faster" is an Apple Silicon figure with CoreML and
+Metal carrying part of the load; its x86 CPU figure is a real-time factor of
+1.94 on a Ryzen 5 3600. `bench` measures the speed-up on this machine.
 """
 from __future__ import annotations
 import os
@@ -61,8 +58,8 @@ def cli_path(home: Path) -> Path:
 
 def _run(cmd, what, log=print, cwd=None, env=None):
     log(f"  $ {' '.join(str(c) for c in cmd[:5])} ...")
-    # Build tools print paths in UTF-8; the Windows default is cp1252, and a
-    # non-ASCII byte in a path made the DECODING fail before the build did.
+    # Build tools print paths in UTF-8; the Windows default is cp1252, which
+    # cannot decode a non-ASCII byte in a path.
     p = subprocess.run(cmd, capture_output=True, text=True,
                        encoding="utf-8", errors="replace",
                        cwd=str(cwd) if cwd else None, env=env)
@@ -73,8 +70,7 @@ def _run(cmd, what, log=print, cwd=None, env=None):
 
 
 def _has(py, module: str) -> bool:
-    """Can `py` import `module`? (Was called but never defined; every macOS
-    convert died with NameError at the CoreML step.)"""
+    """Can `py` import `module`?"""
     r = subprocess.run([str(py), "-c", f"import {module}"],
                        capture_output=True)
     return r.returncode == 0
@@ -83,7 +79,7 @@ def _has(py, module: str) -> bool:
 def find_compiler() -> tuple[str, str]:
     """
     Return (kind, detail). Never guesses: a build that starts without a
-    compiler fails deep inside CMake with an error nobody can read.
+    compiler fails deep inside CMake with an obscure error.
     """
     if os.name != "nt":
         for cc in ("g++", "clang++"):
@@ -168,8 +164,8 @@ def find_cmake(log=print) -> str:
     p = shutil.which("cmake")
     if p:
         return p
-    # cmake ships as a pip wheel, which is a far smaller ask than telling
-    # someone to go install a build system by hand.
+    # cmake ships as a pip wheel, so it is installed here rather than
+    # required as a separate download.
     log("  cmake not found - installing it into this environment")
     _run([sys.executable, "-m", "pip", "install", "cmake", "--quiet"],
          "cmake install", log)
@@ -185,11 +181,9 @@ def find_cmake(log=print) -> str:
     return p
 
 
-#: The thread count, applied. Upstream stores `tts_params.n_threads` and never
-#: passes it to GGML's CPU backend, so every calculation ran on GGML's default
-#: of 4 threads whatever was asked. Measured on a 12-thread machine with the
-#: count applied (`realme engine-timing`): 6 threads recorded 1.26 times as
-#: fast as 4. Applied to the STAGED copy at build time, never to the vendored
+#: The thread count, applied. Upstream stores `tts_params.n_threads` but does
+#: not pass it to GGML's CPU backend, which then uses its default of 4
+#: threads. Applied to the STAGED copy at build time, never to the vendored
 #: source, so the vendored copy stays diffable against upstream. The engine
 #: reads QWEN3_TTS_THREADS when it creates its backend; the adapter sets it.
 THREADS_INCLUDE_ANCHOR = '#include "gguf_loader.h"\n'
@@ -223,9 +217,8 @@ THREADS_MARK = "QWEN3_TTS_THREADS"
 #: there for a reason: a multiplication with F16 weights converts the input
 #: to F16 too, and the SwiGLU activations feeding ffn_down can exceed F16's
 #: range.) Converting once at load gives the same F32 numbers, so the same
-#: arithmetic and bit-identical output, for about 0.4 GB more memory.
-#: Measured on a stand-in of one step with the real shapes: 30-37% faster
-#: per step. QWEN3_TTS_FFN_F32=0 switches it off at run time.
+#: arithmetic and bit-identical output, for about 0.4 GB more memory; a step
+#: runs about 30% faster. QWEN3_TTS_FFN_F32=0 switches it off at run time.
 FFN_MARK = "QWEN3_TTS_FFN_F32"
 FFN_CAST = "ggml_cast(ctx0, layer.ffn_down, GGML_TYPE_F32)"
 FFN_CAST_NEW = "realme_f32(ctx0, layer.ffn_down)"
@@ -367,8 +360,8 @@ def apply_ffn_patch(tree: Path) -> bool:
 #: out to the full length of the signal (`ggml_repeat`) before multiplying,
 #: three times per block. GGML's multiply already spreads a per-channel
 #: number along the signal by itself, giving the same products, so the
-#: copies are skipped: about 6% of the vocoder's time measured with the real
-#: vocoder weights, and the memory of three signal-sized tensors.
+#: copies are skipped: about 6% of the vocoder's time, and the memory of
+#: three signal-sized tensors.
 #: QWEN3_TTS_BROADCAST=0 switches it off at run time.
 BCAST_MARK = "QWEN3_TTS_BROADCAST"
 BCAST_HELPER_ANCHOR = "namespace qwen3_tts {\n\nstatic int32_t get_env_i32("
@@ -783,7 +776,7 @@ def apply_vocoder_patch(tree: Path) -> bool:
 
 #: GGML's tinyBLAS matrix multiply (built with GGML_LLAMAFILE) for the
 #: products RealMe names "realme_sgemm" -- the vocoder's convolutions --
-#: and for nothing else, so the two transformers compute exactly as before.
+#: and for nothing else, so the two transformers compute as upstream does.
 #: Applied to the staged GGML (never the vendored copy). QWEN3_TTS_SGEMM=0
 #: turns it off at run time.
 SGEMM_MARK = "realme_sgemm"
@@ -1010,7 +1003,6 @@ or newer (https://www.python.org/downloads/), with no packages.
 4. In the tool, add a voice server (OpenAI-compatible): address
    `http://127.0.0.1:<port>` (some tools want `http://127.0.0.1:<port>/v1`),
    model `realme-qwen3-tts`, voice `realme`, no key.
-   *Anim Studio*: Setup -> Other voices -> A voice server.
 
 A request is ordinary OpenAI speech JSON:
 
@@ -1091,7 +1083,7 @@ def export_server_bundle(out: Path, home: Path | None = None,
     voices = out / "voices"
     voices.mkdir(exist_ok=True)
     shutil.copy2(rel / "voices" / "README.md", voices / "README.md")
-    # A folder from 1.1.0's first exports named the voice "me".
+    # An older export may name the voice "me"; it is renamed to "realme".
     if (voices / "me.wav").is_file() and not (voices / "realme.wav").exists():
         (voices / "me.wav").replace(voices / "realme.wav")
     voice_note = ""
@@ -1333,8 +1325,8 @@ DEFENDER_ADVICE = """  What to do:
 #: `native` is ggml's default and tunes for the machine doing the building. That
 #: binary can meet an older processor and die with an illegal instruction, which
 #: reads like a corrupt download and is not -- and it is the normal outcome of
-#: building on a 2024 laptop and running on a 2020 NUC, because consumer Intel
-#: parts have gained and lost AVX-512 between generations.
+#: building on a newer machine and running on an older one, because consumer
+#: Intel parts have gained and lost AVX-512 between generations.
 #:
 #: `avx2` is the useful middle. Every Core-series x86 chip since 2013 has AVX2,
 #: FMA and F16C, and ggml's matmul leans on them heavily -- dropping to a bare
@@ -1394,7 +1386,7 @@ def build(home: Path | None = None, log=print, force: bool = False,
 
     ggml = fetch_ggml(home, log)
     # tinyBLAS only with its gate: without it, every product in the engine
-    # would change. A GGML the gate does not fit is built as before.
+    # would change. A GGML the gate does not fit is built without tinyBLAS.
     try:
         if apply_sgemm_patch(ggml):
             log("  GGML: tinyBLAS for the vocoder's convolutions only")
@@ -1418,7 +1410,7 @@ def build(home: Path | None = None, log=print, force: bool = False,
 
     j = str(jobs or max(1, (os.cpu_count() or 2)))
 
-    # Ninja everywhere, including Windows -- deliberately, not by habit.
+    # Ninja everywhere, including Windows.
     #
     # Upstream's CMakeLists links against `ggml/build/src`. A Visual Studio
     # generator is multi-config: it writes to `ggml/build/src/Release` instead,
@@ -1432,13 +1424,10 @@ def build(home: Path | None = None, log=print, force: bool = False,
     env = None
     generator = []
     if os.name == "nt":
-        # Ninja for EVERY Windows compiler, not only MSVC.
-        #
-        # This used to set the generator only for MSVC, so a w64devkit build
-        # left CMake to choose -- and CMake's default on a machine with Visual
-        # Studio installed is the Visual Studio generator, which is multi-config
-        # and produces exactly the `ggml.lib` link failure the comment above
-        # exists to prevent.
+        # Ninja for EVERY Windows compiler, not only MSVC: left to choose,
+        # CMake on a machine with Visual Studio installed picks the Visual
+        # Studio generator, which is multi-config and produces the `ggml.lib`
+        # link failure described above.
         generator = ["-G", "Ninja", f"-DCMAKE_MAKE_PROGRAM={find_ninja(log)}"]
         if kind == "msvc":
             env = msvc_env(detail, log)
@@ -1452,10 +1441,9 @@ def build(home: Path | None = None, log=print, force: bool = False,
     #   CMake Error: generator : Ninja
     #     Does not match the generator used previously: Visual Studio 17 2022
     #
-    # Which is correct of it, and useless to the person reading it -- the
-    # remedy is to delete a cache file they did not know existed. It happens
-    # whenever the compiler situation changes between runs: installing Build
-    # Tools after a first attempt, or moving the folder to another machine.
+    # The remedy is to delete the cache. It happens whenever the compiler
+    # setup changes between runs: installing Build Tools after a first
+    # attempt, or moving the folder to another machine.
     # Detect it and start those directories over.
     want_gen = "Ninja" if generator else ""
     for d in (ggml / "build", home / "build"):
@@ -1497,10 +1485,9 @@ def build(home: Path | None = None, log=print, force: bool = False,
             "or use --gpu off.")
 
     # Metal is not optional on a Mac in the way CUDA is on a PC: it needs no
-    # toolkit, it ships with the OS, and this engine's own benchmarks were
-    # measured on it. Turning it off -- which this used to do unconditionally,
-    # because it was written on Linux -- leaves an Apple Silicon machine
-    # running the slowest path available to it.
+    # toolkit, it ships with the OS, and upstream's benchmarks are measured
+    # on it. Turning it off leaves an Apple Silicon machine running the
+    # slowest path available to it.
     gpu_flags = {"cuda": ["-DGGML_CUDA=ON"],
                  "vulkan": ["-DGGML_VULKAN=ON"],
                  "metal": ["-DGGML_METAL=ON"]}.get(gpu, [])
@@ -1630,7 +1617,7 @@ def rebuild(home: Path | None = None, log=print) -> Path:
     """Build the engine again, for the same processors and GPU setting it was
     built for, keeping the working copy until the new one is in place.
 
-    For bringing an existing engine up to date (the thread count, today)
+    For bringing an existing engine up to date with RealMe's changes
     without changing anything else about it. A failed build puts the old
     files back, so the voice keeps working either way.
     """
@@ -1719,11 +1706,10 @@ def convert(home: Path | None = None, weights: Path | None = None,
     models.mkdir(parents=True, exist_ok=True)
     # The runtime prefers q8_0 when both are present.
     #
-    # MEASURED, and the expectation was wrong: on this project's reference
-    # machine q8_0 loaded 19% faster and peaked 14% lower in memory (3.15 GB ->
-    # 2.70 GB), but GENERATED 17% slower (steady RTF 6.75 -> 7.91). Dequantising
-    # on every matmul costs more than the smaller weights save when the CPU is
-    # not bandwidth-bound. Keep f16 unless memory is the binding constraint.
+    # q8_0 loads faster and peaks about 14% lower in memory, but generates
+    # about 17% slower: dequantising on every matmul costs more than the
+    # smaller weights save when the CPU is not bandwidth-bound. Keep f16
+    # unless memory is the binding constraint.
     out_tts = models / f"qwen3-tts-0.6b-{quant}.gguf"
     out_tok = models / "qwen3-tts-tokenizer-f16.gguf"
     if out_tts.is_file() and out_tok.is_file() and not force:
@@ -1818,9 +1804,8 @@ def status(home: Path | None = None) -> dict:
         built_cpu = "unknown"
     from realme.core.gpu import recommend as _rec
     gpu_rec = _rec()
-    # Report, never install. `status` must be safe to run when you only want to
-    # know where you stand -- a status command that pip-installs things is a
-    # status command nobody trusts.
+    # Report, never install: `status` must be safe to run just to see where
+    # things stand.
     return {
         "home": str(home), "cli": str(cli), "built": cli.is_file(),
         "binary_state": state, "binary_detail": detail,
@@ -1849,21 +1834,16 @@ APPCONTROL_ADVICE = """  This is Smart App Control / WDAC, not the antivirus, an
   matters: there is NO per-app allowlist and NO folder exclusion. Advice that
   works for a Defender detection does not apply here.
 
-  Your options, honestly:
+  Options:
 
-  1. Do nothing. The Python engine (qwen3) does everything the C++ one does,
-     only slower, and nothing else in RealMe depends on this binary. This is
-     the option I would take.
+  1. Use another voice on this computer: the draft voices and the Gemini
+     clone do not need this engine.
 
   2. Turn Smart App Control off: Windows Security -> App & browser control ->
      Smart App Control -> Off. Recent Windows updates let it be turned back on
-     afterwards without reinstalling, which was not true when the feature
-     launched. It is still a machine-wide protection being switched off to run
-     one experimental benchmark - a poor trade unless you were going to
-     disable it anyway.
+     afterwards without reinstalling. It is a machine-wide protection.
 
-  3. Sign the binary with a code-signing certificate you own. Correct, and out
-     of proportion to the problem.
+  3. Sign the binary with a code-signing certificate you own.
 
   Nothing is wrong with your build. The exe is intact and was compiled on this
   machine from source in your own repository; the policy simply declines to run
@@ -1889,9 +1869,9 @@ def engine_advice(home: Path | None = None) -> list[str]:
     built = st.get("built_cpu", "unknown")
     state = st["binary_state"]
     if state == "missing" and not st.get("weights_ready"):
-        # Nothing of the local engine is here, which is the normal state on a
-        # colleague's machine: Gemini is the default voice. Say it is optional
-        # and stop -- GPU advice is about an engine nobody installed.
+        # Nothing of the local engine is here, the normal state where Gemini
+        # is the voice. Say it is optional and stop: GPU advice concerns an
+        # engine that is not installed.
         lines.append("local engine: not installed -- optional; RealMe speaks "
                      "through Gemini by default")
         lines.append("  -> 3_Get_Voice_Engine.bat adds it (about 3 GB) for a "
@@ -1903,8 +1883,8 @@ def engine_advice(home: Path | None = None) -> list[str]:
                      f"{'' if cpu['x86'] else ''}")
     elif state == "wrongcpu":
         # If it was already built for avx2 and still crashes, this machine is
-        # older than avx2 -- an Atom or Celeron part. Do not send someone round
-        # the same loop twice.
+        # older than avx2 -- an Atom or Celeron part -- so baseline is the
+        # next step, not avx2 again.
         nxt = "baseline" if built == "avx2" else "avx2"
         lines.append(f"engine     : built for '{built}', and it CRASHES on this "
                      f"processor")
@@ -1919,8 +1899,8 @@ def engine_advice(home: Path | None = None) -> list[str]:
         from realme.core.cpu import physical_cores
         cores = physical_cores()
         if not threads_applied(home):
-            lines.append("  -> built before the thread fix, so it runs on 4 "
-                         "threads; _Rebuild_Voice_Engine.bat applies it "
+            lines.append("  -> this build runs on 4 threads whatever is asked; "
+                         "_Rebuild_Voice_Engine.bat makes it use every core "
                          "(about a quarter faster on 6 cores)")
         else:
             from realme.adapters.tts_qwen3_dll import default_threads
@@ -1931,7 +1911,7 @@ def engine_advice(home: Path | None = None) -> list[str]:
                          f"once, memory permitting")
         if built == "avx2" and cpu["x86"]:
             lines.append("  optional: --cpp-action build --force  rebuilds for "
-                         "this exact CPU; measure before believing it is faster")
+                         "this exact CPU; measure whether it is faster")
 
     rec = gpu_recommend()
     gpu = rec.get("gpu")

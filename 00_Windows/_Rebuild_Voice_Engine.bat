@@ -3,11 +3,11 @@ setlocal
 REM ===================================================================
 REM  Rebuild the free local clone (qwen3cpp) so it uses its threads.
 REM
-REM  Engines built before October 2026 run every calculation on 4 threads,
-REM  whatever the setting says: the engine stored the number and never used
-REM  it. Measured on a 6-core computer, using one thread per core records
-REM  about a quarter faster. This builds the engine again with that fixed,
-REM  for the same processors and GPU setting as before, then makes the
+REM  An engine built from upstream source runs every calculation on 4
+REM  threads, whatever the setting says: upstream stores the number but does
+REM  not use it. On a 6-core CPU, one thread per core records about a
+REM  quarter faster. This builds the engine again with the thread count
+REM  passed on, for the same processors and GPU setting, then makes the
 REM  8-bit copy of the model beside the 16-bit one (a minute or two; about
 REM  1 GB) if it is not there yet. Lectures then use the 8-bit model and
 REM  the faster vocoder (Twin Setup changes either).

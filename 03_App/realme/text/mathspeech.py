@@ -7,11 +7,10 @@ Pipeline:  LaTeX --latex2mathml--> MathML --Speech Rule Engine--> spoken draft
                                                   |
                                     hash-keyed cache of APPROVED strings
 
-Measured here: latex2mathml takes 0.25 ms per expression, SRE about 9 ms after
-a 135 ms one-time startup. Both are free at lecture scale.
+latex2mathml takes about 0.25 ms per expression, SRE about 9 ms after a
+135 ms one-time startup: negligible at lecture scale.
 
-SRE's `clearspeak` domain is genuinely good at structure and genuinely wrong at
-domain semantics, and it is worth seeing both:
+SRE's `clearspeak` domain is good at structure and wrong at domain semantics:
 
     \\sum_{i=1}^{n}\\frac{Y_iA_i}{\\pi(X_i)}
       -> "the sum from i equals 1 to n of the fraction with numerator
@@ -21,11 +20,11 @@ domain semantics, and it is worth seeing both:
     \\beta^{\\top}          -> "beta raised to the down tack power"   (transpose)
     \\widehat{HR}          -> "H of R hat"                           (hazard ratio hat)
 
-No rule engine can fix the second pair, because "HR means hazard ratio" is your
-knowledge, not a property of the MathML. So SRE drafts and a human (or an LLM
-you then approve) corrects -- and the approved string is cached against a hash
-of the LaTeX, so a deck's fifty recurring expressions are corrected once and
-then reused deterministically forever.
+No rule engine can fix the second pair, because "HR means hazard ratio" is
+domain knowledge, not a property of the MathML. So SRE drafts and a human (or
+an LLM, then approved) corrects -- and the approved string is cached against a
+hash of the LaTeX, so a deck's recurring expressions are corrected once and
+then reused deterministically.
 """
 from __future__ import annotations
 import hashlib
@@ -66,9 +65,8 @@ CONDITIONAL: list[tuple[str, str, str]] = [
 def default_cache_path() -> Path:
     """The one math cache: the CLI approves into it and every render reads it.
 
-    `realme math` used to default to `./math_cache.json` and the renderer
-    built a MathSpeech with no cache at all, so an approval never reached a
-    render and every lecture warned "math not yet approved" forever.
+    `realme math` and the renderer must use the same path, or an approval
+    never reaches a render.
     """
     from realme.core.env import data_home
     return data_home() / "math_cache.json"
@@ -77,11 +75,11 @@ def default_cache_path() -> Path:
 # ---------------------------------------------------------------------------
 # A plain reader, for when the Speech Rule Engine is not installed.
 #
-# SRE is a Node program and most machines here do not have it, so every
-# `$\\hat\\beta$` used to be left as written and then read symbol by symbol:
-# "dollars hat beta dollars". This reads the common statistical notation the
-# way a lecturer would. It is a draft like any other: never cached (so
-# installing SRE later still takes over), and reported as not yet approved.
+# SRE is a Node program and is often not installed. Without a reader,
+# `$\\hat\\beta$` would be read symbol by symbol: "dollars hat beta
+# dollars". This reads the common statistical notation the way a lecturer
+# would. It is a draft like any other: never cached (so installing SRE later
+# still takes over), and reported as not yet approved.
 
 _GREEK = ("alpha beta gamma delta epsilon varepsilon zeta eta theta vartheta "
           "iota kappa lambda mu nu xi pi rho sigma tau upsilon phi varphi chi "
@@ -148,8 +146,8 @@ def plain_latex(latex: str) -> str:
     t = t.replace("{", " ").replace("}", " ")
     # In mathematics a hyphen is always a minus sign.
     t = re.sub(r"(?<!\w)-(?=\s*[\w(])|(?<=[\w)\s])-(?=\s*[\w(])", " minus ", t)
-    # And a slash is always division. Left for the normaliser, `$a/b$` met
-    # the prose rule for "and/or" and was read "a or b"; `$x/2$` lost it.
+    # And a slash is always division. Left for the normaliser, `$a/b$` would
+    # meet the prose rule for "and/or" and be read "a or b".
     t = re.sub(r"\s*/\s*", " over ", t)
     return re.sub(r"\s+", " ", t).strip()
 
@@ -242,9 +240,8 @@ def looks_like_math(inner: str, after: str = "") -> bool:
     """Is the text between two dollar signs inline math, or two amounts?
 
     `$150,000 for a pilot. Coordination $15,000` has two dollar signs, and
-    the old pattern read everything between them as LaTeX -- then crashed
-    looking for the math cache, on slide 84 of a 90-slide lecture. TeX's own
-    convention separates the cases: inline math hugs its dollar signs
+    the text between them is not LaTeX. TeX's own convention separates the
+    cases: inline math hugs its dollar signs
     (`$x$`, never `$ x $`), whereas the second of two amounts follows a
     space and is followed by a digit. Prose between them gives it away too.
     """

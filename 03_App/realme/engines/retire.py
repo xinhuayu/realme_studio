@@ -1,26 +1,23 @@
 """
 Retiring an older engine folder once RealMe carries its own.
 
-This exists because "delete the old project" is the one operation in this
-codebase that cannot be undone, and the obvious version of it -- point at a
-folder, remove it -- deletes the wrong things. Two of them, specifically:
+Deleting an old project folder cannot be undone, and removing the folder
+wholesale would delete two things that must stay:
 
   * **Work that was never copied.** RealMe adopts the runtime and the weights.
     It does not adopt a database of voice profiles, or recordings, or anything
     else the old project kept beside them. Those are small and they are yours,
     so they are archived, not removed.
 
-  * **Everything, when the new install is not actually working.** Copying a
-    2.5 GB model and *believing* it landed is not the same as loading it. So
-    nothing is deleted until `realme engine status` reports ready.
+  * **Everything, when the new install is not actually working.** A copied
+    model is not known to work until it loads, so nothing is deleted until
+    `realme engine status` reports ready.
 
-What is left after those two rules is genuinely redundant: a second copy of the
+What is left after those two rules is redundant: a second copy of the
 weights, a virtual environment RealMe replaced, and build caches. That is where
-the gigabytes are, and it is safe to remove precisely because the check above
-passed.
+the gigabytes are, and it is safe to remove because the check above passed.
 
-Two steps by design. `realme engine retire <folder>` reports; adding `--delete`
-acts. There is no single command that inspects and deletes in one breath.
+Two steps. `realme engine retire <folder>` reports; adding `--delete` acts.
 """
 from __future__ import annotations
 import os
@@ -94,8 +91,8 @@ def plan(source: Path, home: Path | None = None,
 
     # The one way a verified engine can still be depending on the old folder:
     # REALME_QWEN3_ROOT overrides the copied engine, so if it points inside what
-    # we are about to delete, `status()` reporting "ready" is describing the very
-    # files on the chopping block. Catch that before it becomes unrecoverable.
+    # is about to be deleted, `status()` reporting "ready" describes the very
+    # files that would be removed. Block the delete in that case.
     root = os.environ.get("REALME_QWEN3_ROOT", "").strip().strip('"')
     if root:
         try:

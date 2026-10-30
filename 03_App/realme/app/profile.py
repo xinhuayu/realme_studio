@@ -34,26 +34,17 @@ DEFAULTS = {
     "display_name": "",
     "course_context": "",
     "style_notes": "",
-    # qwen3cpp for recording, piper for drafting. Measured, not assumed: on a
-    # 14-utterance passage the C++ engine was twice as fast as the Python worker
-    # per second of audio AND closer to the enrolled voice (84.5% vs 65.5%),
-    # while the worker produced unstable pitch and over-long output.
-    # No `gemini_model`. The model is not a property of your voice profile,
-    # and storing it only created a second place for it to go stale: the
-    # Studio's menu and the CLI both read the code default (or
-    # REALME_GEMINI_MODEL, or --model), never this file, so a saved id sat
-    # here pointing at a retired preview, influencing nothing and confusing
-    # anyone who read it.
+    # No `gemini_model`: the model is not a property of the voice profile.
+    # The Studio's menu and the CLI read the code default (or
+    # REALME_GEMINI_MODEL, or --model), never this file.
     # The default for a profile that does not exist yet. An existing profile
-    # is NEVER migrated onto this: moving someone from a local engine to a
-    # hosted one would start sending their voice and their lectures to a
-    # company, and start charging them, on the strength of a software update.
-    # That is a choice, and it is made in Twin Setup.
+    # is NEVER migrated onto this: moving from a local engine to a hosted one
+    # sends the voice and lectures to a third party and incurs charges, so it
+    # is left to the user in Twin Setup.
     "adapters": {"script_writer": "gemini",
                  "tts": "gemini-tts",
                  # The guest is a DRAFT voice, and a different one from the
-                 # instructor's. It said "qwen3cpp", which made a debate two
-                 # copies of the same cloned person.
+                 # instructor's, so a debate has two distinct speakers.
                  "guest_tts": "piper:en_US-amy-medium",
                  "draft_tts": "piper"},
     "video": {"width": 1920, "height": 1080, "fps": 30, "layout": "slide_only"},
@@ -89,12 +80,7 @@ DEFAULTS = {
     #: disk when the transcript was last saved. Equal means the two describe
     #: each other. Every pace measurement in the system is words of text
     #: divided by seconds of speech, so when they disagree, every one of those
-    #: numbers is wrong -- and wrong quietly, as a plausible-looking rate.
-    #:
-    #: Written after a re-recorded enrolment of a SHORTER passage left the
-    #: August transcript in place: 163 words over 28.8 s of October speech
-    #: measured 323 words a minute, and the clone was retimed 25% fast to
-    #: "match" it.
+    #: numbers is wrong, though it may still look plausible.
     "reference_audio_id": None,
     "reference_text_id": None,
     #: register name -> treated .wav. Several takes of the same voice,
@@ -103,9 +89,8 @@ DEFAULTS = {
     "consent_recording": None,
     #: Words per minute of SPEECH in the enrolment recording, measured when it
     #: was enrolled. Kept so that a later re-recording can be compared against
-    #: it: a clone copies the delivery it was cloned from, and a reference read
-    #: more carefully than usual is otherwise an invisible change that shows up
-    #: months later as "the voice sounds slow".
+    #: it: a clone copies the delivery it was cloned from, so a reference read
+    #: more slowly than usual makes the clone slower too.
     "reference_wpm": None,
     #: Gemini TTS, which is a cloud engine and therefore carries more state
     #: than a local one: WHICH voice was enrolled, in whose project, when it
@@ -128,24 +113,22 @@ DEFAULTS = {
         #: and not necessarily the pace of a lecture. None = no correction.
         "rate_match": None,
         #: The voice id `rate_match` was measured for. A correction belongs to
-        #: one clone; applying the previous clone's number to a re-enrolled
-        #: voice retimed a whole course 25% fast. Unset means unverifiable,
+        #: one clone and must not be applied to a re-enrolled voice. Unset
+        #: means unverifiable,
         #: which `tts_gemini.effective_rate_match` treats as "do not apply".
         "rate_match_for": None,
         #: Characters per API call. None = the engine's own measured default
         #: (738, see adapters/tts_gemini.MEASURED_MAX_CHARS); 0 = fall back to
         #: the pipeline's 260. Any other number should be one that
-        #: probe_gemini_tts.py measured on this account -- the documented API
-        #: limit is a different and much larger number, and putting that here
-        #: is how a lecture gets rendered in calls that hurry.
+        #: probe_gemini_tts.py measured on this account. The documented API
+        #: limit is much larger; calls that long make the voice hurry.
         "max_chars": None,
     },
 }
 
 
-#: What a saved setting may be. Checked when the Studio saves the profile:
-#: a width of "abc" or an fps of -3 used to be written as given, and every
-#: later render then failed far from the cause.
+#: What a saved setting may be. Checked when the Studio saves the profile,
+#: so a bad value is rejected there rather than failing a later render.
 VIDEO_LIMITS = {"width": (160, 7680), "height": (120, 4320), "fps": (1, 120)}
 LAYOUTS = ("slide_only", "pip", "side_by_side")
 SIGNALLING = ("highlight", "underline", "focus", "off")
@@ -228,10 +211,8 @@ class Profile:
         self.path = self.root / "profile.json"
         self.data = (json.loads(read_text(self.path)) if self.path.exists()
                      else copy.deepcopy(DEFAULTS))
-        # Backfill NESTED defaults too. `setdefault` only ever filled missing
-        # top-level keys, so a profile saved before a sub-key existed never
-        # gained it: a profile written when `adapters` held two entries kept
-        # two entries forever, and every later addition was invisible to it.
+        # Backfill NESTED defaults too, so a profile saved before a sub-key
+        # existed (e.g. a new `adapters` slot) gains it.
         for k, v in DEFAULTS.items():
             if isinstance(v, dict) and isinstance(self.data.get(k), dict):
                 for sk, sv in v.items():
@@ -241,15 +222,9 @@ class Profile:
         if self._migrate():
             self.save()
 
-    #: Engines that were retired, and what replaced them. A saved profile keeps
-    #: pointing at a name long after the project stopped recommending it --
-    #: `qwen3` (the Python worker) measured 65.5% resemblance against
-    #: qwen3cpp's 80.5% and is several times slower, yet a profile written
-    #: before the C++ engine existed still selected it, silently, in every
-    #: dropdown.
+    #: Engine names an older profile may hold, and the current engine each
+    #: maps to. None of these is in the registry.
     RETIRED_ENGINES = {"qwen3": "qwen3cpp", "qwen3cpp-cli": "qwen3cpp",
-                       # Retired September 2026. A profile still naming one
-                       # would select an engine the registry no longer has.
                        "piper+knnvc": "qwen3cpp", "piper+openvoice": "qwen3cpp",
                        "espeak": "piper"}
 
@@ -268,9 +243,8 @@ class Profile:
                     import sys as _sys
                     print(f"  [profile] {slot}: '{cur}' is retired -> '{new}'",
                           file=_sys.stderr, flush=True)
-            # A guest that clones YOUR voice is not a guest. This was the
-            # stored default before the podcast had a second speaker worth the
-            # name, and a saved profile still carries it into every dialogue.
+            # A guest must not clone the instructor's voice. An older profile
+            # may hold a cloning engine here; reset it to the draft default.
             if ad.get("guest_tts") in ("qwen3cpp", "qwen3", "chatterbox",
                                        "indextts"):
                 ad["guest_tts"] = "piper:en_US-amy-medium"
@@ -278,12 +252,10 @@ class Profile:
                 import sys as _sys
                 print(f"  [profile] guest_tts was a clone of your own voice "
                       f"-> {ad['guest_tts']}", file=_sys.stderr, flush=True)
-            # A voice that is no longer offered. Removing one from the list
-            # does not remove it from a profile that chose it, and the result
-            # is a Studio dropdown with nothing selected and a greeting that
-            # calls the guest by its file name. Moved to the default, out loud
-            # -- the voice may still be on disk, so this is a change of
-            # preference and the person should know it happened.
+            # A saved guest voice that is not in DRAFT_VOICES would leave the
+            # Studio dropdown empty and the guest named by its file name.
+            # Move it to the default and say so: the voice may still be on
+            # disk, so this changes a preference the user made.
             guest = ad.get("guest_tts") or ""
             if guest.startswith("piper:"):
                 from realme.adapters.tts import DRAFT_VOICES
@@ -297,8 +269,7 @@ class Profile:
                           f"{ad['guest_tts']}", file=_sys.stderr, flush=True)
             # Drop a stored script model rather than migrating it forward.
             # Nothing reads it -- the menu and the CLI take the code default,
-            # REALME_GEMINI_MODEL or --model -- so the only thing a saved id
-            # could do was go stale and mislead.
+            # REALME_GEMINI_MODEL or --model.
             stored = ad.pop("gemini_model", None)
             if stored is not None:
                 changed = True
@@ -324,11 +295,9 @@ class Profile:
         """
         kind is 'voice_reference', 'consent_recording' or 'gemini_consent'.
 
-        Converted on the way in, never copied as-is. Keeping the uploaded
-        container meant an iPhone .m4a was stored as .m4a and handed straight to
-        the engines, where the C++ one rejects it as "Not a RIFF file" and
-        libsndfile has no AAC decoder at all. One conversion here; nothing
-        downstream has to know what was uploaded.
+        Converted on the way in, never copied as-is: the C++ engine rejects
+        a non-RIFF file such as .m4a, and libsndfile has no AAC decoder. One
+        conversion here; nothing downstream has to know what was uploaded.
         """
         from realme.core.media import to_reference_wav
         dst = self.root / "baked_assets" / f"{kind}.wav"
@@ -338,10 +307,9 @@ class Profile:
         #
         # There are two ways in: `realme voice enroll` writes here directly,
         # while the Studio uploads to <data>/voice/reference_raw.wav and bakes
-        # FROM there. Those never shared a source, so enrolling from the command
-        # line and later pressing "Save this voice" in the Studio would have
-        # baked an older recording over the newer one -- silently, because both
-        # files are called the right thing in the right place.
+        # FROM there. Copying here keeps the two in step, so "Save this voice"
+        # in the Studio after a command-line enrolment does not bake an older
+        # recording over the newer one.
         if kind == "voice_reference":
             raw = self.root.parent / "voice" / "reference_raw.wav"
             raw.parent.mkdir(parents=True, exist_ok=True)
@@ -366,10 +334,9 @@ class Profile:
     #
     # Stored as a plain .txt BESIDE the audio, not only inside profile.json.
     #
-    # Two files that must correspond -- a clip and the words spoken in it --
-    # belong together, where you can see them, open them in Notepad and fix a
-    # typo. A transcript buried in a JSON blob is a transcript nobody checks
-    # against the recording, and a mismatch there silently degrades every clone.
+    # The clip and the words spoken in it are kept side by side so the
+    # transcript can be opened in a text editor and checked against the
+    # recording. A mismatch degrades every clone.
     #
     # The JSON field is kept in step as a mirror. If the two ever disagree the
     # FILE wins, because the file is the one a human edited.
@@ -397,13 +364,12 @@ class Profile:
         Through the app, `set_reference_text` records which recording was on
         disk at the time, and the two digests settle it outright.
 
-        By hand is the other way, and it is not a workaround: the transcript
-        lives beside the audio as a plain .txt precisely so it can be opened
-        and corrected, and where the file and the JSON mirror disagree the
-        FILE wins. Nothing in the bytes of a text file can prove which clip it
-        belongs to, so what is checked is order -- a transcript last written
-        BEFORE the recording cannot be a transcript of it. That is the case
-        that actually went wrong, and it is the case this catches.
+        By hand is the other way: the transcript lives beside the audio as a
+        plain .txt so it can be opened and corrected, and where the file and
+        the JSON mirror disagree the FILE wins. Nothing in the bytes of a text
+        file can prove which clip it belongs to, so what is checked is order
+        -- a transcript last written BEFORE the recording cannot be a
+        transcript of it.
 
         What neither way catches is a transcript of the right length and the
         wrong words. That is what `pace.check_human_wpm` is for: it refuses an

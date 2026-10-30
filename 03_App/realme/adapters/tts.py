@@ -175,17 +175,10 @@ NATURAL_SPEED = 1.0
 #:
 #: Chosen by listening, on the same passage, not by tier or by label.
 #:
-#: Lessac was the original female voice and is gone: it was heard as mechanical
-#: and as English-English, which it is not -- a US voice whose stress is so even
-#: that listeners place it in the wrong country. Amy replaced it on a
-#: side-by-side.
-#:
-#: Cori is here for range rather than as a second-best Amy. Two US voices give a
-#: podcast one accent and two timbres; an American and an English speaker give
-#: it two of each, which is most of what makes an exchange sound like two
-#: people. Cori is the high tier because that is the only tier it is published
-#: at -- and the tier is model size, not a ranking. Amy at medium beat Lessac at
-#: medium, which was a difference of speaker, not of tier.
+#: Cori is here for range. Two US voices give a podcast one accent and two
+#: timbres; an American and an English speaker give it two of each, which makes
+#: an exchange sound like two people. Cori is the high tier because that is the
+#: only tier it is published at -- the tier is model size, not a ranking.
 DRAFT_VOICES = {
     "en_US-amy-medium": "Amy — female, US",
     "en_US-ryan-medium": "Ryan — male, US",
@@ -209,14 +202,12 @@ def measured_speed(voice: str | None = None) -> float | None:
 
     PER VOICE, because the ratio is not a property of you alone. It is your
     rate divided by ONE PARTICULAR VOICE's rate at speed 1.0, and piper voices
-    differ: applying a ratio measured against Lessac to Amy slows Amy by
-    whatever Amy is already slower, on top of the intended match. The symptom
-    is a guest who drags, and nothing says why.
+    differ: applying a ratio measured against one voice to another slows or
+    speeds it by the difference between the two, on top of the intended match.
 
-    The calibration has always recorded `your_wpm` and the voice's `voice_wpm`
-    -- it just threw them away and kept the quotient. They are kept now, one
-    entry per voice, and the speed for a given voice is worked out from them.
-    An older profile that has only the scalar still works: that number is
+    The calibration keeps `your_wpm` and each voice's `voice_wpm`, one entry
+    per voice, and the speed for a given voice is worked out from them. An
+    older profile that has only the scalar still works: that number is
     returned for the voice it was measured against, and for a voice that has
     never been measured this returns None rather than a ratio belonging to a
     different speaker.
@@ -233,8 +224,7 @@ def measured_speed(voice: str | None = None) -> float | None:
             return None
         measured_for = (data.get("draft_pace_measured") or {}).get("voice")
         if voice and measured_for and voice != measured_for:
-            # Measured against a different voice. Returning it would be a
-            # guess wearing a measurement's clothes.
+            # Measured against a different voice, so it does not apply.
             return None
         return float(saved)
     except Exception:
@@ -246,10 +236,8 @@ def speed_from(data: dict, voice: str | None) -> float | None:
 
     Split out from `measured_speed` because that one reads the profile off
     disk, and a caller holding a profile object would otherwise be answered
-    from a different copy of it. That is not hypothetical: `guest_speed` wrote
-    a fresh measurement into the profile it was handed and then asked
-    `measured_speed`, which read the file, missed the write, and measured the
-    same voice again on the next call.
+    from a different copy of it -- one that misses any unsaved write (as in
+    `guest_speed`, which writes a measurement and then reads it back).
     """
     mine, table = rates(data or {})
     if not (voice and mine and table.get(voice)):
@@ -262,12 +250,9 @@ def speed_from(data: dict, voice: str | None) -> float | None:
 def rates(data: dict) -> tuple:
     """(your words/min, {voice: its words/min}), from wherever they were saved.
 
-    Two commands write these and they wrote them in two places. `voice pace
-    --all` writes `your_wpm` and a `draft_voice_wpm` table; plain `voice pace`
-    writes one nested `draft_pace_measured` record and nothing else. The
-    per-voice lookup above read only the first pair, so on a profile
-    calibrated the ordinary way it never fired -- the numbers were sitting in
-    the file, in the other shape, and the guest fell through to a constant.
+    Two commands write these, in two shapes. `voice pace --all` writes
+    `your_wpm` and a `draft_voice_wpm` table; plain `voice pace` writes one
+    nested `draft_pace_measured` record and nothing else.
 
     Both shapes are read here, so one function decides what "has this been
     measured?" means and the answer does not depend on which command ran.
@@ -317,11 +302,11 @@ def draft_voice(explicit: str | None = None) -> str:
 
 class PiperTTS(BaseTTS):
     """
-    Piper: the right draft/preview voice, and strictly better than espeak-ng.
+    Piper: the draft/preview voice.
 
-    Sounds far more natural, runs faster than real time on a CPU, and keeps the
-    same espeak-ng phoneme back end -- so `[[ ]]` injection and any espeak
-    dictionary work carry over unchanged. Voices are MIT; the Piper code is
+    Sounds far more natural than espeak-ng, runs faster than real time on a
+    CPU, and uses espeak-ng as its phonemiser (but see `phoneme_syntax`
+    below: `[[ ]]` blocks do not carry over). Voices are MIT; the Piper code is
     GPL-3, which binds you only if you redistribute a modified Piper. Rendering
     audio with it puts no obligation on the audio.
 
@@ -331,40 +316,28 @@ class PiperTTS(BaseTTS):
     is_voice_clone = False
     is_placeholder = True
 
-    #: **No phoneme injection.** This said "espeak", on the reasoning that piper
-    #: uses espeak-ng as its phonemiser so `[[ ]]` blocks would carry over. They
-    #: do not, and the failure is silent.
+    #: **No phoneme injection.** Piper uses espeak-ng as its phonemiser, but
+    #: `[[ ]]` blocks do not carry over, and the failure is silent.
     #:
     #: espeak's `[[ ]]` takes espeak's own mnemonics -- `[[w,aI'oU'V]]` for
     #: WIOA. Piper does not interpret them: it phonemises text to IPA and looks
     #: each symbol up in the voice's map. That map holds ʌ, ɛ, ɪ, ʊ and has no
     #: V, E, I, U and no brackets, so every mnemonic character is dropped with a
     #: "Missing phoneme from id map" line on stderr that nothing surfaces.
-    #: Six of them appeared while rendering one three-minute script.
     #:
     #: With no phoneme syntax the pipeline hands piper the RESPELLING instead --
     #: "why-oh-uh", "I P T W" -- which phonemises normally and lands in the map.
     phoneme_syntax = None
 
     #: Overridden by REALME_PIPER_VOICE, which is how a voice fine-tuned on your
-    #: own corpus becomes the default everywhere -- render, bench, Studio, and
-    #: inside `piper+knnvc` -- from one setting instead of four call sites.
+    #: own corpus becomes the default everywhere -- render, bench, Studio --
+    #: from one setting.
     #:
-    #: A male US voice, not lessac, and `medium` rather than `high`.
-    #:
-    #: Conversion transfers TIMBRE and keeps the source's pace, rhythm and
-    #: accent, so whatever is wrong with the base voice survives into the
-    #: converted output. Measured on the same eight utterances, converted
-    #: against the same reference:
-    #:
-    #:     base            draft ->  converted pitch    centroid    RTF
-    #:     lessac (f)                168.4 Hz  (89%)    1558 (95%)  0.42
-    #:     ryan-high (m)             156.9 Hz  (98%)    1421 (94%)  0.72
-    #:     ryan-medium (m)           155.3 Hz (100%)    1474 (99%)  0.44
-    #:                               you: 155.3 Hz                  1484
-    #:
-    #: `high` costs 4x the synthesis time of `medium` and buys nothing, because
-    #: kNN-VC's vocoder resamples to 16 kHz and throws the extra away.
+    #: A male US voice at `medium` rather than `high`. Voice conversion
+    #: transfers TIMBRE and keeps the source's pace, rhythm and accent, so the
+    #: base voice matters; ryan-medium converted closest in pitch and spectral
+    #: centroid. `high` costs 4x the synthesis time of `medium` and buys
+    #: nothing, because kNN-VC's vocoder resamples to 16 kHz.
     DEFAULT_VOICE = "en_US-ryan-medium"
 
     def __init__(self, model: str | None = None, speed: float | None = None):
@@ -374,14 +347,12 @@ class PiperTTS(BaseTTS):
         except ValueError:
             env_speed = 0.0
         #: 1.0 is the voice's own pace; 0.9 is a tenth slower. Piper thinks in
-        #: length_scale, which is the reciprocal and reads backwards to everyone.
+        #: length_scale, which is the reciprocal.
         #:
         #: The default is 0.8 because piper's own pace is faster than a lecture
-        #: wants. That came from a listener twice -- 1.0 was "very fast", 0.9
-        #: was still "hard to keep up" -- and the measurement agreed on the way
-        #: down: slowing ryan-high from 1.0 to 0.9 moved converted resemblance
-        #: from 65.4% to 70.1%. Conversion inherits pace from the base voice, so
-        #: this is not a preview-only nicety. `--piper-speed` tunes it.
+        #: wants; slowing also raises converted resemblance (65.4% -> 70.1%
+        #: from 1.0 to 0.9), since conversion inherits pace from the base
+        #: voice. `--piper-speed` tunes it.
         self.speed = float(speed) if speed else (env_speed or draft_speed())
         self._voice = None
 
@@ -405,17 +376,13 @@ class PiperTTS(BaseTTS):
             return str(local)
         bundled = piper_home(engine_home()) / f"{self.model}.onnx"
         # The BUNDLED path when neither exists, not the working-directory one.
-        # `realme engine install` writes to tools/piper, so naming a
-        # cwd-relative file in the "not here" message sends the reader to look
-        # in the wrong place -- or, worse, makes them think the voice is
-        # expected somewhere that depends on where they were standing.
+        # `realme engine install` writes to tools/piper, so that is the path
+        # the "not here" message should name.
         return str(bundled)
 
     def preflight(self) -> None:
         """
-        Three separate things can be missing, and they used to report as two
-        vague sentences: "the draft voice is not installed" and "the voice is
-        not downloaded". Neither distinguishes
+        Three separate things can be missing, each reported separately:
 
           * the piper package absent from THIS interpreter -- the common case,
             because piper installed into a different environment is invisible
@@ -424,7 +391,7 @@ class PiperTTS(BaseTTS):
           * the .onnx.json config beside it missing -- piper needs BOTH, and a
             voice copied by hand usually arrives without the json.
 
-        Each now names itself, with the path that was actually looked at.
+        Each names itself, with the path that was actually looked at.
         """
         import sys as _sys
         try:
@@ -478,19 +445,17 @@ class PiperTTS(BaseTTS):
         # Text it renders as nothing -- a fragment that is all punctuation, a
         # stray symbol, a line the phonemiser empties -- yields no chunks, the
         # header is never written, and closing the file raises
-        # "wave.Error: # channels not specified". The error names the file
-        # format, so it reads like a bug in the writer rather than what it is:
-        # one unpronounceable line in the middle of a script.
+        # "wave.Error: # channels not specified", which hides the real cause:
+        # one unpronounceable line in the script.
         rate = int(getattr(getattr(self._voice, "config", None),
                            "sample_rate", 22050))
         with wave.open(str(out_wav), "wb") as w:
             w.setnchannels(1)
             w.setsampwidth(2)
             w.setframerate(rate)
-            # `pace` was accepted and silently ignored here until a listener
-            # said the draft voice was too fast and there was nothing to turn.
-            # length_scale is piper's control and runs the other way: bigger is
-            # slower, so it is the reciprocal of speed.
+            # Apply `pace` and the voice speed. length_scale is piper's control
+            # and runs the other way: bigger is slower, so it is the
+            # reciprocal of speed.
             scale = 1.0 / (self.speed * (pace or 1.0))
             syn = None
             if abs(scale - 1.0) > 1e-3:
@@ -517,14 +482,14 @@ class PiperTTS(BaseTTS):
 
 class IndexTTSAdapter(BaseTTS):
     """
-    IndexTTS 2.5 -- the best fit for this project among self-hosted cloners.
+    IndexTTS 2.5, a self-hosted cloner.
 
     ~6 GB VRAM (fits a free-Colab T4 with room to spare), and the clearest
     pronunciation syntax of any engine: `<word|AY1 P IY1 T IY1>` accepting CMU
-    phonemes directly. Licence permits commercial use below 100M MAU, which a
-    university is not near. Its documented weakness is honest: long text is
-    split and concatenated with no prosody modelling across the boundary, which
-    is exactly why this pipeline chunks at the utterance level anyway.
+    phonemes directly. Licence permits commercial use below 100M MAU. Its
+    documented weakness: long text is split and concatenated with no prosody
+    modelling across the boundary, which this pipeline's utterance-level
+    chunking already accounts for.
     """
     name = "indextts-2.5"
     is_voice_clone = True
@@ -653,27 +618,25 @@ class _LazyGemini:
 
 #: The engines this project builds, tests and ships an installer for.
 #:
-#: Everything here is either local (piper, the Qwen3 C++ engine, the voice
-#: converters) or a system binary, and `realme engine install` can produce
-#: all of it. The Studio probes these on startup because the answer is
-#: actionable: a missing one has a button or a command that fixes it.
-#: `gemini-tts` is here, and it is the first entry that is not local. It
-#: qualifies on the stated criterion -- a failed check is actionable, and says
-#: which of the three things is missing (key, enrolled voice, paid-tier
-#: acknowledgement) -- but it is the one engine whose cost is not only time.
+#: Apart from `gemini-tts`, everything here is local (piper, the Qwen3
+#: engines), and `realme engine install` can produce all of it. The Studio
+#: probes these on startup because the answer is actionable: a missing one has
+#: a button or a command that fixes it. `gemini-tts` is hosted; a failed check
+#: still says which of the three things is missing (key, enrolled voice,
+#: paid-tier acknowledgement), but it is the one engine whose cost is not only
+#: time.
 #: Order matters: this is the order the Studio lists them in, and the first
-#: is what a new profile gets. gemini-tts leads as of October 2026 -- it is
-#: the better-sounding clone and it needs no GPU -- with qwen3cpp immediately
-#: behind it as the local one that costs nothing and works offline.
+#: is what a new profile gets. gemini-tts leads -- the better-sounding clone,
+#: and it needs no GPU -- with qwen3cpp behind it as the local one that costs
+#: nothing and works offline.
 DEVELOPED = ("gemini-tts", "qwen3cpp", "qwen3cpp-cli", "qwen3", "piper")
 
 #: Engines RealMe can drive but does not set up, with what each one needs.
 #:
-#: They stay in the REGISTRY -- `--tts chatterbox` works, and somebody who
-#: has one of these installed should be able to use it. What stopped is
-#: PROBING them on every status check: importing a half-installed torch stack
-#: or asking about a key nobody set produced a row of red pills for engines
-#: this project never promised, on every page load.
+#: They are in the REGISTRY -- `--tts chatterbox` works for anyone who has one
+#: installed -- but are not PROBED on status checks, which would import a
+#: half-installed torch stack or report a missing key for engines this project
+#: does not set up.
 NOT_DEVELOPED = {
     "elevenlabs": "a paid API; needs ELEVENLABS_API_KEY and a cloned voice id",
     "google_chirp3": "Chirp 3 Instant Custom Voice; allowlisted Google Cloud "
@@ -682,23 +645,21 @@ NOT_DEVELOPED = {
     "indextts": "pip install indextts, plus torch",
 }
 
-#: Retired September 2026, and why.
+#: Engines that are not offered, checked or installed, with the reason.
 #:
-#: `piper+knnvc` and `piper+openvoice` converted a piper draft into the
-#: instructor's timbre; they were measured (65-80% resemblance) and slower
-#: than the C++ engine that now does the job directly, and each dragged a
-#: torch stack into every startup. `espeak` was the robotic placeholder from
-#: before any voice existed. None of them is offered, checked or installed
-#: any more. The classes and the vendored converter source are still in the
-#: tree, unreferenced, if this is ever reversed.
+#: `piper+knnvc` and `piper+openvoice` convert a piper draft into the
+#: instructor's timbre; they measure 65-80% resemblance, are slower than the
+#: C++ engine, which clones directly, and each loads a torch stack at
+#: startup. `espeak` is a robotic placeholder. The classes and the vendored
+#: converter source remain in the tree, unreferenced.
 #:
 #: espeak-ng the BINARY is a different thing and stays: the lexicon asks it
 #: for phoneme mnemonics to decide whether a term reads as a word or as
 #: letters (see realme/text/lexicon.py).
 RETIRED = {
-    "piper+knnvc": "voice conversion; the C++ engine clones directly now",
-    "piper+openvoice": "voice conversion; never measured as well as kNN-VC",
-    "espeak": "the robotic placeholder from before voice cloning worked",
+    "piper+knnvc": "voice conversion; the local clone (qwen3cpp) replaces it",
+    "piper+openvoice": "voice conversion; the local clone (qwen3cpp) replaces it",
+    "espeak": "a robotic placeholder voice; use a draft voice instead",
 }
 
 REGISTRY = {

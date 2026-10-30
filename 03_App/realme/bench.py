@@ -1,11 +1,10 @@
 """
 `realme bench` -- the same script through two engines, measured.
 
-Written because the numbers that exist publicly do not answer the question.
-qwen3-tts.cpp advertises "4.07x faster", measured on Apple Silicon with CoreML
-and Metal doing part of the work; its own x86 CPU figure is a real-time factor
-of 1.94 on a Ryzen 5 3600. Neither is your laptop. This renders identical text
-through both engines on the machine in front of you and reports what happened.
+Published figures depend on the hardware: qwen3-tts.cpp reports "4.07x
+faster" on Apple Silicon with CoreML and Metal, and a real-time factor of 1.94
+on a Ryzen 5 3600 CPU. This renders identical text through the engines on the
+local machine and reports what happened.
 
 Three things it is careful about:
 
@@ -13,8 +12,8 @@ Three things it is careful about:
 by the length of the audio produced, and that length comes from `ffprobe`. An
 engine that quietly truncates its output would otherwise look fast.
 
-**Model loading is separated from synthesis.** The two engines differ
-structurally here, and averaging it away would flatter one of them. The Python
+**Model loading is separated from synthesis.** The engines differ
+structurally here, and averaging it away would favour one of them. The Python
 worker is a server: it loads the model once and every later utterance is free of
 that cost. The C++ CLI is a process per utterance, so it pays the load every
 time. For a one-line preview that difference dominates; across a 200-utterance
@@ -61,18 +60,14 @@ WORDS_PER_MINUTE = 140
 def load_script(path: Path | None, minutes: float = 0.0,
                 mode: str = "natural") -> list[str]:
     # mode="stable" keeps each paragraph whole instead of splitting at clauses.
-    # Worth measuring: on a real run here, utterances under 2 seconds cost
-    # RTF 7.07 while those over 5 seconds cost 6.57. Fewer, longer calls
-    # amortise the per-call overhead -- by roughly 7%, not the order of
-    # magnitude people expect.
+    # Fewer, longer calls amortise the per-call overhead, by roughly 7% in RTF
+    # (utterances over 5 seconds versus under 2).
     #
-    # The measurement stands; the explanation that used to be here did not. It
-    # said the reference is prefilled into the context on every call. It is not:
+    # The reference is not re-encoded per call:
     # `qwen3_tts_extract_embedding_file` reduces the clip to a fixed 1024-float
-    # embedding once, and `synthesize_with_embedding` "skips the encoder". What
-    # the longer calls actually amortise is text tokenisation, graph setup and
-    # the first-token latency -- smaller costs, which is why the gain is 7% and
-    # not the tenfold that "it reloads the voice every time" would imply.
+    # embedding once, and `synthesize_with_embedding` skips the encoder. What
+    # longer calls amortise is text tokenisation, graph setup and first-token
+    # latency, which are small costs.
     #
     # It cannot be pushed far. Qwen3-TTS-12Hz caps a single call at 4096 audio
     # frames, which is 341 seconds, so ~5.7 minutes is a hard ceiling per call
@@ -81,12 +76,12 @@ def load_script(path: Path | None, minutes: float = 0.0,
     A lecture as written -> the utterances an engine is actually asked for.
 
     A real script is paragraphs, not one sentence per line, so it is split the
-    same way `realme lecture` splits it. Using a different splitter here would
-    benchmark something you never render.
+    same way `realme lecture` splits it, so the bench measures what a render
+    would actually request.
 
     `minutes` caps the work. Three engines over five minutes of narration is
-    hours of compute at these real-time factors; capping it lets you get an
-    answer over lunch and only then decide whether the full run is worth it.
+    hours of compute at these real-time factors; a capped run gives a quicker
+    answer before committing to the full one.
     """
     return load_units(path, minutes=minutes, mode=mode)[0]
 
@@ -97,11 +92,9 @@ def load_units(path: Path | None, minutes: float = 0.0,
     A script as the RENDERER sees it: controls parsed, text clean, pauses kept.
 
     `[[pause:600]]`, `[[emphasis]]` and the rest are parsed by
-    `text.controls.parse_controls`, which the lecture pipeline runs and the
-    benchmark did not. Unparsed, the normalizer turned `[[pause:600]]` into
-    `( (pause:600) )` and the engine was asked to SAY "pause six hundred" --
-    auditioning something no render would ever produce, which is the one thing
-    this module's own docstring says not to do.
+    `text.controls.parse_controls`, as in the lecture pipeline. Unparsed, the
+    normalizer would turn `[[pause:600]]` into `( (pause:600) )` and the
+    engine would be asked to SAY "pause six hundred".
 
     Returns the utterances, the control pause in milliseconds to add AFTER each
     one, and the speed each was asked to be spoken at. A `[[pause]]` before a
@@ -123,8 +116,8 @@ def load_units(path: Path | None, minutes: float = 0.0,
             if getattr(unit, "is_mask", False):
                 # The words never reach an engine. A render puts a softened
                 # tone of the same length in their place; the bench cannot
-                # easily splice one in, so it leaves the time -- which keeps
-                # the rhythm honest even if the sound is missing.
+                # easily splice one in, so it leaves the time, which keeps
+                # the rhythm right even though the sound is missing.
                 if pauses:
                     pauses[-1] += int(getattr(unit, "mask_ms", 0) or 0)
                 continue
@@ -164,8 +157,7 @@ def estimate(script: list[str], engines: list[str]) -> dict:
     audio_min = words / WORDS_PER_MINUTE
     return {"utterances": len(script), "words": words,
             "audio_minutes": audio_min,
-            # Deliberately pessimistic: better to over-warn than to have someone
-            # start a three-hour run thinking it was twenty minutes.
+            # Deliberately pessimistic, so a long run is not underestimated.
             "worst_case_minutes": audio_min * 10 * len(engines)}
 
 
@@ -175,7 +167,7 @@ def pause_pattern(script: list[str], reference: Path | None,
     The gaps a real render would put between these utterances, in seconds.
 
     Punctuation-aware and shaped by the speaker's own measured rhythm -- the
-    same `prosody.gap_ms` the lecture pipeline calls, not a second opinion.
+    same `prosody.gap_ms` the lecture pipeline calls.
     """
     from realme.pipeline.prosody import gap_ms, measure_reference_pauses
     r = {}
@@ -202,12 +194,9 @@ def concat(paths: list[Path], out: Path,
     """
     One file per engine, so you can listen straight through.
 
-    **With the pauses a real render would have.** This used to join utterances
-    with `-c copy`, back to back, no gaps at all -- and a listener quite
-    reasonably reported that the engine ran sentences together and was hard to
-    keep up with. The engine did no such thing; the bench did. What you audition
-    has to be built the way the product builds it, or every comparison made from
-    it is about the wrong thing.
+    **With the pauses a real render would have**, so the audition matches how
+    a lecture is assembled. Without `gaps`, utterances are joined back to back
+    with `-c copy`.
     """
     from realme.core.media import require, run
     paths = [p for p in paths if p.is_file()]
@@ -250,33 +239,28 @@ def resemblance_to_reference(res: "EngineResult", reference: Path | None) -> flo
     """
     How close is this engine to YOUR recording?
 
-    Engine-to-engine comparison answers the wrong question. What matters is
-    which one sounds like you, and the only fixed point for that is the
-    reference clip itself.
+    Compared against the reference clip rather than engine to engine, because
+    the question is which engine sounds like the speaker.
     """
     if not (reference and Path(reference).is_file() and res.ok and res.utterances):
         return None
     try:
         from realme.core.media import ensure_reference_wav
         from realme.enrollment.voice import acoustic_signature, compare_signatures
-        # The signature reader takes WAV, not AAC. Handed a phone recording it
-        # raised, the bare `except` below swallowed it, and `like_you` showed
-        # n/a for every engine after a 22-minute run -- the one column the
-        # whole reference exists to produce. Third route around the one
-        # conversion; hopefully the last.
+        # The signature reader takes WAV, not AAC, so a phone recording is
+        # converted first.
         reference = ensure_reference_wav(Path(reference))
         # Gapless, deliberately, and NOT the file you listen to. Silence
         # between sentences raises the measured dynamic range, so adding it
-        # here would move every score and break comparison against every bench
-        # run recorded before now -- qwen3cpp's 84.5% among them.
+        # here would shift every score and break comparison with earlier
+        # bench runs.
         joined = res.utterances[0].path.parent / f"_{res.name}_signature.wav"
         target = concat([u.path for u in res.utterances], joined) or res.utterances[0].path
         cmp = compare_signatures(acoustic_signature(Path(reference)),
                                  acoustic_signature(target))
         return cmp.get("score_percent")
     except Exception as e:
-        # Say why. A silent n/a is indistinguishable from "not computed" and
-        # sends you to re-run the whole benchmark to find out.
+        # Say why: a silent n/a is indistinguishable from "not computed".
         print(f"  resemblance for {res.name} could not be computed: "
               f"{e.__class__.__name__}: {e}")
         return None
@@ -286,9 +270,8 @@ def rescore(outdir: Path, reference: Path | None, log=print) -> dict:
     """
     Recompute `like_you` from audio a previous run already produced.
 
-    Twenty-two minutes of synthesis should not have to be repeated because the
-    scoring step failed. The joined per-engine files are still on disk; this
-    reads them and nothing else.
+    Lets the scoring step be repeated without repeating the synthesis. Reads
+    the joined per-engine files on disk and nothing else.
     """
     from realme.core.media import ensure_reference_wav
     from realme.enrollment.voice import acoustic_signature, compare_signatures
@@ -310,7 +293,7 @@ def rescore(outdir: Path, reference: Path | None, log=print) -> dict:
     if not scores:
         raise ValueError(f"No joined bench audio in {outdir}")
 
-    # Provenance, and a loud warning when the files did not come from one run.
+    # Provenance, and a warning when the files did not come from one run.
     import json as _json
     for name, r in scores.items():
         meta = outdir / f"_{name}.meta.json"
@@ -430,12 +413,9 @@ def resolve_reference(value=None) -> tuple[Path | None, str]:
             prof = Profile(data_home() / "profile").data
             stored = prof.get("voice_reference")
             if stored and Path(stored).is_file():
-                # Say what the file IS, not what the slot is called. Once the
-                # default became `off`, "tuned (the take you adjusted in the
-                # Studio)" was printed over an untouched copy of the raw
-                # recording -- a label describing a slot rather than its
-                # contents, which is how two identical files come to look like
-                # two different experiments.
+                # Say what the file IS, not what the slot is called: with
+                # preset `off` the enrolled file is an unchanged copy of the
+                # raw recording.
                 preset = (prof.get("voice_preset") or "").strip()
                 if preset == "off":
                     label = "enrolled: your recording, copied unchanged"
@@ -458,8 +438,8 @@ def resolve_reference(value=None) -> tuple[Path | None, str]:
 
 
 def _make(name: str, reference: Path | None, threads: int = 0):
-    """Via the shared factory -- see realme/adapters/factory.py for why nothing
-    constructs adapters directly any more."""
+    """Via the shared factory -- see realme/adapters/factory.py for why
+    adapters are not constructed directly."""
     from realme.adapters.factory import build
     extra = {"threads": threads} if threads else {}
     return build(name, reference_wav=reference, **extra)
@@ -477,16 +457,14 @@ def run_engine(name: str, script: list[str], outdir: Path,
         return EngineResult(name=name, ok=False, detail=str(e))
     except Exception as e:
         # Anything else -- a missing DLL export, a bad ctypes signature -- is a
-        # fault in ONE engine. A benchmark that dies on it reports nothing about
-        # the other two, which is the least useful possible outcome.
+        # fault in ONE engine, and must not stop the others being measured.
         log(f"  {name}: unavailable -- {e.__class__.__name__}: {e}")
         return EngineResult(name=name, ok=False,
                             detail=f"{e.__class__.__name__}: {e}")
 
     # The SAME text preparation a real render does: normalise, then lexicon.
-    # Feeding raw text straight to the engine was benchmarking something you
-    # never actually ask for -- and it is how a URL or a "§361.5(c)(51)"
-    # reached the draft voice intact and produced no audio at all.
+    # Raw text such as a URL or "§361.5(c)(51)" can make an engine produce
+    # no audio at all.
     from realme.text.prepare import prepare_for_speech
     from realme.text.lexicon import Lexicon
     lx = Lexicon()
@@ -500,9 +478,7 @@ def run_engine(name: str, script: list[str], outdir: Path,
     if label != name:
         import os as _os
         cores = _os.cpu_count() or "?"
-        # Record the machine too. A thread-count result is uninterpretable
-        # without it -- "4 threads was faster than 8" means one thing on a
-        # 4-core box and something quite different on a 16-core one.
+        # Record the core count too: a thread-count result depends on it.
         log(f"  {name}: using {label}"
             + (f", {used_threads} of {cores} cores" if used_threads else ""))
 
@@ -527,19 +503,14 @@ def run_engine(name: str, script: list[str], outdir: Path,
         t0 = time.perf_counter()
         try:
             # NOT `voice=reference`. The adapter already holds this clip,
-            # converted, from the factory -- and the qwen3 adapters prefer
-            # `voice` over their own reference, so passing the raw path here
-            # put the unconverted .m4a straight into the C++ engine and every
-            # utterance failed with "Not a RIFF file". The conversion happens
-            # in one place; a second path around it is how it gets undone.
-            # `[[slow]]` and `[[fast]]` were parsed and then dropped here,
-            # so the bench spoke at one rate whatever the script asked for.
+            # converted, from the factory, and the qwen3 adapters prefer
+            # `voice` over their own reference, so passing the raw path would
+            # hand an unconverted .m4a to the C++ engine ("Not a RIFF file").
+            # `pace` carries the `[[slow]]` / `[[fast]]` speed for this unit.
             pace = float(speeds[i]) if speeds and i < len(speeds) else 1.0
             tts.synthesize(spoken, out, pace=pace)
         except Exception as e:
-            # One bad line must not discard the engine's whole run. A benchmark
-            # that reports nothing because utterance 6 of 14 misbehaved has
-            # thrown away five perfectly good measurements.
+            # One bad line must not discard the engine's whole run.
             log(f"  {name}: [{i + 1}/{len(script)}] failed -- "
                 f"{str(e).splitlines()[0][:70]}")
             failures += 1
@@ -646,10 +617,9 @@ def report(results: list[EngineResult], outdir: Path,
     # One file per engine, joined WITH the pauses a real render would insert,
     # and a sidecar saying what produced it.
     #
-    # The bench folder accumulates: run three engines today and one tomorrow,
-    # and tomorrow's `--rescore` silently scores yesterday's four files beside
-    # today's one, in a single table that looks like one experiment. A number
-    # you cannot trace is worse than no number.
+    # The bench folder accumulates across runs, so `--rescore` may score files
+    # from different runs in one table. The sidecar records each file's
+    # origin so that can be detected.
     import datetime as _dt
     import json as _json
     log("")
@@ -679,9 +649,9 @@ def report(results: list[EngineResult], outdir: Path,
                 f"utterances, from your own measured rhythm)")
     if not brief:
         log("")
-        log("  Listen to those before choosing. A faster engine that does not "
-            "sound")
-        log("  like you is not faster.")
+        log("  Listen to those before choosing: speed matters only if it "
+            "still")
+        log("  sounds like you.")
 
 
 def _median(xs: list[float]) -> float:
@@ -698,21 +668,15 @@ def variance_report(runs: list[list[EngineResult]], reference: Path | None = Non
     """
     The same command, N times, with nothing changed between them.
 
-    This exists because of a mistake worth not repeating. The engine samples at
-    temperature 0.9 with top_k 50 and the API has no seed field, so two
-    identical commands do not produce the same audio: different token draws,
-    different lengths, different prosody, a different resemblance score. A
-    single run is therefore a single draw from a distribution, not a
-    measurement of the engine.
+    The engine samples at temperature 0.9 with top_k 50 and the API has no
+    seed field, so two identical commands do not produce the same audio:
+    different token draws, different lengths, different prosody, a different
+    resemblance score. A single run is a single draw from a distribution, not
+    a measurement of the engine, and differences between settings (such as
+    thread counts) can be smaller than the run-to-run spread.
 
-    Read as measurements, single draws produced a clean-looking thread curve
-    (8 -> 12 -> 16 threads, monotonically faster) on the strength of which a
-    default was changed -- and the ordering reversed the next time it was run
-    with six sentences instead of four. The difference between the conditions
-    was smaller than the difference between two runs of the same condition.
-
-    So this reports the spread first and the ranking second, and says plainly
-    that a gap narrower than the spread is not a finding.
+    So this reports the spread first and the ranking second; a gap narrower
+    than the spread is not a finding.
     """
     by_engine: dict[str, list[EngineResult]] = {}
     for run in runs:
@@ -754,12 +718,12 @@ def variance_report(runs: list[list[EngineResult]], reference: Path | None = Non
     log("")
     log("  Each run's joined audio is in its own run NN folder. If one run")
     log("  sounds better than another, that is what a draw at temperature 0.9")
-    log("  sounds like -- listen to several before believing a setting caused it.")
+    log("  sounds like -- listen to several before concluding a setting caused it.")
 
 
 def write_results(results: list[EngineResult], outdir: Path,
                   reference: Path | None = None) -> Path:
-    """A run that took two hours should not exist only in a console buffer."""
+    """Write the results to bench_results.json in `outdir`."""
     import json
     payload = {
         "reference": str(reference) if reference else None,

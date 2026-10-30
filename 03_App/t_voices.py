@@ -2,10 +2,9 @@
 """
 "Not installed" has to be a claim about a folder, and name it.
 
-The Podcast page reported Amy and Cori missing on a machine where both were
-plainly on disk. Nothing on screen said where it had looked, so there was
-nothing to check the claim against -- and the two places that answer "is this
-voice installed?" did not agree with each other.
+The Podcast page says where it looked when it reports a voice missing, so the
+claim can be checked, and the two places that answer "is this voice
+installed?" must agree with each other.
 """
 from __future__ import annotations
 import ast, sys, tempfile
@@ -16,9 +15,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 #: Where this file lives. Every path below is relative to it, never to the
 #: working directory: these suites are run from the project root as often as
-#: from 03_App, and `Path("realme/...")` silently means a different thing in
-#: each. `verify_tree.py` already anchored on __file__; the t_*.py files did
-#: not, so t_render died with FileNotFoundError when run from the root.
+#: from 03_App, and `Path("realme/...")` means a different thing in each.
 HERE = Path(__file__).resolve().parent
 
 # Isolated from the real installation. See the note in t_pace.py: these
@@ -43,10 +40,8 @@ def code_only(path: str) -> str:
     # `path` is relative to this file, never to the working directory.
     """Source with comments and docstrings removed.
 
-    Two checks in the first draft of this file failed against comments that
-    EXPLAIN the fix by naming the old behaviour. A test that greps prose
-    reports a regression every time the reasoning is written down, which is
-    the opposite of what it should encourage.
+    Checks that search the source must not match comments that explain the
+    code by naming the behaviour it avoids.
     """
     import io, tokenize
     out = []
@@ -125,13 +120,11 @@ def main() -> int:
         # A package installed into site-packages: no checkout above it, so
         # `project_root()` finds nothing. The tools folder is a few levels up
         # all the same.
-        # The layout that the older search could NOT reach: tools/ sits above
-        # the directory the package was installed from, and there is no
-        # `03_App` marker for project_root() to find. Neither tools_dir() nor
-        # package_root()/"tools" lands on it, so only the upward walk does --
-        # which is what makes this check test the new code rather than the
-        # old. The first version of this fixture put tools/ inside
-        # package_root and passed either way; a mutation caught that.
+        # tools/ sits above the directory the package was installed from, and
+        # there is no `03_App` marker for project_root() to find. Neither
+        # tools_dir() nor package_root()/"tools" lands on it, so only the
+        # upward walk does; a tools/ inside package_root would let the check
+        # pass without exercising that walk.
         deep = tmp / "installed" / "lib" / "site-packages"
         pkg = deep / "realme" / "core"
         pkg.mkdir(parents=True)
@@ -186,11 +179,10 @@ def main() -> int:
 
     print("\na recording is whatever the phone produced, not whatever we hoped")
     # `realme voice takes` is the first command anyone points at a fresh
-    # recording, and a fresh recording is .m4a. It died inside Python's `wave`
-    # with "file does not start with RIFF id" -- the format it wanted, not the
-    # format it got. The project had already learned this for the engines
-    # (`core.media.ensure_reference_wav` exists because of it); the analysis
-    # side had not.
+    # recording, and a fresh recording is often .m4a. Python's `wave` would
+    # reject it with "file does not start with RIFF id", so the analysis side
+    # converts it first, as `core.media.ensure_reference_wav` does for the
+    # engines.
     import subprocess, tempfile
     from realme.verify.acoustic import read_wav
     from realme.enrollment.voice import clone_features, compare_takes, LOSSY

@@ -1,13 +1,13 @@
 """
 Videos inserted between a lecture's slides, remembered by the project.
 
-An animated explainer made in Anim Studio, a screen recording, a clip from a
+An animated explainer, a screen recording, a clip from a
 colleague: something that is not a slide, but belongs between two of them.
 The project keeps a list -- "after slide 12: confounding.mp4" -- in
 `inserts.json`, and every render puts each one in its place, so editing the
 notes and rendering again does not lose it.
 
-What has to agree for that to be a seam nobody notices:
+What has to agree for a seamless join:
 
   PICTURE   a slide segment is H.264 at the lecture's size and frame rate, and
             the master is joined without re-encoding. An insert from anywhere
@@ -15,11 +15,10 @@ What has to agree for that to be a seam nobody notices:
             shape differs, re-timed to the frame rate, given a silent track if
             it has none -- and the conformed copy is cached under its content.
   CLOCK     captions, chapters, the cut list and the final duration check all
-            move by the insert's length from where it sits onward. An insert
-            that shifted the picture but not the captions is the failure this
-            whole module exists to avoid.
-  WORDS     an insert's own captions (`name.srt` beside it, which Anim Studio
-            writes) are carried into the lecture's, shifted to where it plays.
+            move by the insert's length from where it sits onward, so the
+            captions stay in step with the picture.
+  WORDS     an insert's own captions (`name.srt` beside it, as most
+            video tools write) are carried into the lecture's, shifted to where it plays.
 
 `after_slide` is the slide number as the editor shows it: 0 plays before
 slide 1, 12 plays after slide 12.
@@ -100,8 +99,7 @@ def add(pdir: Path, video: Path, after_slide: int, *, title: str = "",
         captions: Path | None = None) -> Insert:
     """Copy `video` into the project and remember where it plays.
 
-    `captions` defaults to a `.srt` with the same name beside the video, which
-    is where Anim Studio writes it.
+    `captions` defaults to a `.srt` with the same name beside the video.
     """
     pdir, video = Path(pdir), Path(video)
     if not video.is_file():
@@ -158,8 +156,8 @@ def check_files(pdir: Path) -> list[Insert]:
     """Every insert's video is where the list says, or a MediaError now.
 
     Called when a render STARTS. The inserts are joined only at the very
-    end, so a missing file used to be found after an hour of recording, and
-    the hour was spent for a render that could not finish.
+    end, so a missing file is caught before the narration is recorded rather
+    than after.
     """
     pdir = Path(pdir)
     items = load(pdir)

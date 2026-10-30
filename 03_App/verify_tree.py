@@ -1,16 +1,14 @@
 """
 Whole-tree verification: `python 03_App/verify_tree.py`
 
-Every check here corresponds to something that actually broke during
-development, which is the only defensible reason for a check to exist. A test
-suite of hypotheticals costs attention and catches nothing.
+Each check guards against a specific kind of breakage:
 
   python syntax          a stray edit in a file nothing imports at startup
   module imports         a helper moved and one caller kept the old path
   ui.html javascript     a single-file UI dies silently on a syntax error
   CLI subcommands        an argument added to the wrong parser
-  design invariants      four adapter factories, three tools resolvers, two
-                         audio players -- each found by a user, not by us
+  design invariants      one adapter factory, one tools resolver, one audio
+                         player, and similar single-owner rules
   launcher references    renamed .bat files leaving dead pointers behind
   archive contents       a zip carrying tools/ would overwrite 3 GB of weights,
                          and an unstamped one cannot say whether it was applied
@@ -30,11 +28,8 @@ def check(label, ok, detail=""):
 #
 # SyntaxWarnings are silenced for the duration. Vendored third-party sources
 # carry regexes written as plain strings -- "\\d" without the r prefix -- and
-# newer Pythons warn about every one. Parsing the tree printed thirty of them,
-# from a file named `<unknown>` because ast.parse was not told what it was
-# reading, and they buried the actual result. A check whose output nobody can
-# read is a check nobody runs. The filename is passed now, so a real
-# SyntaxError still says which file it is in.
+# newer Pythons warn about every one, which buries the result. The filename
+# is passed so a real SyntaxError says which file it is in.
 bad = []
 with warnings.catch_warnings():
     warnings.simplefilter("ignore", SyntaxWarning)
@@ -46,11 +41,11 @@ check(f"python syntax ({len(list(APP.rglob('*.py')))} files)", not bad, "; ".joi
 
 # 2. every realme module imports
 #
-# Under the wrong interpreter this prints forty failures with one cause, and
-# the cause is not in the tree. RealMe lives in a conda environment; a plain
+# Under the wrong interpreter every import fails for one cause that is not
+# in the tree. RealMe lives in a conda environment; a plain
 # `python 03_App\verify_tree.py` from a Windows prompt picks up whatever
-# Python is first on PATH, which on this machine is a bare 3.14 with none of
-# the packages. Say so once, at the top, instead of blaming the code.
+# Python is first on PATH, which may have none of the packages. Say so once,
+# at the top, and stop.
 sys.path.insert(0, str(APP))
 import realme
 from realme.core.env import running_in_realme_env, wrong_interpreter_note
@@ -73,10 +68,9 @@ check("all modules import", not bad, "; ".join(bad[:3]))
 # 2b. every name imported from realme exists -- including inside functions.
 #
 # Importing a module runs its top-level imports, not the ones inside its
-# functions. `mathspeech.default_cache_path` imported `data_home` from
-# `core.paths`, where it has never lived; it ran only when narration held a
-# dollar sign, and a 90-slide lecture died on slide 84, an hour in, at a
-# slide about a budget. Every `from realme.x import y` is resolved here.
+# functions, so an import on a rarely taken path (e.g. only when narration
+# holds a dollar sign) can name something that does not exist and fail late
+# in a render. Every `from realme.x import y` is resolved here.
 unresolved = []
 for f in sorted((APP / "realme").rglob("*.py")):
     try:
@@ -106,9 +100,8 @@ check("every name imported from realme exists", not unresolved,
 
 # 3. the UI's javascript parses
 #
-# `/tmp` is not a path on Windows. This check was written on Linux and had
-# never run on the machine the application ships to -- it did not fail, it
-# raised, and took the rest of the checks with it.
+# The temporary file goes in tempfile.gettempdir(): `/tmp` is not a path on
+# Windows.
 import tempfile
 ui = (APP / "realme/app/ui.html").read_text(encoding="utf-8")
 js = ui[ui.index("<script>") + 8: ui.rindex("</script>")]
@@ -141,15 +134,13 @@ for cmd in sorted(set(sub)):
         bad.append(f"{cmd}({e.__class__.__name__})")
 check(f"CLI subcommands parse ({len(set(sub))})", not bad, "; ".join(bad[:4]))
 
-# 5. invariants that regressed before
+# 5. design invariants
 inv = []
 # The registry agrees with the lists that describe it.
 #
-# This used to be a grep for six engine names typed in here, which meant
-# retiring one failed the check that was supposed to protect the product --
-# and said "registry missing piper+knnvc" about a deliberate removal. Ask the
-# module instead: every engine we develop must be constructible, every one we
-# retired must not be, and no name may sit in two lists.
+# The module is asked directly rather than matched against names typed here:
+# every developed engine must be constructible, every retired one must not
+# be, and no name may sit in two lists.
 try:
     from realme.adapters.tts import (REGISTRY as _REG, DEVELOPED as _DEV,
                                      NOT_DEVELOPED as _ND, RETIRED as _RET)
@@ -173,9 +164,8 @@ if factory_users != 3: inv.append(f"only {factory_users}/3 call sites use the fa
 fac = (APP / "realme/adapters/factory.py").read_text(encoding="utf-8")
 if "ensure_reference_wav" not in fac:
     inv.append("factory does not convert the reference clip")
-# The voice converters were retired in September 2026. Their source is still
-# in the tree, unreferenced; these two guards still apply IF it is there, and
-# say nothing once somebody deletes it.
+# The voice converters are retired; their source may still be in the tree,
+# unreferenced. These two guards apply only while it is there.
 vc_path = APP / "realme/adapters/vc.py"
 if vc_path.is_file():
     vc_src = vc_path.read_text(encoding="utf-8")
@@ -191,7 +181,7 @@ for flag in ("--piper-voice", "--piper-speed", "--vc-topk", "--vc-tau", "--vc-po
         inv.append(f"{flag} is not both declared and strippable")
 if "_take_tuning_flags(argv)" not in cli_all:
     inv.append("tuning flags are not stripped before parsing")
-# the GPU door stays open: all three backends buildable, and recorded
+# all three GPU backends stay buildable, and the build records which one
 cpp_src = (APP / "realme/engines/cpp.py").read_text(encoding="utf-8")
 for flag in ("GGML_CUDA=ON", "GGML_VULKAN=ON", "GGML_METAL=ON"):
     if flag not in cpp_src:
@@ -214,8 +204,7 @@ for text, want in (("Only 15.3 percent were coded. That matters.", 2),
 if re.search(r'name = "piper \(draft voice\)"[\s\S]{0,600}?phoneme_syntax = "espeak"', tts_src):
     inv.append("piper claims espeak phoneme injection again (its map is IPA)")
 # bench must not hand the raw reference back to the adapter per utterance
-# Comments stripped first: this check matched the comment explaining why the
-# call must not do it -- the same false positive the `new Audio(` check had.
+# Comments stripped first, so a comment quoting the pattern does not match.
 bench_src = re.sub(r"^\s*#.*$", "", (APP / "realme/bench.py").read_text(encoding="utf-8"),
                    flags=re.M)
 if "voice=reference" in bench_src:
@@ -229,8 +218,8 @@ for f in APP.rglob("realme/**/*.py"):
     if re.search(r'parents\[\d\]\s*/\s*"tools"', f.read_text(encoding="utf-8")):
         inv.append(f"private tools resolver in {f.name}")
 # one audio player
-# Strip comments before counting: the PLAYER docstring explains the old
-# `new Audio(url).play()` pattern, and matching that text is a false alarm.
+# Strip comments before counting: the PLAYER docstring quotes the
+# `new Audio(url).play()` pattern.
 js_code = re.sub(r"/\*.*?\*/", "", js, flags=re.S)
 js_code = re.sub(r"^\s*//.*$", "", js_code, flags=re.M)
 n_audio = js_code.count("new Audio(")
@@ -243,16 +232,13 @@ if "st_mtime" in pend: inv.append("update check compares mtimes again")
 if "core.build import" not in pend: inv.append("update check does not use core.build")
 # Where a piper voice lives: asked in one place, never reconstructed.
 #
-# Three copies of this existed -- the adapter, the installer, and setup_check --
-# and the third drifted into a working-directory-relative path, so `realme
-# setup` reported a correctly installed piper as missing no matter what the
-# user did. A fourth copy would do the same thing again.
+# Only the adapter and the installer build the path. Any other copy can drift
+# (e.g. into a working-directory-relative path) and report a correctly
+# installed piper voice as missing.
 def _code_only(src: str) -> str:
     """Source with whole-line # comments removed.
 
-    The first version of these two checks scanned raw text and flagged this
-    file's own comments quoting the patterns they forbid -- a linter that
-    fails on its own explanation of the rule.
+    So a comment that quotes a forbidden pattern is not flagged.
     """
     return "\n".join(l for l in src.splitlines()
                       if not l.lstrip().startswith("#"))
@@ -277,12 +263,10 @@ for f in (APP / "realme").rglob("*.py"):
         continue
     src = _code_only(f.read_text(encoding="utf-8", errors="replace"))
     if "def slide_pages" in src:
-        continue          # the resolver may quote the rule it replaces
+        continue          # the resolver may quote the pattern it forbids
     # `.*` and not `[^)]*`: the glob is usually inside a parenthesised
     # expression -- sorted((work / "slides").glob(...)) -- and a character
-    # class excluding ")" stops at the first one and matches nothing. The
-    # first version of this guard was tested by reintroducing the bug it
-    # forbids, and did not fire.
+    # class excluding ")" stops at the first one and matches nothing.
     if re.search(r'sorted\(.*glob\(\s*[\'"]slide-\*\.png', src):
         inv.append(f"lexicographic slide sort in {f.name}")
 
@@ -290,11 +274,9 @@ check("design invariants", not inv, "; ".join(inv[:3]))
 
 # 5a. a name read out of the project's _work folder that nothing ever writes.
 #
-# `old_pdf = work_dir / "deck.pdf"` was read by the revision path for weeks.
-# Nothing has ever written that file. The read sat behind `if is_file()` with a
-# bare `except: pass`, so it produced a list of empty strings, every slide
-# matched nothing, and a lightly edited deck came back as forty brand-new
-# slides -- reported by the user as "almost all slides were changed".
+# A read behind `if is_file()` and a bare `except: pass` fails silently when
+# nothing writes the file: a revision comparing against a missing earlier
+# deck sees every slide as new.
 #
 # _work is built entirely by this codebase, so every name under it must appear
 # somewhere that creates it. Names written by a subprocess rather than by
@@ -311,11 +293,11 @@ _WORK_WRITTEN_ELSEWHERE = {
 #: The writer is `animate.build_animation`. Kept as a prefix list rather than
 #: by loosening the regex: everything that IS a fixed name stays checked.
 _WORK_NAME_PREFIXES = ("scene_",)
-# Functions that produce a file are writers too, and naming them is the point:
-# the alternative is listing their outputs as "written elsewhere", which is how
-# a genuine orphan gets waved through. `animate` added three -- it writes its
-# narration with `write_narration`, its audio with `narrate`, and its silent
-# video with `render`, none of which touch a file handle in that frame.
+# Functions that produce a file are writers too. Naming them keeps the
+# "written elsewhere" list short, so a genuine orphan is not waved through.
+# `animate` writes its narration with `write_narration`, its audio with
+# `narrate`, and its silent video with `render`, none of which touch a file
+# handle in that frame.
 _WRITERS = re.compile(r"write_text|write_bytes|\brename\(|shutil\.move|_sh\.move|"
                       r"shutil\.copy|\.mkdir|json\.dump|\.save\(|rasterize|"
                       r"save_script|deck_to_pdf|deck_texts|render_|"
@@ -342,17 +324,15 @@ check("_work files are written, not just read", not orphans,
 
 # 5c. a small edit on a long slide must not read as "unchanged".
 #
-# The wording test used to be `word-overlap >= 0.95`. Two real decks: a 91-word
-# slide gained "and figures" and swapped "often" for "or supplemental materials
-# also", scored 0.97, and was reported as unchanged -- while genuinely
-# untouched slides of 168 and 131 words were word-for-word identical. The
-# numbers below are those slides, shortened; the shape is what matters.
+# A word-overlap threshold (>= 0.95) alone misses a small edit on a long
+# slide: when most of the added words are already on the slide, overlap
+# barely moves. Untouched slides are word-for-word identical, so any real
+# difference counts.
 try:
     from realme.pipeline.revise import wording_change, text_similarity
-    # Shaped on the real slide that was missed: ~90 distinct words, and an
-    # edit whose added words are mostly already on the slide, so word overlap
-    # barely moves. That is what makes a small edit invisible to an overlap
-    # score -- not the number of words changed, but how few of them are new.
+    # ~90 distinct words, and an edit whose added words are mostly already on
+    # the slide, so word overlap barely moves. What hides a small edit from an
+    # overlap score is how few of the changed words are new.
     body = " ".join(["and", "figures", "or", "often"]
                     + [f"term{i}" for i in range(86)])
     before = body + " often"
@@ -378,12 +358,10 @@ except Exception as e:
 
 # 5b. the three narration lengths must produce three different lectures.
 #
-# They did not. Only a ceiling reached the model -- 163, 256 or 350 words --
-# and nothing said where an ORDINARY slide should land, so every setting came
-# back at about a hundred words a slide and the dropdown was decorative. This
-# also catches the mechanical half: LECTURE_SYSTEM gained placeholders that two
-# call sites must both supply, and a missing one is a KeyError that kills every
-# draft rather than a prompt that reads slightly worse.
+# A ceiling alone does not say where an ORDINARY slide should land, so each
+# setting has its own typical band; the bands must differ and increase. This
+# also checks that every LECTURE_SYSTEM placeholder is supplied: two call
+# sites fill them, and a missing one is a KeyError that kills every draft.
 try:
     from realme.adapters.script_writer import (LECTURE_SYSTEM, length_bands,
                                                WORDS_PER_MINUTE)
@@ -406,12 +384,11 @@ except Exception as e:
 
 # 5d. the lecture must not acquire an emotion vector by accident.
 #
-# `set_expression` is additive and inert, and the whole claim that this is safe
-# to ship rests on two things: the default is None, and the shifted buffer is a
-# NEW one. The second was written wrong once in a draft -- writing into the
-# cached embedding makes every later utterance in the process carry whatever
-# the last turn asked for, which sounds like the engine drifting rather than
-# like a bug. Neither is visible in a lecture render until it is too late.
+# `set_expression` is additive and inert because of two things: the default
+# is None, and the shifted buffer is a NEW one. Writing into the cached
+# embedding would make every later utterance in the process carry whatever
+# the last turn asked for, which sounds like engine drift rather than a bug
+# and is not visible in a lecture render.
 try:
     src = (APP / "realme/adapters/tts_qwen3_dll.py").read_text(encoding="utf-8")
     if "self._expression = None" not in src:
@@ -429,8 +406,8 @@ try:
         raise ValueError("synthesize no longer routes through _shifted")
     # The lecture and narration paths must not touch the exploratory package
     # at all. Dialogue may -- `casting.with_registers` wires registers in on
-    # purpose, guarded -- but a lecture wants plain, calm and clear, and any
-    # drift from the enrolled timbre there is a defect rather than animation.
+    # purpose, guarded -- but a lecture stays plain, and any drift from the
+    # enrolled timbre there is a defect.
     for mod in ("pipeline/lecture.py", "pipeline/narrate.py"):
         f = APP / "realme" / mod
         if f.is_file() and "realme.expressive" in f.read_text(encoding="utf-8"):
@@ -441,13 +418,9 @@ except Exception as e:
 
 # 5e. text written to disk must name its encoding.
 #
-# `Path.write_text(x)` uses the platform default, which on Windows is cp1252.
-# A deck containing an arrow, an en dash, a curly quote or a Greek letter --
-# none of which are unusual in an academic slide -- crashed the render at the
-# moment the manifest was written, after all the drafting work was done.
-#
-# Fixed in forty places, which makes the forty-first the real risk. Checked
-# across the whole package rather than the files that happened to break.
+# `Path.write_text(x)` uses the platform default, which on Windows is cp1252,
+# and fails on an arrow, an en dash, a curly quote or a Greek letter -- all
+# common in academic slides. Checked across the whole package.
 try:
     bad = []
     for f in (APP / "realme").rglob("*.py"):
@@ -465,12 +438,9 @@ except Exception as e:
 # 5f. a Windows path inside an ordinary string literal must double its
 # backslashes.
 #
-# The README written into every update package contained
-# `RealMe\\00_Windows\\1_Install.bat`, spelled with single backslashes in a
-# plain triple-quoted string. Python read `\\0` as a NUL and `\\1` as a
-# control character, so the instruction a new user was handed had no path in
-# it at all. `profile\\baked_assets` lost a character to a backspace and
-# `tools\\vc` to a vertical tab, which split a line in two.
+# Spelled with single backslashes in a plain string, `RealMe\\00_Windows`
+# holds a NUL, `profile\\baked_assets` a backspace and `tools\\vc` a
+# vertical tab, so the path is silently corrupted.
 #
 # Python warns about `\\q` but not about `\\0`, `\\b` or `\\v`, so the
 # compiler cannot be relied on here. Checked on the value, not the source:
@@ -499,15 +469,14 @@ except Exception as e:
 
 # 5g. a paid take must not depend on anything free.
 #
-# The hosted engine charges per sentence, so what its cache holds has to be
-# the thing that cost money and nothing else. The measured pace correction was
-# baked into the take by `synthesize` and folded into `voice_fingerprint`, so
-# re-measuring it -- a free ffmpeg factor -- invalidated every utterance in
-# every project. One corrected number cost a whole guide video to re-render.
+# The hosted engine charges per sentence, so its cache must hold the paid
+# take and nothing else. The measured pace correction is a free ffmpeg
+# factor; if `synthesize` baked it into the take or `voice_fingerprint`
+# included it, re-measuring the pace would invalidate every paid utterance in
+# every project.
 #
-# The stretch now happens in `speak.apply_timing`, cached under its own key.
-# Checked structurally because the easy mistake is to "simplify" it back into
-# the adapter, where it would look tidier and quietly cost money again.
+# The stretch happens in `speak.apply_timing`, cached under its own key.
+# Checked structurally so that it stays out of the adapter.
 try:
     import ast as _ast
     src = (APP / "realme" / "adapters" / "tts_gemini.py").read_text(encoding="utf-8")
@@ -572,15 +541,11 @@ win = ROOT / "00_Windows"
 present = {p.name for p in win.iterdir()}
 missing = set()
 for bat in win.glob("*.bat"):
-    # `[%~dp0]*` was a CHARACTER CLASS, not an optional literal prefix, so it
-    # ate the leading digit of any reference to a `0_*.bat`: a mention of
-    # 0_Update.bat was read as "_Update.bat" and reported missing. The prefix
-    # does not need matching at all -- only the filename does.
     # `%~dp0` is literal text in the file, so it has to be consumed by the
-    # pattern rather than matched as a character class (which ate the leading
-    # digit of `0_Update.bat`) or left to \b (which then captured
-    # `dp0_env.bat`). findall takes the leftmost match, so the optional
-    # prefix wins wherever it is present.
+    # pattern as an optional literal prefix, not matched as a character class
+    # (which would eat the leading digit of `0_Update.bat`) or left to \b
+    # (which would capture `dp0_env.bat`). findall takes the leftmost match,
+    # so the optional prefix wins wherever it is present.
     for ref in re.findall(r'(?:%~dp0)?([0-9A-Za-z_]+\.bat)',
                           bat.read_text(encoding="utf-8", errors="ignore")):
         # start_server.bat is the voice server's own launcher, in the folder
@@ -597,9 +562,8 @@ check(f"launcher cross-references ({len(present)} files)", not missing, "; ".joi
 # first `)` it meets ends the block -- even inside an echo. So
 # `echo  The dry run failed (exit=!RC!). Nothing was written.` inside an
 # `if` closes the block at `!RC!)` and dies on ". was unexpected at this
-# time." -- printed in place of the message, on the run that had just
-# failed. 7_Make_Migration_Package.bat shipped with exactly that. Escape
-# it as ^) or leave the parentheses out.
+# time." in place of the message. Escape it as ^) or leave the parentheses
+# out.
 paren = []
 for bat in sorted(win.glob("*.bat")) + sorted(ROOT.glob("*.bat")):
     depth = 0
@@ -620,8 +584,7 @@ check("no bare ) inside a batch block", not paren, "; ".join(paren[:4]))
 # The same parse, from the other side. cmd expands %VAR% and %~dp0 when it
 # reads the WHOLE block, before running any of it, so a path containing `)`
 # -- C:\Users\x\Documents (work)\RealMe -- closes the block in the middle of
-# the path and the rest is a syntax error. `echo  Expected: %CD%\...` inside
-# an `if (...)` in 0_Update.bat did exactly that. Inside a block, a path is
+# the path and the rest is a syntax error. Inside a block, a path is
 # read with delayed expansion (!VAR!), which happens after parsing, or the
 # work is moved out of the block with goto. Checked in every do/if/else
 # block and in one-line `( ... )` groups. A FOR's own `in (...)` list is
@@ -707,8 +670,8 @@ check("!VAR! only with delayed expansion, and no stray ! in echo text",
 
 # 6a4. pasted paths: quotes stripped in a way that survives `)`
 #
-# Explorer's "Copy as path" wraps the path in quotes. The old idiom,
-# `for /f "tokens=* delims=" %%A in ("%SRC%") do set "SRC=%%~A"`, wraps a
+# Explorer's "Copy as path" wraps the path in quotes. The idiom
+# `for /f "tokens=* delims=" %%A in ("%SRC%") do set "SRC=%%~A"` wraps a
 # quoted value in a second pair of quotes, which UNquotes the middle -- so
 # a pasted "C:\x (work)\y" ends the for-list at `(work)`. Every prompt for
 # a folder or path removes quotes with `set "V=!V:"=!"` instead.
@@ -727,9 +690,9 @@ check("pasted paths have their quotes stripped safely", not _paste,
 # 6a5. 0_Update.bat does not overwrite the file it is running from
 #
 # cmd reads a .bat a line at a time, from a byte offset, as it runs. The
-# update zip carries 00_Windows\0_Update.bat, so extracting it replaced the
-# running script, and whatever followed was read from the middle of the new
-# file. The script copies itself to %TEMP% and hands over to that copy
+# update zip carries 00_Windows\0_Update.bat, so extracting it replaces the
+# running script, and whatever follows would be read from the middle of the
+# new file. The script copies itself to %TEMP% and hands over to that copy
 # before anything is extracted; the copy must not use %~dp0, which there is
 # %TEMP%.
 _up = _btext.get("0_Update.bat", "")
@@ -783,12 +746,9 @@ check("no path pasted into a PowerShell string", not _psq, "; ".join(_psq[:4]))
 
 # 6b. a test must not depend on the working directory
 #
-# `t_render.py` read `Path("realme/app/ui.html")`, which is only that file
-# when the shell happens to be sitting in 03_App. Run from the project root --
-# which is where the docs tell you to stand -- it died on FileNotFoundError
-# after twenty minutes of passing checks. This file always anchored on
-# __file__; the suites did not, so the rule is now checked rather than
-# remembered.
+# `Path("realme/app/ui.html")` is only that file when the shell is in
+# 03_App; run from the project root, where the docs say to stand, it raises
+# FileNotFoundError. Tests anchor on __file__, and this checks that they do.
 cwd_bound = []
 for t in sorted(APP.glob("t_*.py")) + [APP / "verify_tree.py"]:
     try:
@@ -812,13 +772,11 @@ check("tests do not depend on the working directory", not cwd_bound,
 
 # 6c. a test must not read the real installation
 #
-# Twice now a suite has passed in a clean sandbox and failed on a working
-# machine. `t_pace` measured against the instructor's own profile (because
-# `measured_speed` reads `data_home()` off disk) and `t_migrate` packaged his
-# own engine folder (because `collect` resolves the payload with
-# `find_tool`). Both read the environment at call time, so a suite that does
-# not redirect REALME_HOME and REALME_TOOLS is testing whatever happens to be
-# installed -- and reporting it as a product failure.
+# `measured_speed` reads `data_home()` off disk and `collect` resolves the
+# payload with `find_tool`, both from the environment at call time. A suite
+# that does not redirect REALME_HOME and REALME_TOOLS tests whatever happens
+# to be installed, and can pass in a clean sandbox but fail on a working
+# machine.
 leaky = []
 for t in sorted(APP.glob("t_*.py")):
     src = t.read_text(encoding="utf-8")
@@ -831,14 +789,13 @@ for t in sorted(APP.glob("t_*.py")):
     touches = any(w in src for w in (
         "data_home", "Profile(", "find_tool", "tools_search", "guest_speed",
         "migrate", "setup_check", "REALME_HOME", "piper_home"))
-    # A second way in, and the one that got through. `core.env.candidates()`
-    # reads four paths and only ONE of them lives under REALME_HOME; another
-    # is `Path.home()/"RealMeStudio"/".env"`, which on a real installation
-    # holds a real API key. A suite that redirected REALME_HOME and nothing
-    # else therefore read the user's actual key -- so four checks that assert
-    # "with no key anywhere, this fails" passed on a clean machine and failed
-    # on the one that had the key. `Path.home()` resolves through USERPROFILE
-    # on Windows and HOME elsewhere, so both have to be redirected.
+    # A second way in. `core.env.candidates()` reads four paths and only ONE
+    # of them lives under REALME_HOME; another is
+    # `Path.home()/"RealMeStudio"/".env"`, which on a real installation holds
+    # a real API key. A suite that redirects only REALME_HOME can read the
+    # user's actual key, and a "with no key anywhere, this fails" check then
+    # fails on that machine. `Path.home()` resolves through USERPROFILE on
+    # Windows and HOME elsewhere, so both have to be redirected.
     reads_env = any(w in src for w in (
         "GEMINI_API_KEY", "api_key(", "core.env", "candidates(",
         "env.load", "ELEVENLABS_API_KEY"))
@@ -863,6 +820,34 @@ for t in sorted(APP.glob("t_*.py")):
 check("tests do not read the real installation", not leaky,
       "; ".join(leaky[:4]))
 
+# 6b. nothing shipped comes from `_Private/` or `_Archive/`, or mentions a
+# private name. `_Private/private_terms.txt` (one term per line, # for
+# comments) lists names that must not appear in shipped files; each shipped
+# text file is searched for them, case-insensitively. On a copy without
+# `_Private/` only the first check applies.
+from realme.core.build import shipped_files
+shipped = shipped_files(ROOT)
+check("nothing shipped comes from _Private or _Archive",
+      not [r for r in shipped if {"_Private", "_Archive"} & set(r.parts)])
+terms_file = ROOT / "_Private" / "private_terms.txt"
+if terms_file.is_file():
+    terms = [t.strip() for t in terms_file.read_text(encoding="utf-8").splitlines()
+             if t.strip() and not t.lstrip().startswith("#")]
+    hits = []
+    for rel in shipped:
+        if rel.suffix.lower() not in {".md", ".txt", ".bat", ".py", ".html", ".json", ".sh"}:
+            continue
+        if "qwen3cpp" in rel.parts:                # vendored upstream, untouched
+            continue
+        try:
+            text = (ROOT / rel).read_text(encoding="utf-8", errors="replace").lower()
+        except OSError:
+            continue
+        hits += [f"{rel.as_posix()}: {t}" for t in terms if t.lower() in text]
+    check("shipped files mention none of our private names", not hits, "; ".join(hits[:4]))
+else:
+    print("  [--  ] no _Private/private_terms.txt here to check against")
+
 # 7. the shipped archive must never carry tools/
 zf = ROOT / "RealMe_Update.zip"
 import zipfile
@@ -870,7 +855,7 @@ if zf.is_file():
     names = zipfile.ZipFile(zf).namelist()
     tools = [n for n in names if re.search(r"(^|/)tools/", n)]
     check("archive carries no tools/", not tools, str(tools[:2]))
-    # 7b. and it must be stamped, or "is this applied?" falls back to guessing
+    # 7b. and it must carry a BUILD_ID, so whether it was applied can be told
     from realme.core.build import STAMP_REL, archive_id, update_pending
     check("archive carries a BUILD_ID", archive_id(zf) is not None, STAMP_REL)
     print("  [--  ] update state: " + update_pending(ROOT)[1])

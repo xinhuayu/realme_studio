@@ -3,9 +3,9 @@ The gate every line of narration passes through before synthesis.
 
     raw script -> normalize -> lint -> lexicon injection -> engine
 
-Nothing reaches a TTS engine without going through `prepare_for_speech`. That
-is the whole point: the engines' own front-ends fail silently and differently,
-so the pipeline never relies on them.
+Nothing reaches a TTS engine without going through `prepare_for_speech`: the
+engines' own front-ends fail silently and differently, so the pipeline never
+relies on them.
 """
 from __future__ import annotations
 import re
@@ -30,7 +30,7 @@ class PreparedText:
 
 
 # Terms the phonemizer is known to mangle in ways a reader would not predict.
-# The linter suggests, it does not rewrite - silent rewriting is the disease.
+# The linter suggests, it does not rewrite: nothing is changed silently.
 def lint(text: str, lexicon: Lexicon) -> list[str]:
     """
     Flag risky tokens BEFORE any audio is made.
@@ -92,8 +92,8 @@ def speak_currency(text: str) -> str:
 def _currency_outside_math(text: str) -> str:
     """`speak_currency` on everything except the `$...$` spans that are math.
 
-    Left to the normaliser, "$150,000" became "dollars 150000" -- the symbol
-    read where it stands, before the number it belongs after.
+    Left to the normaliser, "$150,000" would become "dollars 150000" -- the
+    symbol read where it stands, before the number it belongs after.
     """
     from realme.text.mathspeech import dollar_math_spans
     parts, last = [], 0
@@ -145,14 +145,9 @@ def prepare_for_speech(text: str, engine: str,
         warnings.append("spelled out as letters: " + ", ".join(spelled)
                         + " (add a lexicon entry to say one differently)")
     engine_text, used = lx.apply(spoken_text, engine)
-    # Lint the text the ENGINE receives, not the text the author wrote.
-    #
-    # It used to run on the normalised text, before the speller and the
-    # lexicon had touched it, and so warned "'ETS': read as a word, add a
-    # lexicon entry" about a term the very next line spelled correctly, and
-    # about NHANES, which is meant to be said as a word. Both complaints were
-    # about work already done. A lint that reports non-problems is worse than
-    # no lint, because it trains you to skip the ones that are real.
+    # Lint the text the ENGINE receives, not the text the author wrote, so
+    # terms the speller or the lexicon have already handled (e.g. ETS spelled
+    # out, NHANES said as a word) are not flagged.
     warnings += lint(engine_text, lx)
     return PreparedText(raw=text, normalized=report.normalized,
                         engine_text=engine_text, engine=engine,

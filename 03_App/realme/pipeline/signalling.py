@@ -1,14 +1,11 @@
 """
 Synchronised signalling: showing the listener where to look, when.
 
-The pedagogical case for this is stronger than the case for a talking head.
 The signalling principle in multimedia learning says that cueing the relevant
-region while it is being discussed improves learning; there is no comparable
-evidence that a face in the corner of a slide does. And unlike an avatar this
-costs no GPU, no model licence and no uncanny valley in the middle of a
-derivation.
+region while it is being discussed improves learning. Unlike an avatar, this
+needs no GPU and no model licence.
 
-Two halves, and both are exact rather than guessed:
+Two halves, both measured rather than guessed:
 
   WHERE   pdfplumber gives the real bounding box of every word in the deck's
           text layer. We are not asking a model to estimate coordinates -- we
@@ -20,8 +17,8 @@ Two halves, and both are exact rather than guessed:
           approximation, but a bounded one: utterances are capped at ~20s, and
           speech rate is near-uniform within a single breath group, so the
           error is a few hundred milliseconds on a cue that stays up for
-          several seconds. Good enough, and free. `align_words()` is the hook
-          for a real forced aligner if you ever want tighter timing.
+          several seconds. `align_words()` is the hook for a real forced
+          aligner if tighter timing is needed.
 """
 from __future__ import annotations
 import re
@@ -104,9 +101,8 @@ def visual_slides(pdf: Path) -> set[int]:
     """
     Pages carrying a diagram rather than prose.
 
-    These get no cues from the text layer -- there is nothing to match against.
-    Reporting them is better than silently producing nothing, because "no cues
-    on slide 7" is actionable and an empty result is not.
+    These get no cues from the text layer -- there is nothing to match against
+    -- so they are reported by number rather than silently left without cues.
     """
     from realme.pipeline import pdfdoc
     return {p.index for p in pdfdoc.read_pages(pdf) if p.is_visual}
@@ -145,10 +141,8 @@ def candidate_phrases(words: list[Word], *, max_len: int = 5,
     carrying at least one content word. Longer phrases first, so a specific
     match wins over a generic one.
 
-    Title lines are excluded. Highlighting the slide's own title while the
-    narrator reads the slide's own title is signal with no information in it --
-    the listener already knows where the title is, and a cue that fires on
-    something obvious trains them to ignore the next one.
+    Title lines are excluded: the listener already knows where the title is,
+    and cues on the obvious teach them to ignore cues.
     """
     out: list[tuple[int, str]] = []
     by_line: dict[int, list[Word]] = {}
@@ -241,8 +235,7 @@ def auto_cues(narration: str, words: list[Word], *, max_cues: int = 6,
     slide and in the narration, and point at them when they are said.
 
     Deterministic, free, and it degrades to "no cues" rather than to "wrong
-    cues" -- which is the right failure direction for something overlaid on
-    a lecture. An LLM can supply richer cues; this is the floor, not the ceiling.
+    cues". An LLM can supply richer cues; this is the baseline.
     """
     hay = _haystack(narration)
     hits: list[tuple[str, Box, int]] = []

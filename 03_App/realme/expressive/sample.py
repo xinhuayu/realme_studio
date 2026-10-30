@@ -4,16 +4,15 @@ without a model call.
 
 Written by hand rather than generated, because the question under test is
 whether a KNOWN stance produces an audible difference. A generated script
-would confound the prosody with whatever the writer happened to say that run,
-and no amount of repetition would separate them afterwards.
+would confound the prosody with whatever the writer happened to say that run.
 
 The stances are deliberately adjacent and contrasting -- a press answered by a
 concession, a question answered by a qualification -- because the claim being
 tested is about contrast BETWEEN neighbouring turns, and a script that never
 changes stance cannot show it either way.
 
-The content is epidemiological and real enough to argue about; a conversation
-about nothing is delivered like a conversation about nothing.
+The content is an epidemiological argument, so the turns have something to
+be delivered with conviction.
 """
 from __future__ import annotations
 

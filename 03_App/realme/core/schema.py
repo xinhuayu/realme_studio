@@ -13,8 +13,7 @@ class Prosody(BaseModel):
     #: burst. Three seconds also gives a viewer time to take the slide in.
     lead_in_s: float = Field(3.0, ge=0.0, le=60.0)
     #: Silence after the last word, before the slide changes. Speech ending and
-    #: the slide flipping at the same instant feels rushed; the pause is where
-    #: a real lecturer lets a point land. Override per slide, or with
+    #: the slide flipping at the same instant feels rushed. Override per slide, or with
     #: [[pause:400ms]] inside the narration for finer control.
     pause_after_s: float = Field(3.0, ge=0.0, le=60.0)
 
@@ -30,11 +29,10 @@ class Segment(BaseModel):
     #: (offset_from_speech_start, duration, text) per synthesized utterance.
     #: Captions are built from THIS, not from spoken_text, so that control
     #: markers never appear on screen and masked words never leak into the
-    #: subtitles — masking the audio while captioning the words would defeat
-    #: the whole point of it.
+    #: subtitles.
     spoken_cues: list[tuple[float, float, str]] = []
     #: Phrases the AUTHOR wants pointed at on this slide, in their own words.
-    #: Empty means "derive them", which is what always happened before. A cue
+    #: Empty means "derive them". A cue
     #: needs a place on the slide and a moment in the narration; these are
     #: checked when the deck renders, and a phrase that fails either is
     #: reported rather than silently dropped.
@@ -49,8 +47,8 @@ class Segment(BaseModel):
     revision: str = ""
     #: Whether this slide's frame should be made again. A revision sets it
     #: from what actually differs; the editor lets a person overrule that,
-    #: because "the logo moved" and "the figure is wrong" look identical to a
-    #: comparison and not at all alike to the person who made the change.
+    #: because a comparison cannot tell "the logo moved" from "the figure is
+    #: wrong".
     #:
     #: Unticked with a recorded `slide_digest`, the render deliberately keys
     #: the cache on the OLD picture, so the previous frame and its audio come
@@ -74,8 +72,8 @@ class Manifest(BaseModel):
     script_source: str = "unknown"
     #: What the drafting call cost, in dollars, when a paid model wrote it.
     #: Carried on the manifest rather than recomputed at render time because
-    #: drafting and rendering are separate steps, often days apart, and the
-    #: only place that knows what the draft cost is the step that paid for it.
+    #: drafting and rendering are separate steps, often days apart, and only
+    #: the drafting step knows what the draft cost.
     draft_cost_usd: Optional[float] = None
     segments: list[Segment]
 

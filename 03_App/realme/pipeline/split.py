@@ -1,30 +1,25 @@
 """
 Cutting a finished lecture into parts, at slide boundaries.
 
-A thirty-slide lecture is one file because that is how it was rendered, not
-because that is how anyone wants to watch it. Splitting it into sections is a
-five-minute job in a video editor and a lifetime of nudging the playhead,
-because the thing you want -- "start part two where slide twenty-one appears"
--- is not visible in the waveform.
+A lecture is rendered as one file. Splitting it into sections in a video
+editor is fiddly, because "start part two where slide twenty-one appears" is
+not visible in the waveform.
 
-It does not have to be. Every render already writes `<name>_segments.json`
-beside the video, and every slide in it carries a `start_s` measured by ffprobe
-at the moment it was assembled. The beginning of slide 21 is a lookup. Nothing
-here estimates anything.
+Every render writes `<name>_segments.json` beside the video, and every slide
+in it carries a `start_s` measured by ffprobe when it was assembled. The
+beginning of slide 21 is a lookup. Nothing here estimates anything.
 
 COPY WHERE IT IS EXACT, RE-ENCODE WHERE IT IS NOT.
 
 `-c copy` can only cut at a keyframe. Cutting a general video that way
 silently moves the boundary back to wherever the last keyframe happened to be,
-which is how a "precise" split gains the tail of the previous section -- so the
-obvious rule is to re-encode everything, and that was this module's first
-version.
+so the part gains the tail of the previous section.
 
-Measuring it said otherwise. A RealMe master is assembled by
-`compose.concat`, which is a `-c copy` concat of one mp4 per slide, so every
-slide boundary in it IS a keyframe. At exactly the points this tool cuts, a
-stream copy is not approximate at all: it is exact, lossless, and roughly two
-orders of magnitude faster than re-encoding a forty-minute lecture.
+But a RealMe master is assembled by `compose.concat`, which is a `-c copy`
+concat of one mp4 per slide, so every slide boundary in it IS a keyframe. At
+exactly the points this tool cuts, a stream copy is exact, lossless, and
+roughly two orders of magnitude faster than re-encoding a forty-minute
+lecture.
 
 So the default is `auto`: copy, measure where it actually landed, and re-encode
 only that part if the boundary moved. A video that has been through another
@@ -47,23 +42,20 @@ from realme.core.media import duration_of
 #: called out, in seconds. Re-encoding lands within a frame or two; a third of
 #: a second means something moved that should not have.
 #:
-#: This does NOT decide whether a stream copy landed correctly, though an
-#: earlier version tried to use it that way. Asked for a start and a duration,
-#: ffmpeg snaps the start back to the previous keyframe and still honours the
-#: duration -- so a copy that begins in the wrong slide comes out exactly the
-#: right length. The test passed and the part opened on the previous slide.
-#: Where a copy may be used is settled by `keyframe_times` before cutting,
-#: not inferred from the result afterwards.
+#: This does NOT decide whether a stream copy landed correctly. Asked for a
+#: start and a duration, ffmpeg snaps the start back to the previous keyframe
+#: and still honours the duration -- so a copy that begins in the wrong slide
+#: comes out exactly the right length. Where a copy may be used is settled by
+#: `keyframe_times` before cutting, not inferred from the result afterwards.
 DRIFT_TOLERANCE_S = 0.35
 
 #: How far from a cut point a keyframe may sit and still be used, in seconds:
 #: (earliest, latest) relative to the requested time.
 #:
-#: Asymmetric on purpose, and this is the whole reason the window is not a
-#: single tolerance. A keyframe slightly LATE costs a few milliseconds off the
-#: front of the slide's own lead-in pause, which nobody can see. A keyframe
-#: slightly EARLY shows a flash of the PREVIOUS slide, which everybody can. So
-#: late is cheap and early is nearly forbidden.
+#: Asymmetric on purpose. A keyframe slightly LATE costs a few milliseconds
+#: off the front of the slide's own lead-in pause, which is invisible. A
+#: keyframe slightly EARLY shows a flash of the PREVIOUS slide. So late is
+#: cheap and early is nearly forbidden.
 #:
 #: The late figure is not arbitrary: a master concatenated by `compose.concat`
 #: carries a constant ~23 ms offset from the audio encoder's priming delay, so
@@ -78,8 +70,8 @@ KEYFRAME_WINDOW_S = (-0.05, 0.20)
 MODES = ("auto", "copy", "encode")
 
 #: Characters Windows will not accept in a file name, plus the ones that make
-#: a shell line ambiguous. Replaced rather than rejected: a section called
-#: "Bias: what to do" is a perfectly good title and a terrible file name.
+#: a shell line ambiguous. Replaced rather than rejected: "Bias: what to do"
+#: is a valid title but not a valid file name.
 _UNSAFE = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
 
 
@@ -142,8 +134,7 @@ def load_cuts(segments_json: Path) -> tuple[list[dict], dict]:
     """The per-slide cut list, and the render settings beside it.
 
     Cut times come from the same sidecar `splice` reads, and its guard is
-    reused so an unrelated JSON gets one explanation rather than two different
-    ones depending on which feature you reached first.
+    reused so an unrelated JSON gets the same explanation from both.
     """
     from realme.pipeline.splice import read_segments
     segs, render = read_segments(Path(segments_json))       # validates
@@ -199,7 +190,7 @@ def plan(cuts: list[dict], starts: list[int], titles=None,
             stop = max(by_slide[end_slide]["end_s"], total_s or 0.0)
         # And the first part starts where the VIDEO starts, not where its
         # first slide does: a video inserted before slide 1 plays before
-        # that, and starting at the slide left it in no part at all.
+        # that, and would otherwise be in no part at all.
         start = 0.0 if i == 0 else by_slide[begin]["start_s"]
         part = Part(index=i + 1, title=title or default,
                     first_slide=begin, last_slide=end_slide,
@@ -215,15 +206,12 @@ def to_projects(video: Path, p: SplitPlan, outdir: Path, source_project: Path,
     """Make each part a project of its own: slides, notes, captions, a deck.
 
     The counterpart of what a join does. A part that is only a video and a
-    caption file cannot be opened, corrected or re-recorded -- and splitting a
-    lecture into sections is usually the first step of working on the sections,
-    not the last step of anything.
+    caption file cannot be opened, corrected or re-recorded.
 
     Each part moves out of the parts folder into its own project directory,
     taking its captions and cut list with it, and is then assembled from the
     slides it covers. A part that cannot be assembled keeps its files and is
-    reported; the others are unaffected, because one awkward section should not
-    cost you the rest.
+    reported; the others are unaffected.
     """
     import shutil
     from realme.pipeline.assemble import assemble, Source
@@ -262,10 +250,8 @@ def to_projects(video: Path, p: SplitPlan, outdir: Path, source_project: Path,
             # and it is what makes a rejoin restore the original numbering. But
             # the moment it becomes a project in its own right, its manifest
             # and its slide images are renumbered from 1, and a cut list still
-            # saying "slides 3 and 4" contradicts them. It did: merging a part
-            # back reported its own slides missing, because the cut list asked
-            # for pictures numbered 3 and 4 in a project whose pictures are 1
-            # and 2. The original number is kept as provenance, not as an
+            # saying "slides 3 and 4" would ask for pictures that do not
+            # exist. The original number is kept as provenance, not as an
             # index.
             try:
                 data = json.loads(read_text(dest_cut))
@@ -303,7 +289,7 @@ def _secs(h, m, s, ms) -> float:
 
 def _stamp(t: float) -> str:
     # One formatter for every SRT stamp: rounding the milliseconds on their
-    # own printed ",1000" whenever they rounded up.
+    # own would print ",1000" whenever they rounded up.
     from realme.pipeline.captions import _ts
     return _ts(t, ",")
 
@@ -312,8 +298,7 @@ def slice_srt(srt: Path, start_s: float, end_s: float, out: Path) -> Path | None
     """The captions belonging to one part, rebased to start at zero.
 
     Sliced from the finished .srt rather than rebuilt from the manifest, on
-    purpose: someone splitting a video a year later has the file and not
-    necessarily the project it came from.
+    purpose: the video and its captions may outlive the project.
 
     A cue straddling a boundary is kept by the part that holds its START and
     clipped there, so a sentence spoken across the join appears once rather
@@ -351,8 +336,8 @@ def keyframe_times(video: Path) -> list[float]:
 
     One ffprobe pass with `-skip_frame nokey`, which demuxes without decoding
     the frames in between, so it is quick even on a long lecture. Asking the
-    file directly is the only way to know where a stream copy can begin;
-    everything else is a guess that is right until it is not.
+    file directly is the only reliable way to know where a stream copy can
+    begin.
     """
     import subprocess
     from realme.core.media import require
@@ -377,9 +362,8 @@ def snap_to_keyframe(t: float, keys: list[float]) -> float | None:
     """The keyframe a copy may start from for a cut at `t`, or None.
 
     Returns the keyframe itself rather than `t`, so the cut is made exactly
-    where the copy would land anyway -- asking ffmpeg for a time it cannot
-    honour and letting it decide is how the boundary moves without anyone
-    being told.
+    where the copy would land anyway, rather than ffmpeg silently moving a
+    time it cannot honour.
     """
     lo, hi = KEYFRAME_WINDOW_S
     inside = [k for k in keys if lo <= (k - t) <= hi]
@@ -449,8 +433,8 @@ def execute(video: Path, p: SplitPlan, outdir: Path, *, srt: Path | None = None,
             part.how = "copy"
             drift = _measure(part, dest)
         elif mode == "copy":
-            # Asked for, so done -- and said plainly, because the boundary will
-            # be wrong and nothing else would reveal it.
+            # Asked for, so done -- and logged, because the boundary will be
+            # wrong and nothing else would reveal it.
             copy_cut(video, part.start_s, part.planned_s, dest)
             part.how = "copy"
             drift = _measure(part, dest)

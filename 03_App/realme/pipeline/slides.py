@@ -17,13 +17,10 @@ from realme.pipeline import pdfdoc
 def _missing_deck(src: Path) -> str:
     """Why a deck path did not resolve, in terms of what to do about it.
 
-    A relative path and the wrong working directory is the ordinary way to get
-    here, and it used to surface as `pymupdf.FileNotFoundError: no such file:
-    'RealMe_Guide_narrated_v2.pdf'` five frames down -- after the preflight
-    had run, and naming only the half of the problem the reader already knew.
-    The directory is the missing half, so this names it, and looks one level
-    up and one level down for a file of the same name, because when that
-    search finds something it has found the actual mistake.
+    A relative path and the wrong working directory is the usual cause, so
+    this names the directory searched, and looks one level up and one level
+    down for a file of the same name, since a match there is most likely the
+    intended file.
     """
     here = Path.cwd()
     said = [f"No deck at {src}"]
@@ -58,7 +55,7 @@ def require_deck(src) -> Path:
     A function rather than a line inside `deck_to_pdf`, so that a caller with
     expensive work ahead of it can ask first: `write_script` runs the
     writer's preflight -- a network round trip for a hosted engine -- before
-    it touches the deck, and failing after that is a wait for nothing.
+    it touches the deck, so a missing deck is caught before that.
     """
     src = Path(src)
     if not src.is_file():
@@ -140,12 +137,9 @@ def deck_texts(deck: Path, workdir: Path) -> list[str]:
     """
     The text of every page of a deck, in page order.
 
-    Exists because the revision path used to read this from `_work/deck.pdf` --
-    a file nothing has ever written. The read was wrapped in a bare `except:
-    pass` and guarded by `is_file()`, so it silently produced a list of empty
-    strings, every slide matched nothing, and a lightly edited deck came back
-    as forty brand-new slides. There is now exactly one way to ask a deck what
-    it says, and it raises instead of shrugging.
+    The one way to ask a deck what it says. It raises on failure rather than
+    returning empty strings, which would make every slide of a revised deck
+    look new.
     """
     deck, workdir = Path(deck), Path(workdir)
     if not deck.is_file():
@@ -172,9 +166,8 @@ class SlideContent:
         if self.on_slide_text:
             parts.append(f"On-slide text:\n{self.on_slide_text}")
         if self.speaker_notes:
-            # Notes come first in the model's attention for a reason: they are
-            # what the instructor meant to say, whereas the on-slide text is
-            # only what the audience can already read.
+            # Notes come first: they are what the instructor meant to say,
+            # whereas the on-slide text is what the audience can already read.
             parts.insert(0, f"INSTRUCTOR'S SPEAKER NOTES (follow these closely):\n"
                             f"{self.speaker_notes}")
         return "\n\n".join(parts) or "(no text on this slide)"
@@ -192,12 +185,10 @@ def _presentation(pptx: Path):
     """
     Open a .pptx, or say plainly why not.
 
-    This used to `return []` on ImportError. That is the worst possible
-    handling for this particular dependency: notes are the whole reason to
-    prefer .pptx over .pdf, so losing them silently means the model narrates
-    your bullet points back at the class and nothing anywhere says why.
-    python-pptx is a hard dependency of RealMe, so a missing one is a broken
-    install, not a configuration choice.
+    Raises rather than returning nothing: notes are the reason to prefer
+    .pptx over .pdf, and losing them silently would make the model narrate
+    the bullet points. python-pptx is a hard dependency of RealMe, so a
+    missing one is a broken install, not a configuration choice.
     """
     try:
         from pptx import Presentation
@@ -228,11 +219,10 @@ def extract_pptx_notes(pptx: Path) -> list[str]:
     """
     Real speaker notes from a .pptx.
 
-    This is the single most valuable grounding signal in the whole pipeline and
-    v1 and v2 both threw it away, approximating it with the visible slide text.
-    The visible text is what the audience can already read; the notes are what
-    the instructor actually intended to say. Feeding the model the wrong one
-    produces narration that recites the slide.
+    The most valuable grounding signal in the pipeline. The visible text is
+    what the audience can already read; the notes are what the instructor
+    intended to say. Narration written from the visible text alone recites
+    the slide.
     """
     notes: list[str] = []
     for slide in _shown(pptx):
@@ -289,21 +279,17 @@ def extract_notes(pdf: Path) -> list[str]:
 
 def slide_pages(outdir) -> list[Path]:
     """
-    The rendered slides, in PAGE order. **One place. Only this one.**
+    The rendered slides, in PAGE order. Every caller should use this.
 
-    `sorted(glob("slide-*.png"))` sorts lexicographically, and the files are
-    named `slide-1.png` … `slide-12.png` without padding, so that order is
+    `sorted(glob("slide-*.png"))` sorts lexicographically, and for unpadded
+    names `slide-1.png` … `slide-12.png` that order is
 
         1, 10, 11, 12, 2, 3, 4, 5, 6, 7, 8, 9
 
-    Every deck of ten slides or more was scrambled from that point on, while
-    decks of nine were perfect -- which is why this survived so long. The
-    narration stayed in the right order because it never came from this list;
-    only the pictures moved, so the symptom was "the notes are right and the
-    slides are wrong".
+    which scrambles every deck of ten slides or more.
 
     Sorting on the NUMBER, parsed from the name, is correct for both padded and
-    unpadded files, so slides rasterised by an older version need no redo.
+    unpadded files, so older unpadded rasterisations need no redo.
     """
     import re
     out = []

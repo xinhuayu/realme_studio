@@ -1,7 +1,7 @@
 """
 Adapter contracts.
 
-Rule enforced across every adapter in RealMe v2:
+Rule enforced across every adapter:
   An adapter either does the real thing, or raises. It NEVER silently
   substitutes fake output for real output. Preview/placeholder behaviour is
   opt-in, is a distinct adapter class, and always stamps its output as
@@ -22,9 +22,7 @@ class QuotaExceeded(AdapterUnavailable):
     Separate from `AdapterUnavailable` because the response is different in
     kind: nothing is wrong with the text, the voice or the key, and retrying
     the same question sooner makes it worse -- each attempt counts against the
-    very quota that is exhausted. The old code retried a 429 four times with
-    exponential backoff, which spent four more of a hundred daily requests to
-    learn the same thing twice.
+    very quota that is exhausted. So a 429 is not retried with backoff.
 
     Carries what a person needs in order to act: how long until it clears, and
     what the limit was.
@@ -65,8 +63,8 @@ class BaseTTS(ABC):
     is_placeholder: bool = False
     #: Languages this adapter can be asked for per utterance, as 2-letter
     #: codes. Empty means it speaks whatever it was built for and a
-    #: [[fr-FR]] block cannot be honoured -- which is worth saying rather
-    #: than rendering French text with an English voice and no warning.
+    #: [[fr-FR]] block cannot be honoured; the pipeline warns rather than
+    #: render French text with an English voice.
     speaks_languages: tuple = ()
     #: How much text this engine does WELL in one call, in characters.
     #: None means "use the pipeline's default" -- which is the right answer
@@ -86,8 +84,7 @@ class BaseTTS(ABC):
     #: It matters because of WHERE the stretching happens. Doing it inside
     #: `synthesize` bakes it into the file the ledger caches, so changing a
     #: pace afterwards means paying the engine again for every utterance in
-    #: the lecture -- which is what happened: a pace correction was corrected
-    #: and a whole guide video had to be re-rendered to apply it. An engine
+    #: the lecture. An engine
     #: that declares this returns its own audio and leaves the stretching to
     #: the caller, which caches the stretched copy separately: the paid take
     #: survives a pace change, and only the free ffmpeg step is redone.
@@ -108,9 +105,8 @@ class BaseTTS(ABC):
         Separate from `preflight` because they are different questions and
         one of them is expensive. `preflight` means "be ready to speak", and
         for the C++ engine that is a 2 GB model load taking tens of seconds.
-        A status page only ever wanted "is the library there and are the
-        weights converted" -- and, by asking `preflight`, paid the full load
-        on every page refresh and then threw the loaded model away.
+        A status page only needs "is the library there and are the weights
+        converted", and must not pay that load on every refresh.
 
         The default is the same question, because for most adapters getting
         ready costs nothing.
@@ -142,10 +138,8 @@ class BaseTTS(ABC):
         default is None: most engines have no view on this, and an engine that
         does not measure must not be guessed at.
 
-        It exists because of the one failure a length check cannot see. A
-        hurried rendering contains every word -- nothing is missing, nothing
-        is repeated -- so the only thing that notices is a person listening to
-        the finished lecture. `pipeline/speak.py` asks this after each fresh
+        A length check cannot see a hurried rendering: it contains every word,
+        with nothing missing or repeated. `pipeline/speak.py` asks this after each fresh
         synthesis and re-records the chunk in smaller pieces when the answer
         is yes.
         """
@@ -155,10 +149,9 @@ class BaseTTS(ABC):
         """
         Everything that changes the AUDIO for identical text.
 
-        The render ledger keys on this. v2 keyed on the adapter NAME alone,
-        which meant switching to a different cloned voice inside the same
-        provider silently reused the old audio -- the cache would serve you a
-        lecture in the wrong voice and report a clean run.
+        The render ledger keys on this. The adapter NAME alone is not enough:
+        switching to a different cloned voice inside the same provider must
+        not reuse the old audio.
         """
         return self.name
 

@@ -3,13 +3,11 @@ setlocal
 REM ===================================================================
 REM  Build RealMe_Update.zip, with the checks that must come first.
 REM
-REM  This exists because the sequence is three commands with an order that
-REM  matters, and typing them meant `set PY=...` plus two pasted lines --
-REM  one of which arrived in cmd with its first seven characters missing
-REM  and ran `pp\t_engines.py`. A launcher cannot be mis-pasted.
+REM  The sequence is three commands whose order matters; this launcher
+REM  runs them in that order.
 REM
 REM  make_update_zip.py parses every shipped .py and refuses on a syntax
-REM  error, but that is the cheap half. verify_tree imports the modules,
+REM  error, but checks nothing more. verify_tree imports the modules,
 REM  checks the invariants and the launcher cross-references, and -- once
 REM  the zip exists -- that the archive carries a BUILD_ID and no tools\.
 REM  So it runs on both sides of the build.

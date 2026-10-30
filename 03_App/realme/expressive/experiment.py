@@ -2,23 +2,22 @@
 Run the same exchange under different conditions and report what changed.
 
 The design is paired: identical words, identical voices, identical seed
-conditions where the engine allows it -- only the stance pacing differs. That
-is the only way an effect this small can be attributed, because the underlying
-engine samples and two renders of one sentence already differ.
+conditions where the engine allows it -- only the condition differs. The
+engine samples, so two renders of one sentence already differ, and a small
+effect can only be attributed in a paired design.
 
-Repeats are not optional. A codec language model at temperature 0.9 produces a
-different draw every time, and this project has already drawn a conclusion
-from single runs once and had to withdraw it. `repeat` renders the whole
-exchange N times per condition and the report carries the spread, so an effect
-smaller than the noise is visible as such instead of being announced.
+Repeats are required. A codec language model at temperature 0.9 produces a
+different draw every time. `repeat` renders the whole exchange N times per
+condition and the report carries the spread, so an effect smaller than the
+noise shows as such.
 
 The output is two things:
 
-  a table, for deciding whether to keep going
-  a pair of audio files with a hidden key, for deciding whether it sounds good
+  a table of measurements
+  a pair of audio files with a hidden key, for a blind listening comparison
 
-The second matters more. Every number here is a proxy; none of them is the
-thing we want, which is whether a listener believes two people are talking.
+The listening comparison is the primary result; every number here is a proxy
+for whether a listener hears two people talking.
 """
 from __future__ import annotations
 import json, random
@@ -42,22 +41,19 @@ class Condition:
     strength: float          # 0.0 is the control: the unwrapped adapter
     note: str = ""
     #: How the voices are wrapped for this condition, as wrap(adapter,
-    #: strength) -> adapter. None means stance pacing, which is what every
-    #: condition meant before there was anything else to compare.
+    #: strength) -> adapter. None means stance pacing.
     #:
-    #: A callable rather than a flag because the comparison that matters now
-    #: is between DIFFERENT KINDS of control -- pacing, register switching,
-    #: embedding shift -- and a flag per kind would have to be added to every
-    #: condition that does not use it.
+    #: A callable rather than a flag, so conditions can compare DIFFERENT
+    #: KINDS of control (pacing, register switching, embedding shift)
+    #: without a flag per kind.
     wrap: object = None
 
 
 def preflight(adapters: dict, log=print) -> "bool | str":
     """True when every voice can run, or a message saying which cannot and why.
 
-    Returns rather than raises so the caller decides -- the runner turns it
-    into a clean exit with an instruction, not a traceback the reader has to
-    excavate the real sentence out of.
+    Returns rather than raises so the caller decides; the runner turns it
+    into a clean exit with an instruction rather than a traceback.
     """
     from realme.adapters.base import AdapterUnavailable
     broken = []
@@ -91,7 +87,7 @@ def _render_turns(adapters, turns, outdir: Path, strength: float,
         setter = getattr(tts, "set_stance", None)
         if setter is None:
             # The unwrapped control arm. Duck-typed rather than assumed,
-            # because a condition may now hand back the bare adapter.
+            # because a condition may hand back the bare adapter.
             st, known = (stance or "neutral"), True
         else:
             st, known = setter(stance)
@@ -110,7 +106,7 @@ def _join(wavs: list[Path], out: Path) -> Path:
     The two dialogue voices need not agree on sample rate -- piper is 22.05 kHz
     and the cloned engine 24 kHz -- and concatenating those without conversion
     plays one speaker at the wrong speed, which would be heard as a prosody
-    difference that is really an arithmetic mistake.
+    difference.
     """
     import numpy as np
     from realme.verify.acoustic import read_wav
@@ -146,30 +142,21 @@ def run(adapters: dict, outdir: Path, *, conditions=None, repeat: int = 3,
         Condition("flat", 0.0, "the control: adapters exactly as they are"),
         Condition("stance", 1.0, "pace multipliers from the turn's stance"),
     ]
-    # Check every voice BEFORE rendering anything.
-    #
-    # The first real run loaded the cloned engine, spent 2.6 GB and some
-    # minutes rendering the instructor's turns, and only then discovered that
-    # the guest voice could not start at all. Every adapter has carried a
-    # `preflight` for exactly this since the beginning; the experiment just did
-    # not call it. A run that is going to fail should fail in two seconds.
+    # Check every voice BEFORE rendering anything. Loading the cloned engine
+    # and rendering one speaker's turns takes minutes, so a voice that cannot
+    # start should fail the run at once.
     ready = preflight(adapters, log=log)
     if ready is not True:
         raise RuntimeError(ready)
 
-    # And check the arms are actually different arms.
+    # Check the arms are actually different arms. `casting.cast` may already
+    # have wrapped a voice (e.g. in a register switcher), which can make two
+    # conditions identical.
     #
-    # The first `--compare` run rendered six passes of "plain" and
-    # "registers" before failing on the third condition -- and those two arms
-    # were the SAME thing, because `casting.cast` had already wrapped the
-    # instructor in a register switcher before the experiment saw it. Had the
-    # third arm not crashed, the run would have finished, produced a table,
-    # and invited a listening comparison between two identical conditions.
-    #
-    # The render ledger's own key is what settles it: `voice_fingerprint()`
-    # is defined as "everything that changes the audio", so two conditions
-    # that fingerprint alike ARE alike. Asked at a stance that exercises the
-    # difference, since every wrapper is transparent at neutral.
+    # The render ledger's key settles it: `voice_fingerprint()` is defined as
+    # "everything that changes the audio", so two conditions that fingerprint
+    # alike ARE alike. Asked at a stance that exercises the difference, since
+    # every wrapper is transparent at neutral.
     distinct = distinctness(adapters, conditions)
     if distinct is not True:
         raise RuntimeError(distinct)
@@ -204,8 +191,7 @@ def distinctness(adapters: dict, conditions, *, stance: str = "press"):
 
     Compares `voice_fingerprint()` across the conditions, which is the string
     the render ledger uses to decide whether two renders are the same render.
-    If it cannot tell two arms apart, neither can a listener, and neither can
-    the table.
+    Two arms with the same fingerprint produce the same audio.
     """
     seen, who = {}, {}
     for cond in conditions:
@@ -234,9 +220,8 @@ def distinctness(adapters: dict, conditions, *, stance: str = "press"):
 def _blind(outdir: Path, names: list[str], *, seed=None, log=print) -> dict:
     """Copy the joined exchanges to neutral names, with the key written aside.
 
-    Knowing which file is the treatment is enough to hear a difference that is
-    not there. The key goes in a separate file so it can be read after the
-    listening rather than during it.
+    Knowing which file is the treatment biases the listener. The key goes in
+    a separate file so it can be read after listening.
     """
     import shutil
     rng = random.Random(seed)

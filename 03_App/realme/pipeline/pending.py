@@ -1,15 +1,9 @@
 """
 A revision that has been worked out but not yet accepted.
 
-Comparing a new deck against a finished project used to apply itself. The job
-deleted the old slide images, moved the new deck into the project folder and
-overwrote the manifest before anyone had read a word of the result -- so a
-comparison you disagreed with had already destroyed the thing you would have
-gone back to. There was no back.
-
-Everything a revision produces now lands here instead, under
-`_work/pending/`, and the live project is untouched until the Save button says
-so:
+Comparing a new deck against a finished project does not apply the result.
+Everything a revision produces lands here, under `_work/pending/`, and the
+live project is untouched until the Save button says so:
 
     _work/pending/manifest.json   the proposed script, edited in place
     _work/pending/slides/         the new deck, rasterised
@@ -62,8 +56,7 @@ def begin(pdir) -> Path:
     """Clear any previous proposal and hand back the folder to build one in.
 
     Called before the upload is written, because the upload goes INTO this
-    folder. An earlier version cleared the folder at the end instead, which
-    deleted the deck and slides it was about to record.
+    folder; clearing it afterwards would delete the staged deck and slides.
     """
     pdir = Path(pdir)
     d = root(pdir)

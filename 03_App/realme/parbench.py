@@ -2,13 +2,12 @@
 `realme bench-parallel` -- would several local voice engines at once be faster?
 
 The local clone (qwen3cpp) records one sentence at a time with the model held
-in memory. Adding threads to that one engine was measured and changed
-nothing beyond the noise (see the note on `threads` in
-adapters/tts_qwen3_dll.py), which points at memory speed rather than cores as
-the limit. Running two or three engines side by side, each on its own
-sentences, might still finish a lecture sooner -- or might only share the
-same memory speed among more copies of the model. That is a question about a
-particular machine, so this measures it there instead of guessing.
+in memory. Adding threads to that one engine does not help beyond the noise
+(see the note on `threads` in adapters/tts_qwen3_dll.py), which points at
+memory speed rather than cores as the limit. Running two or three engines
+side by side, each on its own sentences, might still finish a lecture sooner
+-- or might only share the same memory speed among more copies of the model.
+That depends on the machine, so this measures it there.
 
 What it does, for each layout (workers x threads each):
 
@@ -22,8 +21,8 @@ What it does, for each layout (workers x threads each):
 
 It reports, per layout: the memory each worker took, the time for the batch,
 and the speed relative to one worker. It recommends parallel recording only
-when the best layout is faster in EVERY run than one worker is in ANY run --
-a difference smaller than the noise is not a difference.
+when the best layout is faster in EVERY run than one worker is in ANY run, so
+a difference within the run-to-run noise is not counted.
 
 Nothing in rendering changes because of this. The audio is kept so the
 layouts can be listened to as well as timed.

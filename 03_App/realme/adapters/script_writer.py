@@ -1,11 +1,10 @@
 """
 Script writers (the 'cognitive' layer).
 
-Critical behavioural difference from v1: the Gemini adapter does NOT fall back
-to canned text when the API key is missing or the call fails. It raises. A
-lecture narrated by placeholder text that *looks* plausible is worse than no
-lecture at all, because you cannot tell the difference by reading the output.
-If you want placeholder text you must ask for it explicitly.
+The Gemini adapter does NOT fall back to canned text when the API key is
+missing or the call fails. It raises: placeholder narration that *looks*
+plausible cannot be told apart from the real thing by reading the output.
+Placeholder text must be asked for explicitly.
 """
 from __future__ import annotations
 import base64, http.client, json, os, mimetypes, urllib.error, urllib.request
@@ -84,9 +83,8 @@ Rules:
 
 #: The UPPER limit on narration per slide, in seconds.
 #:
-#: 150 was the original, about 350 words -- long enough that a twelve-slide
-#: deck ran half an hour and each slide turned into a small essay. 110 is a
-#: 27% cut, asked for after listening to a real one.
+#: 110 seconds is about 256 words; at 150 (about 350 words) a twelve-slide
+#: deck runs half an hour and each slide turns into a small essay.
 #:
 #: Expressed in seconds because the prompt also carries words-per-minute, and
 #: two numbers that must agree should be derived from one another rather than
@@ -94,9 +92,9 @@ Rules:
 SECONDS_PER_SLIDE = 110
 WORDS_PER_MINUTE = 140
 
-#: Words per turn. 60-150 was the old range and 150 words is eight or ten
-#: sentences -- a short lecture, delivered alternately by two people. What came
-#: out was not a conversation; it was two monologues taking turns.
+#: Words per turn. 150 words is eight or ten sentences -- a short lecture --
+#: and turns that long read as two monologues taking turns, not a
+#: conversation.
 #:
 #: Real talk is shorter and more uneven than written dialogue. Three or four
 #: sentences is a turn; one point is a turn. The floor is low on purpose,
@@ -107,13 +105,12 @@ TURN_WORDS = (15, 70)
 #: What a slide of ordinary weight should run at each length setting, as
 #: (seconds_per_slide, typical_low, typical_high) in words.
 #:
-#: The upper limit alone was not enough. With only a ceiling in the prompt --
-#: 163, 256 or 350 words -- the model wrote about a hundred words a slide
-#: whichever setting was chosen, because nothing in the instructions said where
-#: an ORDINARY slide should land; the ceiling only said where to stop. Three
-#: settings that produce the same lecture are one setting.
+#: The upper limit alone is not enough. With only a ceiling in the prompt --
+#: 163, 256 or 350 words -- the model writes about a hundred words a slide
+#: whichever setting is chosen, because nothing says where an ORDINARY slide
+#: should land; the ceiling only says where to stop.
 #:
-#: These are the medians asked for after listening to real decks. They are
+#: These are medians chosen by listening to real decks. They are
 #: bands, not quotas: a title slide is meant to fall far below its band, and
 #: the ceiling is still the ceiling.
 LENGTH_ANCHORS = ((70, 50, 70), (110, 100, 150), (150, 160, 200))
@@ -172,17 +169,15 @@ directly -- "your model assumes", not "one might assume". This is two people \
 arguing, and the listener should be able to tell who is winning."""
 
 
-# Stable, not preview. This was `gemini-3-flash-preview` until Google shut
-# down `gemini-3-pro-preview` -- a preview retires on their schedule, and when
-# it does the call fails as a bare HTTP 404 from a URL containing the model
+# Stable, not preview: a preview retires on Google's schedule, and when it
+# does the call fails as a bare HTTP 404 from a URL containing the model
 # name, which reads like a broken endpoint rather than a model that stopped
-# existing. A default that can be switched off by someone else is not a
-# default. 3.8-flash is the stable Flash that takes images, which this needs:
+# existing. 3.8-flash is the stable Flash that takes images, which this needs:
 # slides go to the model as pictures. It also takes `system_instruction` and
 # `response_schema`, which the lecture call depends on.
 #
-# Chosen from documentation, which is weak evidence. `realme models` asks your
-# own key what it can call, and --model / REALME_GEMINI_MODEL changes it
+# Chosen from documentation. `realme models` asks your own key what it can
+# call, and --model / REALME_GEMINI_MODEL changes it
 # without editing this line.
 DEFAULT_MODEL = "gemini-3.8-flash"
 
@@ -199,8 +194,7 @@ def list_models(api_key: str | None = None) -> list[dict]:
     A model list written into the source is out of date the moment a preview is
     retired, and a retired preview fails as a bare HTTP 404 from a URL that
     contains the model name -- which reads like a broken endpoint rather than a
-    model that no longer exists. `gemini-3-pro-preview` was shut down exactly
-    this way. Ask, do not assume: availability also differs per key and per
+    model that does not exist. Availability also differs per key and per
     region, so no published table is authoritative for a particular caller.
     """
     import json
@@ -243,7 +237,7 @@ def list_models(api_key: str | None = None) -> list[dict]:
 #: than several small ones. So a long deck is drafted a block at a time, one
 #: request after another, each block shown where it sits in the lecture and
 #: how the narration before it ended. `REALME_DRAFT_BLOCK=0` sends the whole
-#: deck at once, as before.
+#: deck at once.
 DRAFT_BLOCK = 12
 
 
@@ -323,18 +317,15 @@ class GeminiScriptWriter(BaseScriptWriter):
         self.api_key = api_key or os.environ.get("GEMINI_API_KEY")
         self.model = model
         # Where diagnostics go. The pipeline replaces this with its own job
-        # log; the default is stderr, which the Studio never captured -- so a
-        # "11 segments for 12 slides" warning was printed to a console nobody
-        # was watching while the video rendered one slide short.
+        # log, so warnings reach the Studio; the default is stderr, which the
+        # Studio does not capture.
         import sys as _sys
         self.log = lambda m: print(m, file=_sys.stderr, flush=True)
         #: The last raw API response, kept so a caller can write it beside the
         #: manifest for inspection. Never logged in full (it holds the script).
         self.last_response: dict | None = None
         #: Tokens this writer has spent, in and out. Drafting is cheap next to
-        #: speech, but it is not free, and a cost line that counts only the
-        #: speech is a cost line that will be short by the one amount nobody
-        #: remembers to add.
+        #: speech, but it is not free, so the cost line includes it.
         self.prompt_tokens = 0
         self.output_tokens = 0
 
@@ -363,8 +354,8 @@ class GeminiScriptWriter(BaseScriptWriter):
 
         The key travels in a header, not the query string: a `?key=` URL ends
         up in proxy and access logs. 429 and 5xx are retried with backoff --
-        the free tier rate-limits routinely, and one 503 used to cost a whole
-        draft. `finishReason` is checked so a response cut off by the output
+        the free tier rate-limits routinely, and a single 503 must not cost a
+        whole draft. `finishReason` is checked so a response cut off by the output
         limit is reported as that, not as "unparseable JSON" quoting the first
         400 characters of narration.
         """
@@ -392,8 +383,8 @@ class GeminiScriptWriter(BaseScriptWriter):
         # How long to wait for the whole reply. The reply arrives in one piece
         # at the end, after the model has looked at every slide, thought, and
         # written every slide's narration -- so the wait grows with the deck.
-        # A flat three minutes was shorter than a forty-slide deck takes when
-        # Google is busy, and each give-up sent the same deck again.
+        # A flat three minutes is shorter than a forty-slide deck takes when
+        # Google is busy.
         slides = sum(1 for p in parts if "inline_data" in p)
         wait_s = reply_timeout(slides)
         timeouts = 0
@@ -565,10 +556,8 @@ class GeminiScriptWriter(BaseScriptWriter):
         words = int(secs * WORDS_PER_MINUTE / 60)
         typ_lo, typ_hi, med = length_bands(secs)
         # Instructions travel as the system instruction; the deck travels as
-        # user content. They used to share one text part, so nothing marked
-        # where the instructor's rules ended and the slides began -- and a
-        # slide (or a speaker note) that happened to read like an instruction
-        # was one.
+        # user content, so a slide (or a speaker note) that happens to read
+        # like an instruction is not taken as one.
         system = (LECTURE_SYSTEM.format(
                       wpm=WORDS_PER_MINUTE, secs=secs, words=words,
                       typ_lo=typ_lo, typ_hi=typ_hi, median=med)
@@ -615,12 +604,10 @@ class GeminiScriptWriter(BaseScriptWriter):
                     "type": "object",
                     "properties": {
                         # slide_NUMBER, 1-based, matching the "--- Slide 1 ---"
-                        # headings above. It used to be called slide_index and
-                        # was used as a 0-based list position without
-                        # conversion, so every segment pointed at the NEXT
-                        # slide: the first slide was never shown and the last
-                        # was shown twice. Ask for the number the model was
-                        # given, and convert here, once.
+                        # headings above. Ask for the number the model was
+                        # given, and convert to a 0-based index here, once;
+                        # using it unconverted would shift every segment to
+                        # the next slide.
                         "slide_number": {"type": "integer"},
                         "spoken_text": {"type": "string"},
                         "pause_after_s": {"type": "number"},
@@ -635,11 +622,10 @@ class GeminiScriptWriter(BaseScriptWriter):
         data = self._call(parts, schema, system=system)
         raw = data["segments"]
         if len(raw) != n:
-            # One correction, naming the discrepancy, then refuse. The old
-            # behaviour ordered whatever came back by slide_number and moved
-            # on, so a merged pair of slides rendered as an 11-slide video of
-            # a 12-slide deck with a PASS verdict -- and every later revision
-            # was refused because the counts no longer agreed.
+            # One correction, naming the discrepancy, then refuse. Accepting a
+            # mismatched count would render a merged pair of slides as an
+            # 11-slide video of a 12-slide deck, and every later revision
+            # would be refused because the counts disagree.
             self.log(f"  [gemini] {len(raw)} segment(s) for {n} slide(s); "
                      f"asking once more for exactly {n}")
             fix = {"text": (f"Your previous reply had {len(raw)} segments for "
@@ -858,7 +844,7 @@ class GeminiScriptWriter(BaseScriptWriter):
                      course_context, seconds_per_slide=None, targets=None):
         """The short slides of a long deck are asked about a block at a time,
         and only their own pictures (and their neighbours') are sent; a short
-        deck goes in one request, as it always has."""
+        deck goes in one request."""
         slides = sorted(set(int(t) for t in slides))
         if len(blocks_of(len(slide_images))) == 1:
             return self._expand_short_once(
@@ -883,20 +869,18 @@ class GeminiScriptWriter(BaseScriptWriter):
 
         Rewording the instruction does not fix this. A model asked for
         150-word narration writes about a hundred words a slide whatever the
-        prompt says, because a hundred words is where it settles; the three
-        length settings all produced roughly the same lecture until the bands
-        were added, and adding the bands moved it only part of the way. What
-        does work is measuring the result and asking again about the specific
-        slides that fell short, with what it wrote in front of it.
+        prompt says, because a hundred words is where it settles; per-slide
+        bands help only part of the way. What does work is measuring the
+        result and asking again about the specific slides that fell short,
+        with what it wrote in front of it.
 
         `targets` are 1-based slide numbers; `current` maps every slide number
         to the narration already written. The slide is shown again with its
         own text, because the missing material is on the slide -- the step that
         was skipped, the number that was named but not read.
 
-        The instruction is to ADD SUBSTANCE, never to pad. A longer block that
-        says the same thing more slowly is a worse outcome than the short one,
-        and this says so in those words.
+        The instruction is to ADD SUBSTANCE, never to pad, and the prompt says
+        so explicitly.
         """
         import os
         secs = int(seconds_per_slide
@@ -973,9 +957,8 @@ class GeminiScriptWriter(BaseScriptWriter):
             if n not in slides or not text:
                 continue
             # Only keep it if it actually grew. A "rewrite" that came back the
-            # same length or shorter is the model declining, and overwriting
-            # the original with it would lose nothing but gain nothing either
-            # while looking like it worked.
+            # same length or shorter is the model declining, so the original
+            # is kept.
             if len(text.split()) <= len(str(current.get(n, "")).split()):
                 continue
             cues = [c.strip() for c in (seg.get("cues") or [])
@@ -988,8 +971,8 @@ def slug_of(topic: str) -> str:
     """A session id that is also a legal filename on Windows.
 
     Question-shaped topics are the normal case ("Is BMI a good measure?"),
-    and `?` `:` `/` are illegal in a Windows filename -- so the master mp3
-    could not be written. One rule for both writers.
+    and `?` `:` `/` are illegal in a Windows filename, where the master mp3
+    is written. One rule for both writers.
     """
     slug = "".join(c if c.isalnum() else "_" for c in topic.lower()).strip("_")
     while "__" in slug:
@@ -999,8 +982,8 @@ def slug_of(topic: str) -> str:
 
 def _pause(v) -> float:
     """A model that writes null for pause_after_s gets the default, not a
-    TypeError from float(None) -- which used to be caught one level up as
-    "a writer from before per-slide bands" and silently re-billed the call."""
+    TypeError from float(None), which a caller could mistake for a different
+    failure."""
     try:
         return max(0.0, min(60.0, float(v)))
     except (TypeError, ValueError):
@@ -1033,8 +1016,8 @@ def _image_part(img) -> dict:
 def _slide_number(seg: dict) -> int:
     """The 1-based slide this segment narrates.
 
-    Accepts the old `slide_index` key too: a cached response or a model that
-    echoes an older schema should not produce an off-by-one all over again.
+    Accepts the older `slide_index` key too, for a cached response or a
+    model that echoes an older schema; it is treated as 1-based.
     """
     for key in ("slide_number", "slide_index"):
         if key in seg:

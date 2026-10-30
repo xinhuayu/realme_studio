@@ -1,28 +1,19 @@
 """
 Building the recording corpus that a fine-tuned voice needs.
 
-**Why this exists.** Every engine in RealMe so far does *zero-shot* cloning:
-hand it ten seconds of you and it imitates you on the spot. That is a
-remarkable capability, and it is not the capability this project needs. There
-is exactly one speaker, forever, and he can be recorded for an hour any time he
-likes. Zero-shot buys flexibility we do not use and charges for it on every
-single utterance, at real-time factor 6.
+The cloning engines in RealMe are *zero-shot*: they imitate a speaker from a
+short reference clip, at a real-time factor of about 6. RealMe has a single
+speaker who can be recorded at length, so a fine-tuned voice is an option:
+record enough of one voice, train a small non-autoregressive model on it once,
+then synthesize at RTF about 0.1.
 
-The alternative is older and much cheaper to run: record enough of one voice,
-train a small non-autoregressive model on it once, and then synthesize at RTF
-0.1 for the rest of time. A 50-minute lecture stops costing five hours and
-starts costing five minutes.
+Most of this module is quality control on the corpus: clipped takes, drifting
+mic distance, and transcripts that do not match the audio. Level and noise
+checks reuse `enrollment.voice.analyze()`.
 
-The training run is the easy part. The corpus is where these attempts fail --
-clipped takes, drifting mic distance, transcripts that do not match what was
-actually said. So this module is mostly quality control, and it reuses
-`enrollment.voice.analyze()` rather than inventing a second opinion about what
-a good recording is.
-
-**One session, two payoffs.** The same corpus makes kNN-VC conversion better
-immediately, with no training at all: it rebuilds each frame from the nearest
-frames in your recordings, so a bigger, more varied corpus is simply a better
-one. Record it once; both paths improve.
+The same corpus also improves kNN-VC conversion without training: kNN-VC
+rebuilds each frame from the nearest frames in the recordings, so a larger,
+more varied corpus gives better matches.
 
 Targets, from what VITS-family fine-tuning actually needs:
 
@@ -75,11 +66,9 @@ def save(takes: list[dict], home: Path | None = None) -> None:
 
 # --------------------------------------------------------------- the script
 #
-# Sentences come from the instructor's OWN material by default. Two reasons,
-# both practical rather than aesthetic: the model learns the vocabulary it will
-# actually have to say -- "heteroscedasticity" is not in a generic corpus -- and
-# reading your own writing produces a more natural delivery than reading
-# "The quick brown fox", which everyone performs slightly wrong.
+# Sentences come from the instructor's own material by default, so the model
+# learns the vocabulary it will have to say ("heteroscedasticity" is not in a
+# generic corpus), and reading one's own writing gives a more natural delivery.
 
 _SENT = re.compile(r"(?<=[.!?])\s+")
 _BAD = re.compile(r"[^A-Za-z0-9 ,.'\-;:()?!\"]")
@@ -108,9 +97,8 @@ def _coverage_pick(sentences: list[str], want: int) -> list[str]:
     """
     Greedy pick for letter-pair coverage.
 
-    A proper job would count phonemes; this counts character bigrams, which is
-    a proxy and is described as one. It is enough to stop a script being fifty
-    sentences that all sound the same, which is the failure that matters.
+    Counts character bigrams as a proxy for phoneme coverage, so the script
+    is not made of sentences that all sound alike.
     """
     chosen, have = [], set()
     pool = list(sentences)
@@ -192,11 +180,8 @@ class Take:
     One recorded line.
 
     `problems` are disqualifying -- the take must be redone or it will hurt the
-    model. `warnings` are worth reading and do not stop anything. The split
-    matters: the first version of this treated every remark as fatal, and a
-    peak-level warning on four perfectly usable takes emptied the export. A
-    quality check that refuses everything gets switched off, which is worse
-    than one that discriminates.
+    model. `warnings` are worth reading and do not stop anything; a warned take
+    is still exported.
     """
     id: str
     text: str
@@ -230,8 +215,7 @@ def add_take(audio: Path, text: str, home: Path | None = None) -> Take:
     Ingest one recorded line. Converts, checks, and refuses quietly-bad audio.
 
     The level and noise judgements come from `enrollment.voice.analyze`, the
-    same code that judges a cloning reference -- one opinion about what good
-    audio is, not two that can drift apart. Its duration rule is the exception:
+    same code that judges a cloning reference. Its duration rule is the exception:
     it wants 30+ seconds for a reference clip, while a training utterance is
     meant to be a few seconds long.
     """
@@ -284,9 +268,8 @@ def split_session(audio: Path, script: list[str], home: Path | None = None,
     Cut one straight-through reading into takes, one per script line.
 
     Alignment is by ORDER, not by content -- there is no recogniser here. So
-    the segment count must match the line count, and when it does not this says
-    where it went wrong rather than silently pairing line 12 with line 13's
-    audio, which would be worse than failing.
+    the segment count must match the line count; when it does not, nothing is
+    imported, so no line is paired with another line's audio.
     """
     audio = Path(audio)
     proc = subprocess.run(

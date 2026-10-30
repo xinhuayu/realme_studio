@@ -2,15 +2,13 @@
 """
 Text written to disk must say which encoding it is.
 
-A render died on a deck containing an arrow. `Path.write_text(...)` with no
-encoding uses the platform default, which on Windows is cp1252 -- so a
-manifest holding "→", an en dash, a curly quote or "β" crashed at the moment
-of writing, after the drafting work was done. None of those are exotic in an
-academic deck.
+`Path.write_text(...)` with no encoding uses the platform default, which on
+Windows is cp1252, so a manifest holding "→", an en dash, a curly quote or
+"β" fails at the moment of writing, after the drafting work is done. All of
+those are common in an academic deck.
 
-The fix is one keyword argument in forty places, which means the real risk is
-the forty-first. This checks the whole package rather than the places that
-happened to break.
+Every text read and write in the package names its encoding, so this checks
+the whole package rather than a list of known call sites.
 """
 from __future__ import annotations
 import ast, sys, tempfile
@@ -20,9 +18,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 #: Where this file lives. Every path below is relative to it, never to the
 #: working directory: these suites are run from the project root as often as
-#: from 03_App, and `Path("realme/...")` silently means a different thing in
-#: each. `verify_tree.py` already anchored on __file__; the t_*.py files did
-#: not, so t_render died with FileNotFoundError when run from the root.
+#: from 03_App, and `Path("realme/...")` means a different thing in each.
 HERE = Path(__file__).resolve().parent
 
 FAILED = []
@@ -90,14 +86,10 @@ def main() -> int:
     check(f"every text read and write names an encoding", not bad,
           "\n         " + "\n         ".join(bad[:12]))
 
-    # The other half of the same decision, and the one that was missing.
-    #
-    # Naming utf-8 on both sides is right for new files and fatal for old
-    # ones: until September 2026 Windows wrote these files as cp1252 and read
-    # them back as cp1252, and the pair agreed. An em dash in the narration is
-    # byte 0x97, which is not valid utf-8, so every project drafted before the
-    # change stopped opening -- with a UnicodeDecodeError from pathlib that
-    # named neither the project nor the encoding.
+    # The reading side. An older project on Windows may hold cp1252 files.
+    # An em dash in the narration is then byte 0x97, which is not valid
+    # utf-8, so a plain utf-8 read raises a UnicodeDecodeError that names
+    # neither the project nor the encoding. The loader repairs such files.
     print("\na file written before the rule still opens")
     import json, os
     from realme.core import textio
@@ -146,7 +138,7 @@ def main() -> int:
           load_script(proj).segments[0].spoken_text == "plain \u2192 text"
           and len(textio.REPAIRED) == before)
 
-    # The ledger is the other file every old project has.
+    # The ledger is the other file every older project has.
     from realme.core.ledger import RenderLedger
     lg = proj / "_work" / "ledger.json"
     lg.write_bytes(json.dumps({"utt:1": {"path": str(lg), "duration": 1.0,

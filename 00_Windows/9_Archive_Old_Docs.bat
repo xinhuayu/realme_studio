@@ -1,11 +1,10 @@
 @echo off
 REM  Move the development history out of the way, once.
 REM
-REM  The superseded architecture drafts, the design reviews and the original
-REM  handoff package are worth keeping and are not worth sending to anyone.
-REM  This moves them into `_Archive`, which is not part of a release: the
+REM  Moves the architecture drafts, the design reviews and the original
+REM  handoff package into `_Archive`, which is not part of a release: the
 REM  packager walks 00_Windows, 02_Research and 03_App, so anything in
-REM  `_Archive` is kept on this machine and travels nowhere.
+REM  `_Archive` stays local.
 REM
 REM  Nothing is deleted. Run it once; running it again does nothing.
 

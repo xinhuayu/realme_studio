@@ -7,26 +7,24 @@ pick the matching one per turn -- and the difference between two of them is a
 direction in speaker-embedding space, which is what makes continuous
 expressive control possible without any training.
 
-Both uses depend on the SAME thing: that the only difference between the files
-is the delivery. That is much harder to get than it sounds, and two ways of
-losing it are built into the tools.
+Both uses depend on the only difference between the files being the delivery.
+Two parts of the toolchain can break that.
 
 LOUDNESS NORMALISATION ERASES THE SIGNAL. The enrolment chain ends in
 `loudnorm=I=-16`, which brings every file to the same perceived level. Run it
 over four registers separately and the pressing take and the conceding take
-come out equally loud -- and loudness is one of the two or three things that
-MAKE them different. The set is levelled ONCE, by a single correction measured
-across all of it, so the registers keep their loudness relative to each other
-while the set as a whole lands where it should. This is the same reasoning
-`_measured_loudnorm` already applies within one file, one level up.
+come out equally loud, and loudness is one of the main things that makes them
+different. The set is levelled ONCE, by a single correction measured across
+all of it, so the registers keep their loudness relative to each other while
+the set as a whole lands at the target. `_measured_loudnorm` applies the same
+idea within one file.
 
 THE CHANNEL TRAVELS WITH THE VOICE. A speaker embedding encodes the room, the
-microphone, the distance and the gain along with the speaker. If the neutral
-take comes from an old enrolment and the others from a new session, their
-difference contains the equipment, and the "emotion vector" is partly a change
-of microphone. Registers are therefore recorded as a SET, in one sitting, and
-this records which sitting each came from so a mismatch can be reported rather
-than silently averaged in.
+microphone, the distance and the gain along with the speaker. If the takes
+come from different sessions, their difference contains the equipment, and
+the "emotion vector" is partly a change of microphone. Registers are therefore
+recorded as a SET, in one sitting, and each records which sitting it came from
+so a mismatch can be reported.
 """
 from __future__ import annotations
 import json, time
@@ -37,17 +35,12 @@ from realme.core.media import require, run, duration_of
 
 #: The registers a dialogue can ask for, and what each one is.
 #:
-#: Deliberately the same words as the stance vocabulary, because the whole
-#: point is that a turn labelled `press` can be spoken in the pressing voice.
-#: `explaining` is the neutral one and is required: every difference is
-#: measured against it.
-#: Each register, and the situation that produces it.
+#: The names match the stance vocabulary, so a turn labelled `press` can be
+#: spoken in the pressing voice. `explaining` is the neutral one and is
+#: required: every difference is measured against it.
 #:
-#: Described as a listener rather than as a technique on purpose. "Raise your
-#: pitch and speed up by ten percent" produces an impression of a person doing
-#: that; picturing the colleague who just waved your point away produces the
-#: delivery itself. The imagined listener does more work than any instruction
-#: about pitch.
+#: Each is described by an imagined listener rather than by technique
+#: ("raise your pitch"), which tends to produce a more natural delivery.
 REGISTERS = {
     "explaining": "your ordinary teaching voice — as if to a student in office "
                   "hours who is following you perfectly well. The baseline "
@@ -62,18 +55,14 @@ REGISTERS = {
 NEUTRAL = "explaining"
 
 #: Target loudness for the SET, in LUFS. The same figure the single-reference
-#: enrolment uses, so a register and the old reference sit at the same level.
+#: enrolment uses, so a register and the single reference sit at the same level.
 TARGET_LUFS = -16.0
 
 #: How far apart two takes must be, on each axis, before the difference is
-#: worth believing as delivery rather than as noise in the measurement.
+#: counted as delivery rather than as measurement noise.
 #:
-#: Three axes, because loudness alone is a weak test. Somebody asked to read a
-#: passage four times can easily produce four takes at four levels that are
-#: otherwise identical -- and, much more likely, four takes that sound the same
-#: in every way. A register differs from neutral if ANY of these moves: the
-#: question "are these four deliveries?" is answered yes by any real
-#: difference, and no only when none of them shows one.
+#: Three axes, because loudness alone is a weak test. A register differs from
+#: neutral if ANY of these moves, and is flagged only when none does.
 MEANINGFUL_LU = 0.7          # loudness, LU
 MEANINGFUL_ST = 0.4          # median pitch, semitones
 MEANINGFUL_RATE = 0.06       # speaking rate, as a fraction
@@ -86,31 +75,23 @@ MIN_SECONDS = 20.0
 
 #: What to read, four times.
 #:
-#: THE SAME WORDS EVERY TIME. This is not a preference. The difference between
-#: two takes is what becomes the emotion direction, so if the words differ the
-#: difference contains the words -- you would be measuring "sentences about
-#: confounding minus sentences about bias" and calling it warmth.
+#: THE SAME WORDS EVERY TIME. The difference between two takes becomes the
+#: emotion direction, so if the words differ the difference contains the words.
 #:
-#: Which makes the passage hard to write, because it has to be deliverable
-#: FOUR ways. A text that is inherently a question cannot be conceded; a text
-#: that is inherently a concession cannot be pressed. So this one is built from
-#: four moves that each register can lean on in turn: a claim to press, a limit
-#: to concede, an open question to wonder at, and a plain definition to explain.
-#: FOUR DIFFERENT DELIVERIES, not four readings. Reading it the way the words
-#: suggest, four times, produces four identical takes and every direction is
-#: zero -- there is nothing to extract from a difference that does not exist.
-#: What stays the same is the WORDS. What must change is everything else.
+#: The passage has to be deliverable four ways, so it is built from four moves
+#: that each register can lean on: a claim to press, a limit to concede, an
+#: open question to wonder at, and a plain definition to explain. The words
+#: stay the same; the delivery must change. Four readings in the same manner
+#: give identical takes and every direction is zero.
 #:
 #: "One register throughout" means within a take: on the conceding take, read
-#: even the insisting paragraph in a conceding way. That is what makes one take
-#: differ from another as a whole, rather than all four converging on whatever
-#: each paragraph invites.
+#: even the insisting paragraph in a conceding way, so each take differs from
+#: the others as a whole.
 #:
-#: About 150 words, which is roughly 75 seconds at a normal teaching pace --
-#: comfortably past the 20-second floor, and long enough for the speaker
-#: encoder to hear a delivery rather than a phrase. Phonetically it is ordinary
-#: academic English on purpose: no tongue-twisters, because a stumble is a
-#: worse artefact than a dull sentence.
+#: About 150 words, roughly 75 seconds at a normal teaching pace: past the
+#: 20-second floor, and long enough for the speaker encoder to capture a
+#: delivery rather than a phrase. Ordinary academic English with no
+#: tongue-twisters, to avoid stumbles.
 PASSAGE = """\
 Confounding is not a statistical problem. It is a question about how people
 came to be in the groups you are comparing, and no amount of adjustment will
@@ -192,13 +173,11 @@ def prepare(takes: dict, outdir: Path, *, session: str = "",
 
     # CONVERT FIRST, then measure.
     #
-    # `to_reference_wav` carries the guard that matters here: it compares the
-    # source duration with the converted one and refuses a silent truncation.
-    # iPhone Voice Memos can write ALAC, which a minimal ffmpeg build decodes
-    # part of and then gives up on, exiting 0 -- this project has already been
-    # caught by that once, on a 60-second take that arrived as a few seconds.
-    # Measuring the raw file first would have taken the loudness of a fragment
-    # and put it into the gain for the whole SET.
+    # `to_reference_wav` compares the source duration with the converted one
+    # and refuses a silent truncation. iPhone Voice Memos can write ALAC,
+    # which a minimal ffmpeg build may decode only partly while exiting 0.
+    # Measuring the raw file first could take the loudness of a fragment and
+    # apply it as the gain for the whole SET.
     from realme.core.media import to_reference_wav
     staging = outdir / "_raw"
     staging.mkdir(parents=True, exist_ok=True)

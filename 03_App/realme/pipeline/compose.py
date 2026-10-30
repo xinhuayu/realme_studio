@@ -124,9 +124,9 @@ def audio_master(parts: list[Path], out: Path, lufs: float = -16.0) -> Path:
 
     The concat FILTER, not the demuxer. The demuxer takes the stream
     parameters from the first file, so a 22.05 kHz Piper guest following a
-    24 kHz cloned instructor -- the default cast -- was decoded at 24 kHz:
-    8% fast and a semitone sharp, and the transcript timestamps drifted with
-    it. The filter resamples every input to one rate first.
+    24 kHz cloned instructor -- the default cast -- would be decoded at
+    24 kHz: 8% fast and a semitone sharp, with drifting transcript
+    timestamps. The filter resamples every input to one rate first.
     """
     out = Path(out); out.parent.mkdir(parents=True, exist_ok=True)
     if not parts:

@@ -1,17 +1,16 @@
 """
 `realme blocked` -- what Windows has recently refused to run.
 
-Two different mechanisms have already stopped parts of this project, and they
-are easy to confuse because both surface as a toast that vanishes before it can
-be read:
+Two different mechanisms can stop parts of this project, and they are easy to
+confuse because both surface as a short-lived toast:
 
   * **Defender antivirus** quarantines or blocks a file it scores as
     malicious. Per-file, and it can be allowed or excluded.
   * **Application Control** (Smart App Control / WDAC) refuses to run code that
     is not signed. Policy-wide, with no per-app allowlist.
 
-The remedies are opposite, so guessing which one fired is worse than useless.
-Windows records both, in different places; this reads them.
+The remedies differ, so the command reports which one fired. Windows records
+both, in different places; this reads them.
 """
 from __future__ import annotations
 import os

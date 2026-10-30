@@ -1,5 +1,5 @@
-"""Crash-resume ledger. A 30-min lecture is ~20 renders; losing all of them to
-one failure at slide 18 is the difference between a usable tool and a toy."""
+"""Crash-resume ledger. A 30-min lecture is ~20 renders; after a failure at
+slide 18, a rerun reuses every take already recorded."""
 from __future__ import annotations
 import json, hashlib, os, tempfile
 from pathlib import Path
@@ -15,10 +15,8 @@ class RenderLedger:
     def key(kind: str, text: str, voice: str) -> str:
         """A key made only of what changes the output.
 
-        Position used to be part of it (`seg_id * 1000 + index`), and a
-        revision that inserted one slide renumbered every later segment --
-        so every later utterance missed the cache and was paid for again,
-        while `revise` promised the opposite. The same words in the same
+        Position is not part of it, so a revision that inserts a slide does
+        not invalidate every later utterance. The same words in the same
         voice at the same pace are the same audio wherever they sit.
         """
         h = hashlib.sha256(f"{kind}|{voice}|{text}".encode()).hexdigest()[:20]
@@ -28,10 +26,9 @@ class RenderLedger:
     def stem(key: str) -> str:
         """A filename stem that is unique to the key.
 
-        Output files used to be named by position (`seg_003.wav`), so after a
-        renumbering a different segment overwrote the file an older ledger
-        entry still pointed at. Naming by key makes an entry and its file
-        inseparable.
+        Naming by key rather than by position makes an entry and its file
+        inseparable: a renumbering cannot make one segment overwrite the file
+        another entry points at.
         """
         return key.replace(":", "_")
 
@@ -47,10 +44,9 @@ class RenderLedger:
     def _locate(self, path: Path) -> Path | None:
         """`path`, or the same file beside this ledger, or None.
 
-        The ledger writes absolute paths, so renaming or moving the project
-        folder made every entry miss and every sentence be recorded again --
-        silently, and on a paid voice that is a dollar a lecture. The audio
-        always sits beside the ledger, so the name is enough to find it.
+        The ledger writes absolute paths, which break when the project folder
+        is renamed or moved. The audio always sits beside the ledger, so the
+        name is enough to find it.
         """
         here = self.path.parent
         for cand in (path, here / "audio" / path.name, here / path.name):

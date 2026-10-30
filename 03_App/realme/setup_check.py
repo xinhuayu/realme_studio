@@ -63,8 +63,7 @@ def run_checks(model: str = "") -> list[Check]:
     # section. When none works, decks cannot be read at all and the declared
     # dependency is installed like any other.
     # `pdfdoc.backend()` names the fallback without checking it exists, so
-    # this used to print "PDF backend ok" on a machine that could read no
-    # deck at all. Ask the fallback's own parts.
+    # the fallback's own parts are checked here.
     have_mupdf = False
     try:
         from realme.pipeline import pdfdoc
@@ -104,26 +103,21 @@ def run_checks(model: str = "") -> list[Check]:
 
     # `required` here has to mean the same thing `pyproject.toml` means, or
     # the install step and the dependency list disagree about what RealMe
-    # needs. numpy and scipy were marked optional and are not: the comment in
-    # pyproject says so in as many words -- numpy generates the mask tone and
+    # needs. numpy and scipy are required: numpy generates the mask tone and
     # every enrolment measurement, scipy runs the acoustic check a lecture
-    # render performs by default. A render could finish all its work and then
-    # fail on an import at the last step.
+    # render performs by default, at the last step.
     for mod, why, req in (("pydantic", "data contracts", True),
                           ("PIL", "image sizing", True),
                           ("fastapi", "the Studio web app", True),
                           ("uvicorn", "serving the Studio", True),
-                          # Every upload in the Studio goes through this;
-                          # declared in pyproject but never checked here.
+                          # Every upload in the Studio goes through this.
                           ("multipart", "Studio uploads", True),
                           ("pptx", "reading .pptx speaker notes", True),
                           ("numpy", "enrolment measurement and the mask tone", True),
                           ("scipy", "the acoustic check every render runs", True),
-                          # Installed by default: a deck with equations in
-                          # it is not unusual in this audience, and finding out
-                          # that they are read as raw LaTeX halfway through a
-                          # render is a poor way to learn that a package was
-                          # optional. Speaking them ALSO wants
+                          # Installed by default: decks with equations are
+                          # common, and without it they are read as raw
+                          # LaTeX. Speaking them ALSO wants
                           # speech-rule-engine, which is npm's and stays a
                           # printed suggestion below.
                           ("latex2mathml", "converting equations to speech", True),
@@ -137,7 +131,7 @@ def run_checks(model: str = "") -> list[Check]:
                    "multipart": "python-multipart"}.get(mod, mod)
         # The note, not the fix: `fix` is parsed by `install_missing` and by
         # `report`, which split on "pip install ". The note is for the reader,
-        # and the reader is the one about to type the wrong thing.
+        # and names the interpreter so the package lands where RealMe looks.
         out.append(Check(f"python: {mod}", ok, why, f"pip install {pipname}",
                          required=req,
                          note=("" if ok else
@@ -168,28 +162,15 @@ def run_checks(model: str = "") -> list[Check]:
 
     # voices
     #
-    # This asked `Path(f"{model}.onnx").exists()` -- a WORKING-DIRECTORY
-    # relative path, while `realme engine install` writes voices to
-    # tools/piper. So the check was false wherever it was run from unless you
-    # happened to be standing in a folder containing the file, which is to say
-    # always false. A correctly installed piper was reported missing and no
-    # amount of reinstalling fixed it.
-    #
-    # It also defaulted to en_US-lessac-medium while the project's default
-    # draft voice is en_US-ryan-medium, so even with the right path it was
-    # asking about the wrong voice. Two independent faults, each sufficient.
-    #
-    # It now asks the same resolver the installer and the adapter use. A third
-    # copy of "where do voices live" was always going to drift from the other
-    # two -- which is exactly what it did.
+    # Asks the same resolver the installer and the adapter use, so all three
+    # agree on where voices live (tools/piper, not the working directory),
+    # and checks every voice in DRAFT_VOICES.
     from realme.engines.install import piper_status, engine_home, piper_home
     from realme.adapters.tts import DRAFT_VOICES
     home = engine_home()
     # Where the voices actually are. `home` is the ENGINE folder
-    # (tools/qwen3); the voices sit beside it in tools/piper, and the message
-    # below named `home / "piper"` -- tools/qwen3/piper, a folder that has
-    # never existed. Anyone who went to look found nothing there and had no
-    # reason to doubt the message.
+    # (tools/qwen3); the voices sit beside it in tools/piper, not in
+    # `home / "piper"`.
     vdir = piper_home(home)
     states = {v: piper_status(home, v) for v in DRAFT_VOICES}
     have_piper = any(st["code"] for st in states.values())
@@ -261,8 +242,8 @@ def run_checks(model: str = "") -> list[Check]:
 
 # Launcher names that earlier versions of RealMe used. Renaming a .bat does not
 # remove the old one -- an update extracts over the folder, it does not clean
-# it -- so without this the folder accumulates every numbering scheme the
-# project has ever had, and it stops being obvious which file to double-click.
+# it -- so without this the folder accumulates old launcher names, and it stops
+# being obvious which file to double-click.
 #
 # This lives in Python, not in 0_Update.bat, for a specific reason: the .bat
 # that runs during an update is the OLD one, already on disk. Only code shipped
@@ -313,14 +294,13 @@ def prune_superseded(dry_run: bool = False) -> list[str]:
     return removed
 
 
-#: Code retired from the release and moved -- never deleted -- into
-#: `_Archive/<folder>` the next time `realme setup` runs (which every update
-#: ends with). Paths are relative to the RealMe folder. A fixed list, for the
-#: same reason as above.
+#: Files that an older install may hold but the release no longer carries.
+#: They are moved -- never deleted -- into `_Archive/<folder>` the next time
+#: `realme setup` runs (which every update ends with). Paths are relative to
+#: the RealMe folder. A fixed list, for the same reason as above.
 #:
-#: October 2026: the animation engine. Animated explainers are made in Anim
-#: Studio, and a finished one joins a lecture with `realme insert`. The guide
-#: v3 video still ships; its scenes source is archived with the engine.
+#: The animation engine: an animated explainer made in a separate tool joins a
+#: lecture with `realme insert`.
 RETIRED_CODE = {
     "animate_2026-10": [
         "03_App/realme/pipeline/animate.py",
@@ -328,13 +308,11 @@ RETIRED_CODE = {
         "03_App/t_animate.py",
         "03_App/examples/guide_v3",
     ],
-    # Development history that a colleague's copy should not carry: the tool
-    # that rebuilt the v2 guide deck, the Anim Studio comparison script, an
-    # early README and Colab notebook, the earlier guides and their render
-    # folder, and the September audit.
+    # Development files a colleague's copy should not carry: a guide-deck
+    # build script, a README and notebook folder, older guide decks, notes and
+    # videos with their render folder, and an audit report.
     "history_2026-10": [
         "03_App/make_guide_slides.py",
-        "03_App/compare_anim_studio.py",
         "03_App/README.md",
         "03_App/notebooks",
         "RealMe_Guide_narrated.pptx",
@@ -354,9 +332,9 @@ def archive_retired(root: Path | None = None, dry_run: bool = False) -> list[str
     """Move retired code into _Archive. Returns what moved.
 
     An update extracts over the folder and never removes anything, so a file
-    the release no longer carries stays on disk -- and a stale module that
-    still imports is the kind of leftover that confuses a test run a month
-    later. Moved, not deleted: `_Archive` is never part of a release.
+    the release no longer carries stays on disk, and a stale module that
+    still imports can confuse a later test run. Moved, not deleted:
+    `_Archive` is never part of a release.
     """
     import shutil
     if root is None:
@@ -394,8 +372,8 @@ def normalise_future_mtimes(root: Path | None = None, log=None) -> int:
     with "manifest still dirty after 100 tries, perhaps system time is not set",
     which reads like a broken clock and is not.
 
-    The archive is now backdated so this should not arise, but an older zip
-    already on disk would still carry it. Only future files are touched.
+    The update archive is backdated, so this arises only from an older zip.
+    Only future files are touched.
     """
     import time
     root = root or (windows_dir().parent if windows_dir() else None)
@@ -426,16 +404,14 @@ def _interpreter_in(prefix: Path) -> Path:
 def foreign_pip() -> tuple[str, str] | None:
     """The `pip` on PATH, when it belongs to a different Python. Else None.
 
-    This is the single most expensive misunderstanding a new user can have,
-    and nothing in the tool used to mention it. Windows machines accumulate
-    Pythons -- a store install, a python.org install, Anaconda, whatever a
-    previous project left behind -- and `pip` resolves to whichever one is
+    Windows machines often have several Pythons -- a store install, a
+    python.org install, Anaconda -- and `pip` resolves to whichever one is
     first on PATH. RealMe runs from a conda environment that its launchers
     deliberately never activate, so PATH almost never points at it.
 
     The result is that `pip install latex2mathml` reports success, and RealMe
     goes on saying the package is missing, because it was installed into a
-    Python RealMe never loads. Nothing is broken and nothing says why.
+    Python RealMe never loads.
 
     Returns (path to that pip, path to its interpreter).
     """
@@ -454,10 +430,8 @@ def foreign_pip() -> tuple[str, str] | None:
 def installed_elsewhere(python_exe: str, names) -> set:
     """Which of `names` that OTHER interpreter already has.
 
-    One subprocess, not one per package. Asked rather than assumed, because
-    "you installed it into the wrong Python" is a guess until the other Python
-    has been asked, and telling somebody that when it is not true sends them
-    looking in the wrong place.
+    One subprocess, not one per package. Asked rather than assumed, so
+    "installed into the other Python" is only reported when it is true.
     """
     want = {n.lower().replace("_", "-") for n in names}
     if not want:
@@ -475,16 +449,15 @@ def installed_elsewhere(python_exe: str, names) -> set:
 def managed_environment() -> tuple[bool, str]:
     """May this interpreter be installed into, and what is it?
 
-    Installing into the Python that came with the operating system is rude,
-    often needs administrator rights, and can break something else on the
-    machine. A conda environment or a virtualenv is ours; a system interpreter
+    Installing into the Python that came with the operating system often
+    needs administrator rights and can break something else on the machine. A conda environment or a virtualenv is ours; a system interpreter
     is not.
 
     `conda-meta` rather than `CONDA_PREFIX`, because that variable is only set
     by `conda activate` and RealMe's launchers deliberately never activate --
     they run `...\\envs\\realme\\Scripts\\realme.exe` directly, which is why they
-    start instantly. Testing the variable would have called the right
-    environment a system one every time the app was launched normally.
+    start instantly. Testing the variable would call the right environment
+    a system one whenever the app is launched normally.
     """
     prefix = Path(sys.prefix)
     if (prefix / "conda-meta").is_dir():
@@ -500,14 +473,13 @@ def install_missing(checks, log=print, required_only: bool = True) -> int:
 
     Driven by the SAME list `run_checks` walks, and by the `pip install ...`
     string it already prints, so there is no second inventory of what RealMe
-    needs. A separate list would be the one that goes stale.
+    needs.
 
     Only pip, and only into the interpreter running this -- `sys.executable`,
     not whatever `pip` resolves to on PATH, which on a machine with several
     environments installs into the wrong one and reports success. Nothing else
     on the list is touched: ffmpeg, LibreOffice and the equation reader are
-    not pip's to install, and guessing at a package manager is how an install
-    script breaks a machine it was asked to help.
+    not pip's to install, and no other package manager is guessed at.
     """
     wanted = []
     for c in checks:
@@ -547,9 +519,8 @@ def install_missing(checks, log=print, required_only: bool = True) -> int:
 def explain_wrong_pip(missing: list, log=print) -> bool:
     """Say, before anything else, that `pip` here is not RealMe's pip.
 
-    Only when something is actually missing -- the situation is harmless until
-    somebody tries to fix it by hand, and a warning printed on every healthy
-    run is a warning nobody reads.
+    Only when something is actually missing: the situation is harmless until
+    somebody tries to fix it by hand, and a healthy run stays quiet.
     """
     other = foreign_pip()
     if other is None:
@@ -598,8 +569,8 @@ def report(model: str = "", install: bool = True) -> int:
     needs this is the one who has just unzipped the package and does not yet
     know that `--fix` exists. Everything that is pip's to install gets
     installed; everything that is not -- ffmpeg, LibreOffice, the equation
-    reader -- is printed as a command to run, because guessing at a package
-    manager is how a setup script breaks a machine it was trying to help.
+    reader -- is printed as a command to run, rather than guessing at a
+    package manager.
 
     `--no-install` turns it back into a pure diagnostic.
     """
@@ -651,9 +622,8 @@ def report(model: str = "", install: bool = True) -> int:
 
     # Every pip command printed for a person to TYPE names the interpreter.
     # `c.fix` keeps its plain form because `install_missing` parses it; what
-    # is shown is the form that installs where RealMe looks. A bare
-    # `pip install x` in this list is the same trap `explain_wrong_pip`
-    # exists to warn about, printed as advice.
+    # is shown is the form that installs where RealMe looks, avoiding the
+    # problem `explain_wrong_pip` warns about.
     def _typed(c):
         if str(c.fix).startswith("pip install "):
             return install_here(str(c.fix)[len("pip install "):])
@@ -673,11 +643,9 @@ def report(model: str = "", install: bool = True) -> int:
 
     # Repeat the verdict at the END.
     #
-    # The table above is the actual answer, and it is the first thing printed --
-    # which means it is the first thing to scroll away. `0_Update.bat` finishes
-    # with a pause, so the only part anyone reads is the tail, and the tail was
-    # a list of things that are MISSING. Reasonable conclusion: the thing you
-    # were looking for is not installed. It usually is.
+    # The table above is the actual answer, but it is printed first and
+    # scrolls away. `0_Update.bat` finishes with a pause, so the tail is what
+    # is read; it states what passes as well as what is missing.
     print("=" * 60)
     present = [c.name for c in checks if c.ok]
     print(f"  {len(present)} of {len(checks)} checks pass.")
@@ -707,10 +675,8 @@ def report(model: str = "", install: bool = True) -> int:
     # GPU readiness, said here rather than only in `engine cpp --cpp-action
     # status`. The C++ engine is what actually records lectures, and on a new
     # machine the difference between five hours and something practical is
-    # whether it was compiled for the GPU sitting in it. Nobody runs a status
-    # command for a fact they do not yet know exists.
+    # whether it was compiled for the GPU sitting in it.
     # What this machine needs doing to the engine, measured rather than assumed.
-    # This is the part that matters on a computer the package just arrived on.
     try:
         from realme.engines.cpp import engine_advice
         print("")

@@ -2,37 +2,25 @@
 Say the words fast, then repaint the voice.
 
 An autoregressive engine like Qwen3 generates one audio token per forward pass,
-which is why it runs at RTF 6 and a 50-minute lecture costs five hours. Nothing
-about that is a tuning problem -- it is what the architecture does.
+which is why it runs at RTF 6 and a 50-minute lecture costs five hours. That
+is the architecture, not a tuning problem.
 
 This adapter takes the other route. A non-autoregressive engine that generates
 the whole waveform in parallel (piper: RTF 0.04-0.10) says the words, and a
 converter changes *whose voice* they are in. Two cheap stages instead of one
-expensive one.
+expensive one: piper + knnvc runs at about RTF 0.4.
 
-**Measured, on xyu's own 72-second reference, eight utterances, this container:**
+Conversion moves the features that carry *identity* (pitch, spectral
+centroid) close to the reference. It loses dynamic range, because a neural
+vocoder compresses -- a mixing artefact, not a wrong voice -- which pulls a
+composite resemblance score down; compare per-feature figures, not just the
+total.
 
-    piper alone        RTF 0.04    resemblance 64.3%
-    piper + knnvc      RTF 0.42    resemblance 71.8%
+kNN-VC is non-parametric: it rebuilds each frame out of the nearest frames in
+*your* recording, so it has more to work with the more you give it, and 5-10
+minutes is what the method expects.
 
-The composite number understates it, and the per-feature breakdown says why:
-
-    pitch median          207.8 Hz -> 168.4 Hz   (reference 155.3)   56% -> 89%
-    spectral centroid     1162 Hz  -> 1558 Hz    (reference 1484)    78% -> 95%
-    pitch variation                                                  48% -> 73%
-    dynamic range         36.8 dB  -> 29.7 dB    (reference 38.3)    85% -> 14%
-
-Conversion moved every feature that carries *identity* to 89-95%. What it lost
-was dynamic range, because a neural vocoder compresses -- that is a mixing
-artefact, not a wrong voice, and it costs about ten points of the composite.
-Read the features, not just the total.
-
-The reference was 72 seconds. kNN-VC is non-parametric: it rebuilds each frame
-out of the nearest frames in *your* recording, so it has more to work with the
-more you give it, and 5-10 minutes is what the method expects. The recording
-session that Path A needs for fine-tuning feeds this too.
-
-**Limitation worth knowing.** WavLM and the kNN-VC vocoder both run at 16 kHz,
+**Limitation.** WavLM and the kNN-VC vocoder both run at 16 kHz,
 so output is 16 kHz -- duller than the 22-24 kHz the other engines produce.
 OpenVoice does not have that ceiling.
 """
@@ -93,18 +81,12 @@ class KNNVCConverter(Converter):
     #:
     #: This is the smoothing control. 4 is upstream's default and the safe
     #: choice; 1 copies the single nearest frame and keeps the most detail.
-    #: Measured on eight utterances against a 72-second reference, every axis
-    #: that relates to "over-smoothed" improved monotonically as it came down:
+    #: Lower values measure slightly better on resemblance, pitch variation
+    #: and dynamic range (71.1% at 4, 72.4% at 1).
     #:
-    #:     topk   resemblance   pitch variation   dynamic range
-    #:     4         71.1%          9.26              24.7 dB
-    #:     2         71.3%          9.90              25.3 dB
-    #:     1         72.4%         10.43              25.8 dB
-    #:     you                     11.81              38.3 dB
-    #:
-    #: The default stays at 4 because a metric cannot hear roughness, and a
-    #: small matching set has fewer good neighbours to fall back on. Try
-    #: `--vc-topk 1` and trust your ears over the table.
+    #: The default is 4 because a metric cannot hear roughness, and a small
+    #: matching set has fewer good neighbours to fall back on. `--vc-topk 1`
+    #: is worth a listening test.
     DEFAULT_TOPK = 4
 
     def __init__(self, topk: int | None = None, device: str = "cpu",
@@ -126,8 +108,7 @@ class KNNVCConverter(Converter):
     def _patch_audio_io(self) -> None:
         """
         torchaudio 2.9+ routes load/save through torchcodec, which is a separate
-        install and usually absent. Found by running this, not by reading it:
-        the first end-to-end attempt died on `torchaudio.load`. The audio here
+        install and usually absent, so `torchaudio.load` fails. The audio here
         is plain 16-bit PCM, so soundfile reads it directly.
         """
         import torch
@@ -194,18 +175,15 @@ class KNNVCConverter(Converter):
             sys.path.insert(0, src)
         import json
         # Vendored upstream code, kept byte-identical so a future diff against
-        # the original means something -- which means its two bits of noise
-        # cannot be edited out at the source.
+        # the original means something -- so its two bits of noise cannot be
+        # edited out at the source.
         #
         #   torch: `weight_norm` is deprecated in favour of
-        #          `parametrizations.weight_norm`. A warning about a torch API
-        #          used by kNN-VC's HiFi-GAN, in code this project does not
-        #          own and does not intend to modernise.
+        #          `parametrizations.weight_norm`, used by kNN-VC's HiFi-GAN.
         #   hifigan: prints "Removing weight norm..." from inside
         #          `remove_weight_norm()`.
         #
-        # Neither is actionable by anyone reading it, and both land in the
-        # middle of a render where a real message would be missed among them.
+        # Neither is actionable, and both land in the middle of a render.
         # Silenced here, narrowly: one warning category, one module's stdout,
         # for the duration of the load only.
         import warnings, contextlib, io
@@ -289,12 +267,11 @@ def _librosa_works() -> bool:
     """
     Can librosa do the two things OpenVoice needs of it?
 
-    **Importing librosa is not the test**, which is what the first attempt at
-    this got wrong. librosa 0.10 loads its submodules lazily, so `import
+    **Importing librosa is not the test.** librosa 0.10 loads its submodules lazily, so `import
     librosa` succeeds on a machine where librosa is unusable, and the failure
     arrives later at `from librosa.filters import mel` -- that is the line that
     reaches numba, llvmlite, and the native DLL Windows Application Control
-    blocks. The guard has to touch the same door the code will.
+    blocks. The guard has to import the same path the code will.
     """
     try:
         import librosa  # noqa: F401
@@ -312,7 +289,7 @@ def _use_librosa_shim(shim_dir: Path) -> bool:
     top-level import SUCCEEDS, so a broken `librosa` is already sitting in
     `sys.modules`, and every later `import librosa` -- including the one inside
     OpenVoice -- gets that object back without consulting `sys.path` at all.
-    Adding the shim to the path does nothing until the corpse is removed.
+    Adding the shim to the path does nothing until that entry is removed.
     """
     if _librosa_works():
         return False
@@ -333,9 +310,8 @@ class OpenVoiceConverter(Converter):
     Lighter than kNN-VC in every dimension -- 30 MB of weights against 1.3 GB,
     seconds of reference audio instead of minutes, 24 kHz output instead of 16.
 
-    **Not measured.** The container this was written in cannot reach the host
-    that serves OpenVoice's weights, so unlike kNN-VC there is no number here
-    that came from running it. Bench it before believing anything about it.
+    **Not measured.** Unlike kNN-VC, there are no measured figures for it;
+    bench it before relying on it.
     """
     name = "openvoice"
     sample_rate = 24000
@@ -388,8 +364,8 @@ class OpenVoiceConverter(Converter):
             which accepts only `config_path` and `device`, so passing it raises
             `TypeError: OpenVoiceBaseClass.__init__() got an unexpected keyword
             argument 'enable_watermark'`. Leaving it out instead makes the
-            constructor `import wavmark` and download a second model, to stamp
-            an inaudible watermark into a lecture nobody is going to contest.
+            constructor `import wavmark` and download a second model to stamp
+            an inaudible watermark, which this use does not need.
 
             So the base initialiser is called directly and the two attributes
             the rest of the class needs are set here. `add_watermark` already
@@ -408,10 +384,9 @@ class OpenVoiceConverter(Converter):
 
                 torch 2.6 flipped that default to True, and a checkpoint
                 carrying anything but tensors then fails with an unpickling
-                error that reads like a corrupt file. This project has already
-                been bitten by it once, loading kNN-VC's weights. The file comes
-                from the repository we chose; the risk this flag guards against
-                is not the risk we have.
+                error that reads like a corrupt file (kNN-VC's weights are
+                loaded the same way). The file comes from a known upstream
+                repository, not from untrusted input.
                 """
                 import torch
                 sd = torch.load(ckpt_path, map_location=self.device,
@@ -464,9 +439,8 @@ class VoiceConversionTTS(BaseTTS):
     """
     A base engine for the words, a converter for the voice.
 
-    The base adapter is built through `adapters.factory`, not constructed here.
-    That is not fussiness: four call sites once each built adapters their own
-    way and each was wrong differently, and this would have been the fifth.
+    The base adapter is built through `adapters.factory`, not constructed here,
+    so it receives the same inputs as every other caller's.
     """
     is_voice_clone = True
     is_placeholder = False
@@ -509,8 +483,8 @@ class VoiceConversionTTS(BaseTTS):
             self.reference_wav and self.reference_wav.is_file()) else "noref"
         # Everything that changes the audio, or the ledger serves a cached take
         # made with different settings.
-        # Distinct prefixes: `name[0]` gave topk and tau the same letter, so a
-        # topk of 4 and a tau of 4 would have shared a cache entry.
+        # Distinct prefixes, so a topk of 4 and a tau of 4 cannot share a
+        # cache entry.
         knobs = []
         for name, prefix in (("topk", "k"), ("tau", "t")):
             v = getattr(self.converter, name, None)
@@ -525,9 +499,8 @@ class VoiceConversionTTS(BaseTTS):
         """Could this run -- without loading WavLM or a vocoder.
 
         `preflight` loads the converter's models (~18 s and a few hundred
-        megabytes of torch). A status page asked it on every refresh, which
-        is why starting the Studio printed two weight_norm warnings and sat
-        there. This asks the questions that actually decide the answer.
+        megabytes of torch), too much for a status page to pay on every
+        refresh. This asks the questions that actually decide the answer.
         """
         self.base().check()
         if not (self.reference_wav and Path(self.reference_wav).is_file()):

@@ -6,9 +6,8 @@ REM  This script RELAUNCHES ITSELF FROM %TEMP% before it extracts anything.
 REM
 REM  cmd does not load a .bat into memory: it reads the next line from the
 REM  file, by byte offset, each time it needs one. The update zip carries
-REM  00_Windows\0_Update.bat, so extracting it replaced the file that was
-REM  running, and every line after the extract was read from the middle of
-REM  the NEW file - whatever command happened to sit at that offset. So the
+REM  00_Windows\0_Update.bat, so extracting it replaces the running file and
+REM  every later line would be read from the middle of the NEW file. So the
 REM  copy in this folder only copies itself out and hands over; the copy in
 REM  %TEMP% does the work, and it can be overwritten here freely.
 REM
@@ -66,10 +65,8 @@ REM  Refuse to extract an update that would write into tools\.
 REM
 REM  tools\ holds ~3 GB that was downloaded or copied once: ffmpeg, the voice
 REM  engine's virtual environment, and the model weights. Expand-Archive only
-REM  overwrites paths present in the archive, so today this cannot happen -- but
-REM  "cannot happen because nobody put it in the zip" is a convention, and this
-REM  turns it into a check. An update that tried would be stopped here, not
-REM  discovered afterwards by a voice engine that no longer loads.
+REM  overwrites paths present in the archive, so this check stops any update
+REM  zip that contains tools/ entries before anything is extracted.
 echo  Checking the update ...
 powershell -NoProfile -ExecutionPolicy Bypass -Command ^
   "$ErrorActionPreference='Stop';" ^
@@ -92,11 +89,9 @@ REM  Superseded launchers are removed by `realme setup` at the end of this
 REM  script, NOT here.
 REM
 REM  Two reasons. First, the .bat running during an update is the OLD copy,
-REM  already on disk - it cannot know about a rename that arrives in the very
+REM  already on disk - it cannot know about a rename that arrives in the
 REM  update it is applying. Code shipped inside the zip can. Second, the list
-REM  belongs in one place, and a cmd `for (...)` list cannot span lines: the
-REM  version that used to live here was silently broken for exactly that
-REM  reason, which is how the folder collected three numbering schemes.
+REM  belongs in one place, and a cmd `for (...)` list cannot span lines.
 echo.
 echo  Updated. 'pip install -e' points at this folder, so new code is live
 echo  without reinstalling.

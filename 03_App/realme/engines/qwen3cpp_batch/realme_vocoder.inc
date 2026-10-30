@@ -3,8 +3,9 @@
 //
 // Included into audio_tokenizer_decoder.cpp in RealMe's staged copy of the
 // engine (never the vendored source). The vocoder turns the codes into
-// 24,000 samples a second through about thirty convolutions; on the CPU it
-// was a quarter to a half of the engine's time. Upstream runs them as
+// 24,000 samples a second through about thirty convolutions; on the CPU
+// upstream's version takes a quarter to a half of the engine's time.
+// Upstream runs them as
 //   - conv1d: the signal unrolled (im2col) into 16-bit floats, then a 16-bit
 //     matrix multiply -- the signal is rounded to 16 bits at every layer;
 //   - transposed conv1d (the upsampling layers): GGML's direct kernel, which
@@ -27,8 +28,8 @@
 //
 // Memory: the copies are about 220 MB, and the 32-bit unrolled signal and
 // the transposed convolutions' products take about 1.8 times upstream's
-// working memory per second of speech (measured: 20 s of speech 4.6 GB
-// against 2.5 GB). So a sentence longer than QWEN3_TTS_VOCODER_F32_MAX_FRAMES
+// working memory per second of speech (20 s of speech: 4.6 GB against
+// 2.5 GB). So a sentence longer than QWEN3_TTS_VOCODER_F32_MAX_FRAMES
 // codes (default 250, 20 s) is decoded as upstream does it: the peak is then
 // never above what upstream needs for a sentence of about 35 s.
 

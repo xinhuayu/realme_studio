@@ -1,23 +1,16 @@
 """
 Hearing the draft voices side by side, before choosing one.
 
-The Studio offers two: Ryan and Lessac. That is not a shortlist, it is
-everything that was installed, and "pick a better guest voice" currently has no
-options to pick from. Piper publishes about thirty English voices; the ones
-below are the single-speaker English ones, which is the set this project can
-actually use.
+Piper publishes about thirty English voices; the ones below are the
+single-speaker English ones, which is the set RealMe can use.
 
 MULTI-SPEAKER MODELS ARE LEFT OUT. `en_US-libritts-high` carries 904 speakers,
-`en_GB-vctk-medium` 109, `en_GB-aru-medium` 12. The whole value of those is
-choosing among the speakers, and the piper adapter has no way to say which one
-it wants -- it would silently get speaker zero every time. A voice that cannot
-be chosen properly does not belong in an audition.
+`en_GB-vctk-medium` 109, `en_GB-aru-medium` 12. The piper adapter cannot
+select a speaker, so it would always get speaker zero.
 
-QUALITY TIERS ARE NOT DECORATION, and this is the first thing to try for the
-guest: `en_US-lessac-medium` is the voice that sounded mechanical, and
-`en_US-lessac-high` is the SAME speaker at the larger model size. Before
-changing who the guest is, it is worth hearing whether the complaint was the
-speaker or the tier.
+QUALITY TIERS MATTER: `en_US-lessac-high` is the SAME speaker as
+`en_US-lessac-medium` at the larger model size, so the two can be compared to
+tell whether a problem is the speaker or the tier.
 
 Nothing here downloads a voice that is already on disk -- `install_piper` is
 idempotent and checks for both the .onnx and its .onnx.json, since a voice is
@@ -29,19 +22,18 @@ from pathlib import Path
 
 #: The single-speaker English piper voices, from the published catalogue.
 #: `female`/`male` as the catalogue describes them; the accent tag is the
-#: locale, which is not the same as what a listener hears -- Lessac is a US
-#: voice that was heard as British, and that is a fact about its prosody rather
-#: than about its label.
+#: locale, which is not always what a listener hears (Lessac is a US voice
+#: whose prosody can sound British).
 CANDIDATES = {
     # US, female
     "en_US-amy-medium":          ("female", "US", "Amy"),
     "en_US-hfc_female-medium":   ("female", "US", "HFC female"),
     "en_US-kristin-medium":      ("female", "US", "Kristin"),
     "en_US-kathleen-low":        ("female", "US", "Kathleen (low tier)"),
-    "en_US-lessac-medium":       ("female", "US", "Lessac — the current guest"),
+    "en_US-lessac-medium":       ("female", "US", "Lessac"),
     "en_US-lessac-high":         ("female", "US", "Lessac, high tier — same speaker, bigger model"),
     # US, male
-    "en_US-ryan-medium":         ("male", "US", "Ryan — the current alternative"),
+    "en_US-ryan-medium":         ("male", "US", "Ryan"),
     "en_US-ryan-high":           ("male", "US", "Ryan, high tier"),
     "en_US-hfc_male-medium":     ("male", "US", "HFC male"),
     "en_US-joe-medium":          ("male", "US", "Joe"),
@@ -58,22 +50,17 @@ CANDIDATES = {
     "en_GB-northern_english_male-medium": ("male", "UK", "Northern English"),
 }
 
-#: A shortlist worth hearing first when the complaint is "mechanical, and the
-#: accent is wrong". The same-speaker upgrade leads, because it is the one
-#: change that keeps everything else about the voice.
-#: What to hear first. The two offered voices lead, so an audition run after
-#: the choice was made starts by confirming it rather than by relitigating it;
-#: the rest are the plausible alternates.
+#: What to hear first. The offered draft voices lead; the rest are the
+#: plausible alternates.
 SHORTLIST = ("en_US-amy-medium", "en_GB-cori-high", "en_US-hfc_female-medium",
              "en_US-kristin-medium", "en_GB-jenny_dioco-medium")
 
 #: There is no `en_US-amy-high`. Amy is published at low and medium only, and
 #: the medium is the best Amy there is. Only three English voices have a high
 #: tier at all -- en_US-lessac-high, en_GB-cori-high, and en_US-libritts-high,
-#: which is a 904-speaker model this project cannot address. The tier is model
-#: size and sample rate, not a ranking of voices: Amy at medium beat Lessac at
-#: medium on a side-by-side, which is a difference of speaker and source
-#: recordings, not of tier.
+#: which is a 904-speaker model RealMe cannot address. The tier is model
+#: size and sample rate, not a ranking of voices: speaker and source
+#: recordings matter more than tier.
 HIGH_TIER = ("en_US-lessac-high", "en_GB-cori-high")
 
 #: What each voice reads. Written to expose what makes a voice sound
@@ -110,8 +97,8 @@ def ensure(voice: str, log=print) -> tuple[bool, str]:
     Delegates to the installer the rest of the app uses, so an audition cannot
     end up with voices in a place the Studio will not look.
     """
-    # engine_home lives in engines.install, beside the installer that uses it
-    # -- not in core.env. Guessed wrong once already in this package.
+    # engine_home lives in engines.install, beside the installer that uses
+    # it, not in core.env.
     from realme.engines.install import install_piper, piper_status, engine_home
     home = engine_home()
     before = piper_status(home, voice).get("voice_present", False)
@@ -204,6 +191,6 @@ def report(heard: list[Heard]) -> str:
         "range = 10th-90th percentile of pitch, in semitones. A voice that",
         "        sounds mechanical usually measures narrow here -- but this is",
         "        a screening number, not a verdict, and a wide range can also",
-        "        mean a voice that wanders. Listen before believing it.",
+        "        mean a voice that wanders. Listen to it.",
     ]
     return "\n".join(lines)

@@ -10,8 +10,7 @@ recipient — `README_MIGRATION.md`, inside the zip.
 
 Double-click **`00_Windows\_Make_Package_For_Others.bat`**. It runs the checks,
 asks whether to include the free local voice clone (`qwen3cpp`, default
-**yes** -- it is a standard part of RealMe), shows what the package will
-hold, and writes `RealMe_Package.zip`.
+**yes**), shows what the package will hold, and writes `RealMe_Package.zip`.
 
 The same from a Command Prompt opened by `5_Command_Prompt.bat`:
 
@@ -139,6 +138,6 @@ covers the rest.
 Send a `RealMe_Update.zip` rather than the whole package again: double-click
 `00_Windows\_Make_Update_Zip.bat` and answer **2** (for colleagues) — that
 leaves out your developer-only launchers, as the package did. It runs the
-checks first and writes the zip to the RealMe folder. They put it in their own RealMe folder and double-click
-`0_Update.bat`, which extracts it over the program files. Their data folder and
+checks first and writes the zip to the RealMe folder. They put it in their
+own RealMe folder and double-click `0_Update.bat`, which extracts it over the program files. Their data folder and
 `tools\` are never touched.

@@ -23,7 +23,7 @@ ratio between them is a screening number rather than a verdict.
 THE CONFOUND. In a two-speaker dialogue, the largest between-turn pitch
 difference is that the two speakers are different people. Measured across all
 turns, an exchange between a low male voice and a higher one scores as
-enormously dynamic while both read from a phone book. Every between-turn
+highly dynamic even when both read flatly. Every between-turn
 quantity here is therefore computed WITHIN a speaker and then averaged across
 speakers -- never across the whole transcript.
 """
@@ -38,7 +38,7 @@ MIN_TURNS_PER_SPEAKER = 3
 
 #: Floor on the within-turn figure when forming the ratio, in semitones.
 #: Without it a perfectly steady synthetic voice divides by ~0 and the
-#: separation ratio reports a triumph that is really a measurement artefact.
+#: separation ratio reports a large value that is a measurement artefact.
 WITHIN_FLOOR_ST = 0.25
 
 

@@ -15,12 +15,10 @@ switched off. This builds a second copy of the engine with it switched on,
 in its own folder (tools/qwen3cpp_timing) -- the engine the Studio uses is
 not touched -- and records a few sentences with it.
 
-It also fixes one thing in that copy only, and measures it. The engine has
-a thread setting and never passes it on: every one of its calculations runs
-on GGML's default of 4 threads, whatever the setting says. (That is why
-6, 8, 12 and 16 threads once measured the same -- they were all 4.) The copy
-reads QWEN3_TTS_THREADS and applies it, so the measurement can say whether
-more threads help once they actually arrive.
+Upstream stores a thread setting but does not pass it on, so its
+calculations run on GGML's default of 4 threads. The copy, like the working
+engine, reads QWEN3_TTS_THREADS and applies it, so the measurement shows
+how the time changes with the thread count.
 
 Nothing here changes how lectures are recorded. It reports, and keeps the
 raw stopwatch output beside the summary.
@@ -37,7 +35,7 @@ import sys
 import time
 from pathlib import Path
 
-#: The thread patch is the one the real engine now gets too (engines/cpp.py);
+#: The thread patch is the one the working engine gets (engines/cpp.py);
 #: the timing copy applies it the same way, so the two cannot drift apart.
 from realme.engines.cpp import (THREADS_ANCHOR as _THREADS_ANCHOR,  # noqa: E402
                                 THREADS_INCLUDE_ANCHOR as _INCLUDE_ANCHOR,
@@ -47,7 +45,7 @@ from realme.engines.cpp import (THREADS_ANCHOR as _THREADS_ANCHOR,  # noqa: E402
                                 apply_vocoder_patch)
 _GGML_DIR_LINE = 'set(GGML_DIR "${CMAKE_CURRENT_SOURCE_DIR}/ggml")'
 
-#: The default thread counts to compare. 4 is what the engine uses today.
+#: The default thread counts to compare. 4 is GGML's default.
 DEFAULT_THREADS = (4, 6, 8, 12)
 
 
@@ -486,7 +484,7 @@ def report(results: dict) -> tuple[str, dict]:
     base_n = 4 if 4 in ok else min(ok)
     b = ok[base_n]
     pct = lambda x: f"{100 * x:4.0f}%"
-    lines = [f"Where the time goes ({base_n} threads, as the engine runs today):",
+    lines = [f"Where the time goes ({base_n} threads):",
              f"  turning codes into sound (vocoder)      {pct(b['vocoder'])}",
              f"  main model, once per slice:  computing  {pct(b['main_compute'])}",
              f"                               re-planning{pct(b['main_replan'])}",
@@ -497,7 +495,7 @@ def report(results: dict) -> tuple[str, dict]:
              f"  everything else                         {pct(b['other'])}",
              "",
              f"Rebuilding the same calculation plans: {pct(b['replan_share']).strip()} "
-             f"of the time.", "", "Threads (now actually applied):"]
+             f"of the time.", "", "By thread count:"]
     for n in sorted(ok):
         r = ok[n]
         lines.append(f"  {n:>2} threads: {r['rtf']:.2f} times real time"

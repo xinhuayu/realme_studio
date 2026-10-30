@@ -57,9 +57,9 @@ def wrong_interpreter_note() -> str:
     """The instruction to print when the engines are missing.
 
     Both this script and `verify_tree.py` need it, so it lives in
-    `realme.core.env` and this is the one call that names the command worth
-    repeating. Imported late: the whole point is that the interpreter may be
-    one where importing anything from the package is what just failed.
+    `realme.core.env`; this call supplies the command to repeat. Imported
+    late, because the interpreter may be one where importing from the
+    package fails.
     """
     try:
         from realme.core.env import wrong_interpreter_note as _note
@@ -78,8 +78,8 @@ def real_voices(log, instructor=None, guest=None, registers=True):
     """
     from realme.pipeline import casting
     from realme.app.profile import Profile
-    # core.env, not core.paths. Guessed wrong the first time and it failed on
-    # the first real run; every other caller in the project uses this one.
+    # core.env, not core.paths: data_home lives there, as every other caller
+    # in the project uses it.
     from realme.core.env import data_home
     profile = Profile(data_home() / "profile")
     a = profile.data.get("adapters", {})
@@ -132,8 +132,7 @@ def main() -> int:
                          "register-switched, and shifted along the emotion "
                          "directions — and blind them, so the question 'is "
                          "tau better than the registers I already had?' is "
-                         "answered by ear rather than by preference for the "
-                         "newer thing.")
+                         "answered by ear.")
     ap.add_argument("--list-voices", action="store_true",
                     help="Print the draft voices that can be auditioned")
     ap.add_argument("--guest", default=None, metavar="SPEC",
@@ -181,12 +180,10 @@ def main() -> int:
         return 0
 
     if a.compare:
-        # The decision this whole line of work comes down to. StanceVoiced
-        # already switches between the four recorded registers; tau's only
-        # extra claim is that it can sit BETWEEN them and be dialled. That
-        # claim is worth something only if the result is at least as good, so
-        # the two are rendered from the same script, by the same voices, and
-        # handed over unlabelled.
+        # StanceVoiced already switches between the four recorded registers;
+        # tau adds the ability to sit BETWEEN them and be dialled. To compare
+        # the results, the two are rendered from the same script, by the same
+        # voices, and handed over unlabelled.
         from realme.core.env import data_home
         from realme.app.profile import Profile
         from realme.pipeline import casting
@@ -204,8 +201,7 @@ def main() -> int:
             return 2
         try:
             # UNWRAPPED, deliberately. Each arm below applies exactly one kind
-            # of control, and a control arm that arrived pre-controlled is not
-            # a control.
+            # of control, so the voices must arrive with none applied.
             adapters = real_voices(print, instructor=a.instructor,
                                    guest=a.guest, registers=False)
         except Exception as e:
@@ -218,7 +214,7 @@ def main() -> int:
             return ad
 
         def registers(ad, _st):
-            # Pace AND register, which is what a podcast render does today.
+            # Pace AND register, which is what a podcast render does.
             return StancePaced(casting.with_registers(ad, prof, log=None),
                                enabled=True, strength=1.0)
 
@@ -262,8 +258,8 @@ def main() -> int:
 
     if a.tau:
         # The sweep needs the REAL cloned engine: a direction is a point in
-        # one encoder's space and the synthetic voice has no encoder at all.
-        # Said plainly rather than by producing tones and a table.
+        # one encoder's space and the synthetic voice has no encoder at all,
+        # so --dry-run is refused here.
         from realme.core.env import data_home
         from realme.expressive import tau as TAU
         store = data_home() / "voice" / "registers" / "tau.json"
@@ -341,8 +337,7 @@ def main() -> int:
                               Condition("stance", a.strength, "stance pacing")])
     except RuntimeError as e:
         # A voice that cannot start. Reported as a sentence and an instruction,
-        # not a traceback: the useful line is usually the last one and readers
-        # should not have to dig for it.
+        # not a traceback, whose useful line is usually the last one.
         print(f"\n{e}\n", file=sys.stderr)
         if not a.dry_run:
             print(wrong_interpreter_note(), file=sys.stderr)

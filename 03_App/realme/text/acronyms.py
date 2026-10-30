@@ -3,36 +3,32 @@ Spelling out initialisms, by default.
 
 The rule this implements: **an unfamiliar all-caps term is spelled out unless it
 is a word people actually say.** WIOA is "double-you eye oh ay". NASA is "nassa".
-Getting it backwards is not a small blemish -- "wai-oh-ah" in the middle of a
-lecture on the Workforce Innovation and Opportunity Act sounds like the speaker
-does not know the field.
 
 The default is spelling because the failure modes are not symmetric. An
 initialism read as a word is a mispronunciation an expert audience notices
-immediately. A genuine acronym spelled out is merely stilted, and is caught the
-first time you listen. So the safe direction is the default, and the exceptions
+immediately. A genuine acronym spelled out is merely stilted, and is caught on
+the first listen. So the safe direction is the default, and the exceptions
 are enumerated.
 
 Three ways a term escapes being spelled:
 
   1. It is in WORDLIKE below -- pronounced as a word by everyone.
-  2. It has a lexicon entry, which always wins. That is the override: you
-     decided, once, and the decision is recorded.
+  2. It has a lexicon entry, which always wins. That is the override: a
+     recorded decision.
   3. It is not shaped like an initialism at all (has lowercase, is one letter,
      is longer than six).
 """
 from __future__ import annotations
 import re
 
-# All-caps terms that are ordinary spoken words. Kept deliberately short: this
-# is a list of exceptions, and a long exception list means the rule is wrong.
-# Add to it when you meet one, rather than guessing at what might come up.
+# All-caps terms that are ordinary spoken words. Kept deliberately short: a
+# list of exceptions. Add to it when one is met, rather than guessing ahead.
 WORDLIKE = {
     # General
     "NASA", "NATO", "UNESCO", "UNICEF", "OPEC", "ASCII", "SCUBA", "LASER",
     "RADAR", "AIDS", "SARS", "COVID", "PIN", "RAM", "ROM", "GIF", "JPEG",
     "PNG", "PDF", "SQL", "JSON", "YAML", "HTML", "CSS", "API", "USB",
-    # Health, epidemiology, statistics -- your field, so worth being right about
+    # Health, epidemiology, statistics
     "ANOVA", "MANOVA", "LASSO", "MICE", "SMART", "CONSORT", "PRISMA",
     "STROBE", "MOOSE", "GRADE", "NHANES", "BRFSS", "SEER", "MESA",
     "REGARDS", "CHARGE", "PROMIS", "SLEEP",
@@ -46,14 +42,13 @@ WORDLIKE = {
 #
 # It is a list, not a rule about capitals, and that is deliberate. Treating a
 # RUN of capitalised words as a sentence would read NHANES BRFSS SEER as three
-# words, and an initialism said as a word is the error an expert audience
-# notices at once. So a whole heading in capitals is still spelled unless its
-# words are listed here or the lexicon claims them.
+# words. So a whole heading in capitals is still spelled unless its words are
+# listed here or the lexicon claims them.
 #
 # What is deliberately NOT here: OR, IT, US, NO, IN, IS, AS, AT, BY. Each is
 # both an ordinary word and something people genuinely spell out, so they stay
-# spelled and the lexicon settles any particular case. ALL is absent for a
-# sharper reason -- in this field it is acute lymphoblastic leukaemia.
+# spelled and the lexicon settles any particular case. ALL is absent because
+# in health sciences it is acute lymphoblastic leukaemia.
 READ_AS_WORDS = {
     "AND", "NOT", "NOR", "NAND", "IF", "THEN", "ELSE", "THE", "FOR", "WITH",
     "FROM", "INTO", "OVER", "UNDER", "ANY", "NONE", "BOTH", "EACH", "BUT",
@@ -89,10 +84,9 @@ def is_wordlike(token: str) -> bool:
     return token.upper() in WORDLIKE
 
 
-# "Pre-ETS" is one term, not the word "Pre" next to the initialism "ETS". The
-# speller matched only the capitals and produced "Pre-E T S", ignoring the
-# lexicon entry for the whole compound -- because it looked up "ETS", which
-# nobody had written an entry for. Compounds are now looked up whole first.
+# "Pre-ETS" is one term, not the word "Pre" next to the initialism "ETS".
+# Compounds are looked up whole first, so a lexicon entry for "Pre-ETS" wins
+# over spelling "ETS".
 COMPOUND_PREFIX = re.compile(r"([A-Za-z][A-Za-z0-9]*-)$")
 
 
@@ -112,7 +106,7 @@ def spoken_as(tok: str, whole: str, lexicon=None,
     the default, and the default is to spell.
     """
     if lexicon is not None and (lexicon.get(tok) or lexicon.get(whole)):
-        return tok                     # you already decided; the lexicon wins
+        return tok                     # a recorded decision; the lexicon wins
     if tok in SAY_AS:
         return SAY_AS[tok]
     if tok in READ_AS_WORDS:
@@ -142,18 +136,14 @@ def find(text: str, lexicon=None) -> list[str]:
 #: How much to spell.
 #:
 #:   "all"    every initialism-shaped token that the lexicon does not claim.
-#:            The default, and the instruction is "do not guess": the only
-#:            thing that stops a term being spelled is a decision someone
-#:            recorded in the lexicon.
+#:            The default: the only thing that stops a term being spelled is
+#:            a decision recorded in the lexicon.
 #:   "known"  also skip the WORDLIKE list below.
 #:   "off"    spell nothing.
 #:
-#: The default moved from "known" to "all" after WORDLIKE was found to contain
-#: a term this project gets wrong in its own field: BRFSS is said "B R F S S"
-#: by the people who use it, and the list asserted it was a word. A curated
-#: list of exceptions is still a list of guesses about how other people speak,
-#: and it is wrong silently. The lexicon is the override that is not a guess --
-#: an entry means somebody decided, once, and it is written down.
+#: The default is "all" because WORDLIKE is a curated list of guesses about
+#: how people speak, and can be silently wrong (BRFSS, for instance, is said
+#: "B R F S S" by those who use it). A lexicon entry is a recorded decision.
 DEFAULT_MODE = "all"
 
 
@@ -162,7 +152,7 @@ def _skip_wordlike(mode: str) -> bool:
 
 
 # "Type II error", "Stage IV", "Phase III trial", "Class I evidence": a Roman
-# numeral after one of these is a number, and the speller was reading it as
+# numeral after one of these is a number, not an initialism to spell as
 # "I I". It becomes the Arabic number, which every engine says correctly. A
 # bare "IV" with no such word before it is left to the speller -- in this
 # field that is usually intravenous, and "I V" is right.

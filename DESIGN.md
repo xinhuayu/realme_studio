@@ -47,9 +47,9 @@ and does little arithmetic with them. The vocoder is the opposite: about 30
 convolutions over the whole signal (up to 24,000 samples a second at the
 last stage), **compute-bound** large matrix products.
 
-Measured at the start (6 cores, upstream at its 4 threads): 3.79 seconds of
-work per second of speech, about two thirds in the transformers and one third
-in the vocoder. Each change below attacks one of the two.
+The original engine, on a 6-core PC (where it uses 4 threads), takes 3.79
+seconds of work per second of speech, about two thirds in the transformers
+and one third in the vocoder. Each change below attacks one of the two.
 
 ## 3. The engine changes
 
@@ -178,8 +178,6 @@ reduced to fit.
 - On the lecturer's computer: `_Engine_Speedup_Check.bat`,
   `_Engine_Check_8bit.bat`, `_Engine_Check_Vocoder.bat` (the same sentences
   each way, measured and left to listen to) and `_Bench_Batch.bat`.
-- Independent reviews of the C++, the Python around it and the hosted-voice
-  side, whose findings were fixed and re-tested.
 
 ## 8. The engine for other tools
 

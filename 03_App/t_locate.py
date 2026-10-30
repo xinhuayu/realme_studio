@@ -2,11 +2,9 @@
 """
 Finding a program an installer did not put on PATH.
 
-Written because LibreOffice on Windows installs to Program Files and does not
-touch PATH, so `shutil.which("soffice")` reports missing on a machine where
-LibreOffice is installed and working. The advice that follows -- install it --
-is then something the user has already done, which is the most frustrating
-kind of wrong answer a setup check can give.
+LibreOffice on Windows installs to Program Files and does not touch PATH, so
+`shutil.which("soffice")` reports it missing on a machine where it is
+installed and working, and the setup check would advise installing it again.
 """
 from __future__ import annotations
 import os, sys, tempfile
@@ -16,9 +14,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 #: Where this file lives. Every path below is relative to it, never to the
 #: working directory: these suites are run from the project root as often as
-#: from 03_App, and `Path("realme/...")` silently means a different thing in
-#: each. `verify_tree.py` already anchored on __file__; the t_*.py files did
-#: not, so t_render died with FileNotFoundError when run from the root.
+#: from 03_App, and `Path("realme/...")` means a different thing in each.
 HERE = Path(__file__).resolve().parent
 
 # Isolated from the real installation. See the note in t_pace.py: these

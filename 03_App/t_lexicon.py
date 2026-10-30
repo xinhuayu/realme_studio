@@ -2,9 +2,8 @@
 """
 The lexicon editor writes the same file the CLI writes.
 
-A second way to add a pronunciation is only worth having if it is the SAME
-lexicon -- a UI that kept its own list would drift from `realme lexicon add`
-within a week, and the render reads only one of them.
+The page and `realme lexicon add` must edit the SAME lexicon: a separate list
+would drift from it, and the render reads only one.
 
 The real `realme.text.lexicon` is used throughout; only the data directory is
 redirected, so the round trip is genuine.
@@ -17,9 +16,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 #: Where this file lives. Every path below is relative to it, never to the
 #: working directory: these suites are run from the project root as often as
-#: from 03_App, and `Path("realme/...")` silently means a different thing in
-#: each. `verify_tree.py` already anchored on __file__; the t_*.py files did
-#: not, so t_render died with FileNotFoundError when run from the root.
+#: from 03_App, and `Path("realme/...")` means a different thing in each.
 HERE = Path(__file__).resolve().parent
 
 FAILED = []

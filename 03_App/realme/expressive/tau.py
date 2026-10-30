@@ -8,20 +8,18 @@ constant on purpose and cancels:
 
     tau(pressing) = x(pressing) - x(explaining)
 
-That vector is not a register. It is the DIFFERENCE between registers, which is
-a much more useful object: registers are four points, and a difference can be
-scaled. `x(explaining) + 0.5 * tau(pressing)` is a delivery half as insistent
-as the one recorded, and nobody recorded it. Negative alpha goes the other way,
-past neutral, into a withdrawal that was never performed at all. Two taus added
-give a blend. This is the whole method, and it needs no training: the model is
-untouched, and what changes is one vector handed to it at synthesis time.
+That vector is not a register. It is the DIFFERENCE between registers:
+registers are four points, and a difference can be scaled.
+`x(explaining) + 0.5 * tau(pressing)` is a delivery half as insistent as the
+one recorded. Negative alpha goes the other way, past neutral. Two taus added
+give a blend. No training is needed: the model is untouched, and what changes
+is one vector handed to it at synthesis time.
 
-WHAT MAKES IT WORK IS WHAT WAS HELD CONSTANT. Everything in this file assumes
-the four takes differ ONLY in delivery. `enrollment.registers` is what enforces
-that -- one sitting, one shared gain correction, the same words -- and the
-distinctness table there is what proves the deliveries actually differed. A tau
-built from takes recorded on different days is a microphone vector, and it will
-behave like an emotion vector right up until it does not.
+Everything in this file assumes the four takes differ ONLY in delivery.
+`enrollment.registers` enforces that -- one sitting, one shared gain
+correction, the same words -- and its distinctness table checks that the
+deliveries actually differed. A tau built from takes recorded on different
+days partly encodes the microphone and room.
 
 THREE THINGS ARE MEASURED HERE RATHER THAN ASSUMED.
 
@@ -31,20 +29,19 @@ THREE THINGS ARE MEASURED HERE RATHER THAN ASSUMED.
    amplifies noise. `extract` reports the cosine for every register and says so
    when one is too close to call.
 
-2. HOW FAR ALPHA MAY GO. The honest ceiling is not a constant somebody liked
-   the look of; it comes from his own voice. The four real takes span a range
-   of embeddings that are all, audibly, him. The smallest cosine among those
-   pairs is therefore a measured floor for "still the same speaker", and a
-   synthetic embedding that falls below it has left the region his own
-   deliveries occupy. `usable_alpha` solves for where that happens.
+2. HOW FAR ALPHA MAY GO. The ceiling comes from the speaker's own voice. The
+   real takes span a range of embeddings that are all the same speaker. The
+   smallest cosine among those pairs is therefore a measured floor for "still
+   the same speaker", and a synthetic embedding that falls below it has left
+   the region the speaker's own deliveries occupy. `usable_alpha` solves for
+   where that happens.
 
 3. WHETHER THE NORM MATTERS. Adding alpha*tau changes the vector's length as
    well as its direction, and a decoder can be sensitive to length in ways that
    have nothing to do with expression -- a longer vector reading as a different
    person rather than a more insistent one. The default is to rescale back to
-   the base norm, keeping the direction and discarding the length change, but
-   `renorm=False` exists precisely so the two can be COMPARED by listening
-   instead of argued about. Neither is asserted to be right here.
+   the base norm, keeping the direction and discarding the length change;
+   `renorm=False` lets the two be compared by listening.
 
 Nothing in the lecture, narration or dialogue pipelines imports this. The
 adapter change that goes with it (`set_expression`) is inert until something
@@ -57,13 +54,13 @@ from pathlib import Path
 
 #: Below this, two embeddings are so close that their difference is dominated
 #: by whatever the encoder does differently on two takes of the same thing.
-#: Not a physical constant -- a threshold for "worth believing", the same role
-#: MEANINGFUL_LU plays for loudness one level up.
+#: A significance threshold, in the same role MEANINGFUL_LU plays for
+#: loudness in `enrollment.registers`.
 TOO_CLOSE_COS = 0.995
 
 #: Where to stop, when the four takes give no floor of their own (only one
-#: register recorded, say). Deliberately timid: the measured floor is the
-#: honest answer and this is what stands in for it while it is missing.
+#: register recorded, say). Deliberately conservative; it stands in for the
+#: measured floor while that is missing.
 FALLBACK_MAX_ALPHA = 1.0
 
 
@@ -108,12 +105,11 @@ class TauSet:
 
     def usable_alpha(self, name: str, renorm: bool = True) -> float:
         """
-        The largest alpha for `name` that stays inside his own range.
+        The largest alpha for `name` that stays inside the speaker's own range.
 
         Walks outward and stops at the first step whose cosine to the base
         falls below the measured floor. Walking rather than solving because
-        renormalisation makes the relationship non-linear, and a closed form
-        would be a closed form for the OTHER case.
+        renormalisation makes the relationship non-linear.
         """
         if name not in self.directions:
             raise KeyError(f"no direction called {name!r}")
@@ -150,9 +146,8 @@ def blend(base, taus: dict, weights: dict, alpha: float = 1.0,
     """
     base + alpha * sum(w_i * tau_i), optionally rescaled to |base|.
 
-    Pure arithmetic on lists, with no engine anywhere near it, because this is
-    the part that has to be right and the part that can be tested without a
-    model, a DLL or a GPU.
+    Pure arithmetic on lists, with no engine involved, so it can be tested
+    without a model, a DLL or a GPU.
     """
     out = list(base)
     for name, w in weights.items():
@@ -182,8 +177,7 @@ def embedding_of(adapter, wav: Path) -> list:
     Goes through the adapter rather than reimplementing the encoder, because a
     tau is only meaningful to the encoder that produced it -- the axes of this
     space are whatever that model learned, and another build's axes are not the
-    same axes. The engine fingerprint is stored with the set for exactly this
-    reason.
+    same axes. The engine fingerprint is stored with the set for this reason.
     """
     get = getattr(adapter, "_speaker_embedding", None)
     if get is None:
@@ -243,19 +237,17 @@ def extract(adapter, takes: dict, *, neutral: str = "explaining",
         d = Direction(name=name, values=tau, cosine=round(c, 5),
                       norm_ratio=round(norm(tau) / (norm(base) or 1.0), 4))
         if c >= TOO_CLOSE_COS:
-            # Loudly, because the failure is otherwise invisible: a tiny tau
-            # scaled up by alpha sounds like the engine being unstable, and
-            # the instability gets blamed on the method rather than on the
-            # recording it came from.
+            # Reported, because the failure is otherwise invisible: a tiny tau
+            # scaled up by alpha sounds like the engine being unstable.
             d.note = (f"only {(1 - c) * 1000:.1f} thousandths from "
                       f"'{neutral}' -- this direction is mostly encoder noise. "
                       f"Re-record it further away.")
             log(f"  ! {name}: {d.note}")
         ts.directions[name] = d
 
-    # The floor: the closest any two of his REAL takes came to each other.
-    # Everything beyond that cosine is outside the range his own deliveries
-    # covered, which is the only defensible place to stop.
+    # The floor: the lowest cosine between any two of the REAL takes.
+    # Everything beyond it is outside the range the speaker's own deliveries
+    # covered.
     names = list(xs)
     worst, pair = 1.0, ""
     for i, a in enumerate(names):
@@ -298,8 +290,6 @@ def check_engine(ts: TauSet, adapter) -> None:
 
     The numbers would go through -- same length, same arithmetic, an answer
     every time -- and mean nothing, because the two models do not share axes.
-    A silent wrong answer is the failure mode this project keeps meeting, so
-    this one is checked rather than hoped for.
     """
     now = str(getattr(adapter, "voice_fingerprint", lambda: "")())
     # Only the engine part: the reference clip legitimately differs between
@@ -346,8 +336,8 @@ def report(ts: TauSet) -> str:
 
 # ---------------------------------------------------------------- auditioning
 #: What to say while sweeping. One sentence, because the thing being judged is
-#: a timbre and a manner rather than a performance, and a listener comparing
-#: nine renders will not sit through a paragraph nine times. It carries a
+#: a timbre and a manner rather than a performance, and a listener compares
+#: many renders. It carries a
 #: claim worth pressing and a hedge worth conceding, so the same words can
 #: plausibly be delivered either way.
 SWEEP_TEXT = ("The adjustment did not fix it, and I think we have to say so "
@@ -356,7 +346,7 @@ SWEEP_TEXT = ("The adjustment did not fix it, and I think we have to say so "
 
 #: Where to sample each direction. Zero first, as the control: at alpha = 0
 #: the blend returns the base embedding exactly, so that render goes through
-#: the SAME new code path as every other one and any difference from the
+#: the SAME code path as every other one and any difference from the
 #: ordinary voice is plumbing, not expression. Negative goes past neutral, the
 #: other way -- the half of the range no recording covers.
 SWEEP_ALPHAS = (-0.5, 0.0, 0.35, 0.7, 1.0, 1.4)
@@ -366,9 +356,8 @@ SWEEP_ALPHAS = (-0.5, 0.0, 0.35, 0.7, 1.0, 1.4)
 class Heard:
     """ONE render. A cell of the sweep holds `repeat` of these.
 
-    One row per render rather than per cell, on purpose: the raw draws are what
-    make a noise estimate possible, and a table that stored only the mean would
-    have thrown away the only evidence about its own reliability.
+    One row per render rather than per cell: the raw draws are what make a
+    noise estimate possible.
     """
     direction: str
     alpha: float
@@ -381,7 +370,7 @@ class Heard:
     f0_median_hz: float = 0.0
     f0_range_st: float = 0.0
     energy_db: float = 0.0
-    beyond: bool = False         # outside the range his own takes covered
+    beyond: bool = False         # outside the range the real takes covered
     note: str = ""
 
     def as_dict(self) -> dict:
@@ -400,25 +389,19 @@ def sweep(adapter, ts: TauSet, outdir: Path, *, directions=None,
     from the enrolled one. It is exact and tells us nothing about the audio.
 
     `cos_render` is the round trip -- the embedding re-extracted from the audio
-    that came back. This is the one that matters, because it is the only
-    evidence that the engine did anything with the vector at all. If it stays
-    flat while `cos_to_base` falls away, the shift is being ignored somewhere
-    between here and the decoder, and every listening impression after that
-    would be imagination. A sweep whose round trip does not move is a failed
-    sweep, however good the renders sound.
+    that came back. It is the only evidence that the engine used the vector at
+    all. If it stays flat while `cos_to_base` falls away, the shift is being
+    ignored somewhere between here and the decoder. A sweep whose round trip
+    does not move is a failed sweep, however the renders sound.
 
-    REPEATS ARE NOT OPTIONAL, and the first version of this function shipped
-    without them, which was a mistake of exactly the kind this project has
-    already paid for twice. The engine samples at temperature 0.9 with no
-    seed, so one render of one condition is one draw. A single-draw sweep
-    produced pitch swinging 65 Hz across alpha and read like a strong effect
-    until the three alpha = 0 cells -- which are the SAME vector rendered three
-    times -- turned out to disagree with each other by 14 Hz.
+    REPEATS ARE REQUIRED. The engine samples at temperature 0.9 with no seed,
+    so one render of one condition is one draw, and draw-to-draw pitch can
+    differ by more than the effect of alpha.
 
-    That accident is now the design. alpha = 0 is rendered for every direction,
-    so the sweep carries its own replicate set: same condition, several draws,
-    no extra cost. `noise()` reads the spread off those and `sweep_report`
-    refuses to call anything an effect until it clears them.
+    alpha = 0 is rendered for every direction, so the sweep carries its own
+    replicate set: same condition, several draws, no extra cost. `noise()`
+    reads the spread off those and `sweep_report` does not call anything an
+    effect until it clears them.
     """
     from realme.expressive.prosody import measure
     check_engine(ts, adapter)
@@ -444,8 +427,7 @@ def sweep(adapter, ts: TauSet, outdir: Path, *, directions=None,
         cap = ts.usable_alpha(name, renorm=renorm)
         for a in alphas:
             # Built ONCE per cell, not once per repeat: the vector is the
-            # condition, and rebuilding it would leave open the question of
-            # whether the repeats were even the same condition.
+            # condition, so every repeat uses the identical vector.
             vec = ts.vector({name: 1.0}, a, renorm=renorm)
             handed = round(cosine(vec, ts.base), 5)
             for rep in range(repeat):
@@ -538,8 +520,8 @@ def noise(heard: list) -> dict:
 def moved(heard: list) -> dict:
     """Did the round trip respond to alpha at all, per direction?
 
-    The question the whole sweep exists to answer, reduced to one number per
-    direction: the spread of the CELL MEDIANS of `cos_render` across the alphas
+    One number per direction: the spread of the CELL MEDIANS of
+    `cos_render` across the alphas
     tried. Medians rather than raw draws, so one unlucky render cannot create
     a response that is not there. A spread near zero means the engine gave back
     the same speaker whatever it was handed, which is a null result about the
@@ -562,9 +544,8 @@ RESPONSE_FLOOR = 0.0005
 
 #: How many noise standard deviations a swing must clear before the sweep will
 #: call it an effect. Two, which is a screening rule and not a test -- with
-#: three to nine draws the sd is itself uncertain, and the honest use of this
-#: number is to stop a non-effect being described as one, not to certify the
-#: ones that pass.
+#: three to nine draws the sd is itself uncertain. It filters out non-effects;
+#: it does not certify the ones that pass.
 CREDIBLE_SD = 2.0
 
 

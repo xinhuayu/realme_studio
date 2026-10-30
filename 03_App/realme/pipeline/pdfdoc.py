@@ -1,25 +1,23 @@
 """
 PDF access, with a preferred backend and a permissive fallback.
 
-PyMuPDF does four jobs the pipeline previously spread across three libraries
-and a system binary:
+PyMuPDF does four jobs that otherwise need three libraries and a system
+binary:
 
-    word bounding boxes   was pdfplumber
-    page text             was pypdf
-    rasterization         was pdftoppm (poppler) -- a system install, and the
-                          main friction on Windows
-    image/vector detection    was nothing; needed to tell a text slide from a
+    word bounding boxes   (fallback: pdfplumber)
+    page text             (fallback: pypdf)
+    rasterization         (fallback: pdftoppm from poppler -- a system install,
+                          awkward on Windows)
+    image/vector detection    needed to tell a text slide from a
                           diagram-only slide
 
-One dependency, no system binary, and noticeably faster.
+One dependency, no system binary, and faster.
 
-The catch, stated plainly because this project has been strict about licences:
-**PyMuPDF is AGPL-3.0 or a paid Artifex commercial licence**, where pdfplumber,
-pypdf and poppler are permissive. AGPL obligations attach to *network*
-distribution -- running the Studio on your own machine triggers nothing, but
-offering it to colleagues over a network would require offering source. Since
-this project is open source that is not a practical burden, but it is a real
-change and your institution may have a view.
+Licence note: **PyMuPDF is AGPL-3.0 or a paid Artifex commercial licence**,
+where pdfplumber, pypdf and poppler are permissive. AGPL obligations attach to
+*network* distribution -- running the Studio locally triggers nothing, but
+offering it to others over a network requires offering source. This project is
+open source, but an institution may have its own policy.
 
 So the backend is chosen at import: PyMuPDF if installed, the permissive stack
 otherwise. Installing or not installing it is how you make the choice.
@@ -69,9 +67,8 @@ class SlideImage:
 
 
 #: A picture smaller than this share of the page, sitting outside the middle,
-#: is a mark rather than a figure. Measured on real decks: the logos are 0.9%
-#: and 1.0% of the page at (0.92, 0.97); the figures are 59.6% and 85.1% at
-#: the centre. Nothing in between, on any slide, in any version of the deck.
+#: is a mark rather than a figure. On real decks logos are about 1% of the
+#: page near a corner; figures are well over half the page and centred.
 FURNITURE_AREA = 0.04
 
 #: How far from the centre a small picture must sit to be called a mark. 0.35
@@ -103,10 +100,8 @@ class PageInfo:
     def has_figure(self) -> bool:
         """A picture worth narrating, as opposed to a logo.
 
-        `image_count` cannot answer this. Every page of one real deck reported
-        two images and both were the same logo in the bottom-right corner; the
-        re-themed version of the same deck reported none at all on those pages.
-        Counting pictures counts branding.
+        `image_count` cannot answer this: it counts logos and template marks
+        too, and varies with the deck's theme.
         """
         return bool(self.content_images)
 
@@ -124,9 +119,9 @@ class PageInfo:
     def is_figure_slide(self) -> bool:
         """Little text AND a picture that is not a logo.
 
-        `is_visual` is kept as it was -- the signalling code relies on it -- but
-        it counts any image, so a section divider carrying only a logo looked
-        like a diagram. This is the question the narration needs answered.
+        Unlike `is_visual`, which the signalling code uses and which counts
+        any image, a section divider carrying only a logo is not visual here.
+        This is the question the narration needs answered.
         """
         if len(self.words) >= 12:
             return False
@@ -144,8 +139,8 @@ def mark_furniture(pages: list) -> int:
 
     SMALL AND OUT OF THE WAY. A picture under 4% of the page sitting outside
     the middle. This catches a logo in a deck too short for repetition to mean
-    anything, and it is well clear of anything measured on a real slide: the
-    figures were 60% and 85% of the page and centred.
+    anything, and is well clear of real figures, which are typically over half
+    the page and centred.
 
     Returns how many pictures were marked.
     """

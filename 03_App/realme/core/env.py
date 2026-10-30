@@ -2,16 +2,16 @@
 Loading API keys from a .env file.
 
 Windows `setx` writes the variable but does NOT affect the shell you typed it
-in -- only shells opened afterwards. That trips up almost everyone once: you
-set the key, run the app in the same window, and it still says no key found.
+in -- only shells opened afterwards. A key set that way and used in the same
+window is not found.
 
 So keys can also live in a plain `.env` file, which takes effect immediately
 and survives reboots without touching the registry.
 
-**Reading and writing are not symmetric, deliberately.** Several locations are
-searched, because a key can reasonably live in more than one place. Exactly one
-is ever *written* to, because "wherever you happened to be standing" is not a
-location anyone can find again.
+**Reading and writing are not symmetric.** Several locations are searched,
+because a key can reasonably live in more than one place. Exactly one is ever
+*written* to (the data folder), so a saved key is always found in the same
+place, whatever the current directory was.
 
 Read, in order, first value winning per key:
 
@@ -20,12 +20,9 @@ Read, in order, first value winning per key:
     ~/RealMeStudio/.env         the default REALME_HOME
     <app>/.env                  beside the installed code; a legacy fallback
 
-That last one exists because `write_key` used to default to the current
-directory. Running `realme key` from the app folder put the file there, and
-launching the Studio from the project root -- which is what the launchers do --
-then could not see it. The key was saved, and the app truthfully reported no
-key. It is searched last so that a freshly written key always wins over a stray
-older one.
+That last one covers an older install that saved its key beside the code. It
+is searched last so that a freshly written key always wins over a stray older
+one.
 
 A real environment variable always wins, so an explicit `set GEMINI_API_KEY=...`
 still overrides every file for that one shell.
@@ -101,8 +98,7 @@ def load(verbose: bool = False) -> list[Path]:
 
     Safe to call again: a key that changed on disk (rotated with `realme
     key`) takes effect on the next load, which is what the Studio's doctor
-    check relies on. It used to set a key only when absent, so a rotated key
-    needed a restart with nothing saying so.
+    check relies on. A key set in the shell before launch is never replaced.
     """
     used: list[Path] = []
     for path in candidates():
@@ -132,7 +128,7 @@ def write_key(name: str, value: str, path: Path | None = None) -> Path:
     value = value.strip().strip('"').strip("'").strip()
     # The data folder, never the current directory. A key written to cwd is
     # findable only from cwd, and the launchers do not run from the folder you
-    # typed the command in -- which is how a saved key becomes an invisible one.
+    # typed the command in.
     if path is None:
         path = data_home() / ".env"
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -188,9 +184,8 @@ def realme_environment() -> Path | None:
     agree with the one the Studio uses. It is only ever used to print an
     instruction, never to run anything.
 
-    Lives here rather than in a script because two callers now need it, and
-    this project's recurring fault is the same decision made twice in two
-    places.
+    Lives here rather than in a script because two callers need it and must
+    agree.
     """
     import os
     env = os.environ.get("REALME_ENV")
@@ -230,18 +225,13 @@ def running_in_realme_env() -> bool:
 def wrong_interpreter_note(command: str = "") -> str:
     """What to say when things are missing because Python is the wrong one.
 
-    This is not a hypothetical, and it has now cost two debugging sessions.
-    The first run of the expressive experiment used
-    `pythoncore-3.14-64\\python.exe`, a bare install with no RealMe packages,
-    while RealMe lives in a conda environment. The cloned voice still worked
-    -- it is a DLL loaded through ctypes and needs no Python package -- so the
-    run reached the guest voice before anything complained, and the failure
-    looked like a missing file rather than a different interpreter.
+    A bare Python install with no RealMe packages can get surprisingly far:
+    the cloned voice is a DLL loaded through ctypes and needs no Python
+    package, so a run can reach a later step before anything fails, and the
+    failure looks like a missing file or a failed import rather than a
+    different interpreter.
 
-    `verify_tree` met the same thing from the other side: forty modules
-    "failing to import", every one of them for this single reason.
-
-    `command` is the command worth repeating, so each caller can name its own.
+    `command` is the command to repeat, so each caller can name its own.
     """
     import sys
     env = realme_environment()

@@ -1,4 +1,4 @@
-"""RealMe v2 CLI. Every command either produces a verified artifact or exits nonzero."""
+"""RealMe CLI. Every command either produces a verified artifact or exits nonzero."""
 from __future__ import annotations
 import argparse
 import os, sys, json
@@ -7,17 +7,12 @@ from realme.core.textio import read_text as _TXT
 
 
 def _tts(name: str | None, args, **extra):
+    """
+    Every CLI command that speaks gets its adapter from here, through the one
+    factory the Studio and the benchmark also use (realme/adapters/factory.py),
+    so each engine gets its reference clip and transcript.
+    """
     name = name or _profile_tts()
-    """
-    Every CLI command that speaks gets its adapter from here.
-
-    This used to return `cls()` bare for everything except chatterbox, which
-    meant `realme lecture --tts qwen3` was handed no reference clip and no
-    transcript and reported the engine unavailable -- the same failure the
-    Studio and the benchmark each had, for the same reason, in their own
-    separate copy of this logic. There is now one factory; see
-    realme/adapters/factory.py.
-    """
     from realme.adapters.factory import build
     from realme.adapters.base import AdapterUnavailable
     overrides = {}
@@ -52,12 +47,8 @@ def _tts(name: str | None, args, **extra):
 def _profile_tts() -> str:
     """The engine the profile selects, for commands that did not name one.
 
-    Every one of these defaulted to "espeak" -- the deliberately robotic
-    placeholder. That was reasonable when nothing else was installed and is
-    wrong once a voice is enrolled: `realme lecture deck.pptx` with no --tts
-    rendered a whole lecture in the placeholder voice and reported success.
-    espeak has since been retired altogether; piper is the fallback, which is
-    a real voice and audibly not yours.
+    Falls back to piper when there is no profile or it names no engine: a
+    real voice, and audibly not the instructor's.
     """
     try:
         from realme.core.env import data_home
@@ -93,7 +84,7 @@ def _writer(name: str, args):
     from realme.adapters.script_writer import GeminiScriptWriter, PlaceholderScriptWriter
     if name == "imported":
         # No writer: lecture.write_script reuses the script already saved in
-        # the project, which is the whole point of having imported one.
+        # the project.
         return None
     from realme.adapters.script_writer_more import WRITERS, model_for
     if name == "gemini":
@@ -115,12 +106,10 @@ def _warn_if_update_pending() -> None:
 
     Answered by content, never by timestamp. Archive entries are deliberately
     backdated 24 hours (see realme.core.build), so the archive file is always
-    "newer" than the files it extracted -- the mtime version of this check fired
-    immediately after a successful update and would have nagged forever.
+    "newer" than the files it extracted, and an mtime check would always fire.
 
-    Without it, a new flag produces "unrecognized arguments" for something that
-    demonstrably exists, and the natural conclusion is that the flag is broken
-    rather than that the update was never applied.
+    An unapplied update otherwise shows up only as "unrecognized arguments"
+    for a flag the documentation describes.
     """
     try:
         from realme.core.paths import project_root
@@ -142,11 +131,9 @@ def _warn_if_update_pending() -> None:
 # Voice tuning flags, accepted ANYWHERE on the command line.
 #
 # These are declared on the top-level parser, which in argparse means they must
-# appear before the subcommand: `realme --vc-tau 0.15 bench …`. Put them after
-# it, as anyone reasonably would -- `realme bench --engines … --vc-tau 0.15` --
-# and you get `unrecognized arguments: --vc-tau 0.15`, which reads like the flag
-# does not exist rather than like it is in the wrong place. (I wrote it in the
-# wrong place myself, in the instructions that produced that error.)
+# appear before the subcommand: `realme --vc-tau 0.15 bench …`. After it --
+# `realme bench --engines … --vc-tau 0.15` -- argparse would report
+# `unrecognized arguments: --vc-tau 0.15`.
 #
 # argparse has no clean way to accept an option in both positions -- `parents=`
 # on the subparsers makes the subparser's own default overwrite the value given
@@ -171,9 +158,9 @@ def _voice_gemini(a) -> int:
     `realme voice gemini` -- enrol, inspect and forget a cloud-cloned voice.
 
     Kept apart from `voice enroll` deliberately. Enrolling with Qwen3 copies a
-    file into your own profile directory; enrolling here uploads your voice to
-    a company and leaves it there for a year. Those should not be the same
-    command with a flag.
+    file into the local profile directory; enrolling here uploads the voice to
+    Google, where it is kept for a year, so it is a separate command rather
+    than a flag.
     """
     import datetime, json
     from pathlib import Path as _P
@@ -289,9 +276,8 @@ def _voice_gemini(a) -> int:
         if a.max_chars < 0:
             print("--max-chars cannot be negative.")
             return 1
-        # 0 is a real answer here -- "use the pipeline's chunking" -- and is
-        # not the same as None, which means "nobody has said, use the
-        # measured default".
+        # 0 means "use the pipeline's chunking" and is distinct from None,
+        # which means "use the measured default".
         g["max_chars"] = int(a.max_chars)
         prof.update({"gemini_voice": g})
         if a.max_chars:
@@ -318,9 +304,8 @@ def _voice_gemini(a) -> int:
             print("Check the console at aistudio.google.com so it does not "
                   "sit there.")
         # Only clear the profile if the voice deleted was the profile's. The
-        # consent clip is kept either way: it is a recording of the person,
-        # not a Google artifact, and deleting a voice is not a reason to make
-        # them record it again.
+        # consent clip is kept either way: it is a local recording, not a
+        # Google artifact, and can be reused for a later enrolment.
         if voice == g.get("voice"):
             prof.update({"gemini_voice": G.with_voice(g, "", created_at=None)})
         return 0
@@ -348,14 +333,14 @@ def _voice_gemini(a) -> int:
             return 1
 
         # Converted the same way the reference was, because `_inline_audio`
-        # refuses anything that is not already a RIFF WAV -- and a phone
-        # recording is .m4a, which is the normal case, not an edge one.
+        # refuses anything that is not already a RIFF WAV, and phone
+        # recordings are usually .m4a.
         from realme.core.media import ensure_reference_wav
         consent_wav = ensure_reference_wav(_P(consent))
 
         # Measured before it is sent. Google runs a speaker check on the pair
-        # and refuses with an HTTP 500 three minutes later; the two causes it
-        # refuses for are both visible from here in a second.
+        # and refuses with an HTTP 500 minutes later; the two causes it
+        # refuses for can both be checked locally in a second.
         rep = G.consent_check(_P(ref), _P(consent_wav))
         if rep["score"] is not None:
             print(f"  acoustic resemblance between the two clips: "
@@ -430,9 +415,8 @@ def _voice_gemini(a) -> int:
 
 
 def _take_tuning_flags(argv: list[str]) -> list[str]:
-    """Strip the tuning flags out of argv into the environment. Fail loudly on
-    a value that is not usable -- silently ignoring `--vc-tau banana` would be
-    worse than the error it replaces."""
+    """Strip the tuning flags out of argv into the environment. Exit with an
+    error on a value that is not usable, e.g. `--vc-tau banana`."""
     out, i = [], 0
     while i < len(argv):
         token = argv[i]
@@ -472,13 +456,11 @@ def main(argv=None):
     This exists to report the two failures that are the reader's to fix as
     sentences instead of tracebacks. `MediaError` and `AdapterUnavailable` are
     raised with a message written for a person -- "No deck at ...", "ffmpeg is
-    not on PATH" -- and a traceback around such a message buries it under
-    frames from pymupdf or httpx that have nothing to do with the fix. A deck
-    path that did not resolve surfaced as `pymupdf.FileNotFoundError` thirteen
-    lines down.
+    not on PATH" -- and a traceback would bury it under frames from pymupdf
+    or httpx.
 
     Only those two. Anything else is a fault in this program and keeps its
-    traceback, which is the thing that gets it fixed.
+    traceback.
     """
     from realme.core.media import MediaError
     from realme.adapters.base import AdapterUnavailable
@@ -494,7 +476,7 @@ def main(argv=None):
 
 #: What a command reports when run with --json. Filled by `_result`; read by
 #: `_main_json`. A module global because the commands are one long function
-#: and threading a return value out of every branch is a rewrite.
+#: with many return points.
 _RESULT: dict = {}
 
 
@@ -571,11 +553,9 @@ def _main(argv=None):
     # Set before anything builds text, so every path -- narrate, lecture,
     # dialogue, bench, the Studio in-process -- sees the same rule.
     # Read AND remove, in any position. These are declared on the top-level
-    # parser so --help documents them, which means argparse rejects them after
-    # a subcommand -- and after a subcommand is exactly where they read
-    # naturally: `realme narrate x.txt --spell-acronyms known`. The tuning
-    # flags already worked this way; these two did not, and said
-    # "unrecognized arguments" for a flag the help had just advertised.
+    # parser so --help documents them, which means argparse would reject them
+    # after a subcommand, e.g. `realme narrate x.txt --spell-acronyms known`.
+    # Same treatment as the tuning flags.
     for flag, env in (("--spell-acronyms", "REALME_SPELL_ACRONYMS"),
                       ("--seconds-per-slide", "REALME_SECONDS_PER_SLIDE")):
         while flag in argv:
@@ -584,37 +564,28 @@ def _main(argv=None):
                 sys.exit(f"{flag} needs a value")
             os.environ[env] = argv[i + 1]
             del argv[i:i + 2]
-    # allow_abbrev=False, and it is not a style choice.
+    # allow_abbrev=False is required.
     #
     # argparse classifies every token in argv as an option or a value BEFORE
     # the subcommand positional is consumed, and it resolves unique prefixes
-    # while doing so. So `realme narrate x.txt --tts qwen3cpp` never reached
-    # the narrate subparser at all: the top-level parser saw `--tts`, matched
-    # it against its own --tts-temperature / --tts-top-k / --tts-top-p /
-    # --tts-repetition-penalty, found four candidates and died with "ambiguous
-    # option" -- naming four flags the user had not typed and not mentioning
-    # the one they had. The same fault hit `lecture --tts` and
-    # `dialogue --tts`.
+    # while doing so. With abbreviation on, the top-level parser would match
+    # `--tts` in `realme narrate x.txt --tts qwen3cpp` against its own
+    # --tts-temperature / --tts-top-k / --tts-top-p / --tts-repetition-penalty
+    # and fail with "ambiguous option" before the subparser saw it.
     #
-    # Turning abbreviation off makes a flag mean exactly what it says. The
-    # tuning flags above are stripped from argv before parsing anyway and are
-    # declared here only so --help documents them, which is precisely why they
-    # should never have been able to swallow a real flag.
+    # The tuning flags above are stripped from argv before parsing anyway and
+    # are declared here only so --help documents them.
     p = argparse.ArgumentParser("realme", allow_abbrev=False,
                                 description="Pedagogical digital twin pipeline")
-    # Pinned in one place, overridable without editing code. A model id is the
-    # kind of thing that changes under you: previews get retired on Google's
-    # schedule, not yours, and editing a default in source to chase that is how
-    # a second machine ends up on a different model than the first.
+    # Pinned in one place, overridable without editing code: Google retires
+    # preview models on its own schedule, so REALME_GEMINI_MODEL can follow
+    # without a source change.
     from realme.adapters.script_writer import DEFAULT_MODEL as _GEMINI_DEFAULT
     p.add_argument("--model",
                    default=os.environ.get("REALME_GEMINI_MODEL")
                    or _GEMINI_DEFAULT)
-    # No default. It used to be "cuda", which meant every command passed
-    # device="cuda" to every engine whether or not it had asked -- see the
-    # introspection note in adapters/factory.py for what that cost. Only the
-    # torch-based adapters have a device at all; leave it unset and each picks
-    # its own.
+    # No default for --device: only the torch-based adapters have a device at
+    # all; left unset, each picks its own (see adapters/factory.py).
     p.add_argument("--seconds-per-slide", dest="secs_per_slide", type=int,
                    default=None,
                    help="Upper limit on narration per slide, in seconds. 110 "
@@ -691,8 +662,7 @@ def _main(argv=None):
                          "script (generateContent)")
 
     vo = sub.add_parser("voice", help="Check, polish and bake your voice reference")
-    # `analyze` is an alias for `check`. It is the word that gets typed --
-    # including by me, in instructions that then fail for someone else.
+    # `analyze` is an alias for `check`.
     vo.add_argument("action", choices=["check", "analyze", "polish", "compare",
                                        "bake", "consent", "resemblance",
                                        "enroll", "show", "transcript", "pace", "registers",
@@ -706,10 +676,9 @@ def _main(argv=None):
                          "from another, before you spend a clone on one.")
     vo.add_argument("wav", nargs="?", type=Path)
     # `off` is the default: process only what a recording needs, and say what
-    # that is rather than treating every take alike. A clean 56 dB enrolment
-    # measurably lost detail to a chain it did not need, and the person whose
-    # voice it was preferred the untouched take on every axis that mattered --
-    # dynamics, pace, the breathing pauses between sentences.
+    # that is rather than treating every take alike. A full chain removes
+    # detail from a clean recording -- dynamics, pace, the breathing pauses
+    # between sentences.
     vo.add_argument("--take", action="append", default=[], metavar="NAME=FILE",
                     help="With `registers`: one recording per register, e.g. "
                          "--take pressing=press.wav. Repeat for each. All of "
@@ -800,8 +769,7 @@ def _main(argv=None):
     mg.add_argument("--out", type=Path,
                     help="Where to write the .zip (default: beside the project)")
     # The sentinel is a name, not an empty path: `Path("")` normalises to
-    # `Path(".")`, which is indistinguishable from someone typing `.` and made
-    # the bare `--restore` search only the current directory.
+    # `Path(".")`, which is indistinguishable from someone typing `.`.
     mg.add_argument("--restore", type=Path, metavar="FOLDER", nargs="?",
                     const=Path("__auto__"),
                     help="On the NEW machine: copy the packaged voice and "
@@ -840,10 +808,9 @@ def _main(argv=None):
                     help="Show which .env files are being read")
 
     en = sub.add_parser("engine", help="Install or check the local voice engine")
-    # No `vc`. Voice conversion (piper + kNN-VC / OpenVoice) was retired in
-    # September 2026: the C++ engine clones directly, faster and closer, and
-    # the converters pulled a torch stack into every startup. The installer
-    # module is still in the tree if that is ever reversed.
+    # No `vc` action. Voice conversion (piper + kNN-VC / OpenVoice) is not
+    # offered: the C++ engine clones directly, and the converters need a torch
+    # stack at startup. Its installer module remains in the tree.
     en.add_argument("action", choices=["status", "install", "retire", "cpp"])
     en.add_argument("--portable", action="store_true",
                     help="For `cpp build`: shorthand for --target-cpu avx2. "
@@ -869,14 +836,12 @@ def _main(argv=None):
                              "export-server"],
                     default="all",
                     help="For `cpp`: which step (default: all)")
-    #: Engines by name. `--all` said what it did only in its help text; a name
-    #: says it on the command line, where the person running it can see which
-    #: engine they asked for and which they did not.
+    #: Engines by name, so the command line shows which engines were asked
+    #: for.
     en.add_argument("targets", nargs="*", metavar="NAME",
                     help="For `install`: which engines -- draft (the piper "
                          "voices used for drafting), clone (qwen3cpp: your own "
-                         "voice; weights + GGUF + C++ build), or vc (voice "
-                         "conversion). With no name: both defaults, draft and "
+                         "voice; weights + GGUF + C++ build). With no name: both defaults, draft and "
                          "clone. For `retire`: the old engine folder to "
                          "reclaim.")
     en.add_argument("--python", dest="drop_python", action="store_true",
@@ -1068,12 +1033,10 @@ def _main(argv=None):
                          "recorded is kept, so re-running with a higher cap "
                          "continues.")
 
-    # `realme animate` was retired in October 2026: animated explainers are
-    # made in Anim Studio now, and a finished one joins a lecture through
-    # `realme insert` (see below). The engine is in _Archive.
+    # A finished animated explainer joins a lecture through `realme insert`.
     ins = sub.add_parser("insert",
                          help="Play a video between a lecture's slides -- an "
-                              "Anim Studio explainer, a screen recording -- "
+                              "animated explainer, a screen recording -- "
                               "in this and every later render")
     ins.add_argument("project", type=Path,
                      help="The lecture's folder: the -o of `realme lecture`, "
@@ -1167,9 +1130,8 @@ def _main(argv=None):
                          "before the summary is printed; everything that is "
                          "not pip's to install is printed as a command either "
                          "way.")
-    # The old spelling. It is what the default does now, so it is accepted and
-    # not advertised rather than removed -- an instruction someone wrote down
-    # last week should not start failing.
+    # An alias for the default behaviour, accepted but hidden from --help so
+    # existing instructions that use it keep working.
     su.add_argument("--fix", action="store_true", help=argparse.SUPPRESS)
 
     lec = sub.add_parser("lecture", help="Slides -> narrated video")
@@ -1320,10 +1282,8 @@ def _main(argv=None):
         getattr(a, "action", None), str) else "")
 
     # One setting, honoured by every path that ends up constructing a piper
-    # voice. Setting it in the
-    # environment rather than threading it through four call sites is
-    # deliberate: threading it through four call sites is how the adapter
-    # factory came to exist.
+    # voice. Set in the environment rather than passed through each call
+    # site, so every consumer reads it from one place.
     if getattr(a, "piper_voice", None):
         os.environ["REALME_PIPER_VOICE"] = a.piper_voice
     if getattr(a, "piper_speed", None):
@@ -1407,8 +1367,8 @@ def _main(argv=None):
             print(f"  captions : {r.srt}")
         print(f"  spoken   : {r.transcript}")
         if r.warnings:
-            # Not buried. A mispronounced term is the single most common thing
-            # wrong with a finished recording, and the lint already knows.
+            # Shown prominently: the lint flags likely mispronunciations, the
+            # most common fault in a finished recording.
             seen = []
             for w in r.warnings:
                 if w not in seen:
@@ -1512,7 +1472,7 @@ def _main(argv=None):
             print(f"preset    : {prof.data.get('voice_preset') or 'none (unprocessed)'}")
             print(f"ready     : {prof.ready_for_cloning}")
             # Two folders hold voice files and only one is used. Dates alone
-            # cannot tell you whether they are the same recording -- a copy has
+            # cannot show whether they are the same recording -- a copy has
             # a new timestamp and identical audio -- so compare the content.
             import hashlib
             from realme.core.media import duration_of
@@ -1570,9 +1530,8 @@ def _main(argv=None):
             return 0
 
         if a.action == "transcript":
-            # Attach or replace the transcript without re-enrolling. The audio
-            # is already stored and converted; making someone repeat that step
-            # to fix a missing line of text would be silly.
+            # Attach or replace the transcript without re-enrolling; the audio
+            # is already stored and converted.
             from realme.core.env import data_home
             prof = Profile(data_home() / "profile")
             src = a.transcript_file or a.transcript or (str(a.wav) if a.wav else "")
@@ -1602,10 +1561,9 @@ def _main(argv=None):
             if not a.take:
                 have = prof.data.get("voice_registers") or {}
                 # Already enrolled: show what was MEASURED, not the
-                # instructions for doing it again. The distinctness table is
-                # the only thing that says whether the four takes really were
-                # four deliveries, and it was printed once, at enrolment, and
-                # scrolled away. It is the question people come back to ask.
+                # instructions for doing it again. The distinctness table
+                # shows whether the takes really are distinct deliveries; it
+                # is stored at enrolment and re-printed here.
                 store = _dh() / "voice" / "registers" / "registers.json"
                 if have and store.is_file():
                     try:
@@ -1697,10 +1655,8 @@ def _main(argv=None):
                          f"the audio is gone: {', '.join(missing)}. "
                          f"Re-run `realme voice registers`.")
             # Built the way a render builds it, from the profile's own
-            # choice -- not from a name hardcoded here. doctor was wrong for
-            # months because it constructed adapters its own way; the same
-            # mistake in this command would extract directions in the space of
-            # an engine no render uses.
+            # choice -- not from a name hardcoded here -- so the directions
+            # are in the embedding space of the engine renders use.
             from realme.adapters.factory import build as _build
             spec = (prof.data.get("adapters", {}) or {}).get("tts", "gemini-tts")
             eng = _build(spec, quiet=True)
@@ -1748,7 +1704,7 @@ def _main(argv=None):
                 prof.update({"your_wpm": r["your_wpm"],
                              "draft_voice_wpm": r["voice_wpm"]})
                 print("\n  Saved. Each voice is now matched to your pace "
-                      "individually, so a\n  guest is no longer slowed by a "
+                      "individually, so a\n  guest is not slowed by a "
                       "ratio measured against a different voice.")
                 return 0
             from realme.core.env import data_home
@@ -1803,8 +1759,8 @@ def _main(argv=None):
                 print(f"    -> {dst}")
             if kind == "voice_reference" and prof.transcript_note:
                 print(f"\n  {prof.transcript_note}")
-            # Judge it now. Enrolling a take without being told it is too quiet
-            # is how you find out three lectures later.
+            # Analyse it now, so a take that is too quiet or noisy is
+            # reported at enrolment.
             r = V.analyze(dst)
             print(f"\n  {r.duration_s}s, {r.sample_rate} Hz, {r.channels}ch")
             print(f"  peak {r.peak_db} dBFS | SNR ~{r.snr_db} dB")
@@ -1853,10 +1809,9 @@ def _main(argv=None):
                   f"{r.channels}ch")
             print(f"  peak {r.peak_db} dBFS | rms {r.rms_db} dB | "
                   f"noise floor {r.noise_floor_db} dB | SNR ~{r.snr_db} dB")
-            # The same features `bench` scores on. They used to be reported
-            # only by the benchmark, so "check this clip" and "score this clip"
-            # described the same file in two vocabularies and neither mentioned
-            # dynamic range -- the feature that turned out to matter most.
+            # The same features `bench` scores on, so "check this clip" and
+            # "score this clip" describe a file in the same terms, including
+            # dynamic range.
             try:
                 from realme.enrollment.voice import acoustic_signature
                 sig = acoustic_signature(a.wav)
@@ -1918,8 +1873,8 @@ def _main(argv=None):
         for what in getattr(V.treat, "last_applied", []):
             print(f"  - {what}")
         if a.preset == "off":
-            # Untouched is the default, but a take that genuinely needs help
-            # should not go unmentioned.
+            # Untouched is the default, but list any repairs the take would
+            # benefit from.
             wants = V.repairs_for(raw)
             if len(wants) > 1 or any("rumble" not in w for _, w in wants):
                 print("  This recording could benefit from:")
@@ -1957,10 +1912,8 @@ def _main(argv=None):
                       "REALME_GOOGLE_VOICE_KEY"):
                 v = os.environ.get(k)
                 print(f"  {k:26} {'set (' + v[:6] + '...)' if v else 'not set'}")
-            # Not secrets, so shown in full -- and shown at all because a
-            # setting you were told to put in a file should be checkable in the
-            # same place as the keys, not by opening the file and trusting it
-            # was read.
+            # Not secrets, so shown in full, alongside the keys, to confirm
+            # the .env settings were read.
             print("\nSettings from the same files:")
             from realme.adapters.script_writer import DEFAULT_MODEL as _dm
             for k, dflt in (("REALME_GEMINI_MODEL", _dm),
@@ -1992,12 +1945,10 @@ def _main(argv=None):
         root = project_root()
         if root is None:
             sys.exit("Run this from inside the RealMe folder.")
-        # Your voice and your key travel together or not at all.
+        # The voice and the API key travel together or not at all.
         #
-        # --no-voice means this package is for somebody else. There is no
-        # version of that where your API key should be in it, and the mistake
-        # is one nobody makes twice but everybody could make once, at the end
-        # of a long afternoon. Refuse rather than warn.
+        # --no-voice means this package is for another person, who must not
+        # receive the API key. Refuse rather than warn.
         if not a.voice and a.include_key:
             sys.exit(
                 "--no-voice packages this for another person, and --include-key "
@@ -2042,9 +1993,9 @@ def _main(argv=None):
             print("  (your VOICE is NOT included -- this package is for another "
                   "person, and the\n   instructions inside tell them how to "
                   "record their own)")
-        # The illegal-instruction trap, checked rather than merely warned
-        # about: build_info.json records what the binary was compiled for, so
-        # this can say whether THIS package will run elsewhere.
+        # Check for an illegal-instruction crash on another CPU:
+        # build_info.json records what the binary was compiled for, so this
+        # can say whether THIS package will run elsewhere.
         try:
             from realme.engines.cpp import status as _cpp_status
             built = _cpp_status().get("built_cpu", "unknown")
@@ -2086,10 +2037,8 @@ def _main(argv=None):
         M.write_package(out, groups,
                         readme=(M.README if a.voice
                                 else M.readme_fresh(carries_qwen)))
-        # Read back from the finished archive, not from the plan that built it.
-        # "The flag was set" and "the file is not in there" are different
-        # claims, and the second is the one worth making before handing
-        # somebody a zip with your voice in it.
+        # Read back from the finished archive, not from the plan that built
+        # it, so the report states what the zip actually contains.
         leaked = M.personal_entries(out)
         if a.voice:
             _result(files={"package": out}, personal_files=len(leaked))
@@ -2203,9 +2152,8 @@ def _main(argv=None):
             if st["ready"]:
                 print("\nReady.")
                 return 0
-            # Show why, not just that. The install runs in a window that closes;
-            # the log is the only surviving evidence, so surface it here rather
-            # than telling someone to go and find a file.
+            # Show why, not just that. The install runs in a window that
+            # closes, so print the tail of its log here.
             from realme.core.env import data_home
             logfile = data_home() / "engine-install.log"
             print("\nNot installed.")
@@ -2388,8 +2336,7 @@ def _main(argv=None):
             return 0
         # Which engines were asked for. Aliases because the same thing has a
         # user-facing name ("the draft voice"), an engine name ("piper") and a
-        # role ("clone"), and someone reaching for any of the three means the
-        # same install.
+        # role ("clone"), and each maps to the same install.
         ALIASES = {
             "draft": "draft", "piper": "draft", "drafts": "draft",
             "clone": "clone", "qwen3cpp": "clone", "cpp": "clone",
@@ -2410,15 +2357,13 @@ def _main(argv=None):
         want = {ALIASES[n] for n in names}
         if "all" in want or not want:
             # The two engines this system actually runs on: piper for drafting
-            # and qwen3cpp for the instructor's own voice. Bare `install` used
-            # to lay down the weights and stop short of the build, which left
-            # the main engine unusable and looking installed.
+            # and qwen3cpp for the instructor's own voice. Bare `install`
+            # includes the C++ build, so the main engine is usable afterwards.
             want = {"draft", "clone"}
 
         if want == {"draft"}:
-            # Just the piper voices: ~120 MB and a pip install. Routing this
-            # through the full installer would have downloaded 2.5 GB of model
-            # weights to deliver two 60 MB voice files.
+            # Just the piper voices: ~120 MB and a pip install, without the
+            # full installer's 2.5 GB of model weights.
             st = eng.install_draft_voices(eng.engine_home(), log=print)
             ok = all(v.get("ready") for v in st.values())
             print("\nDraft voices ready." if ok else
@@ -2426,9 +2371,8 @@ def _main(argv=None):
             return 0 if ok else 1
 
         build_cpp = "clone" in want
-        # Tee to a log. This install is long and its console window closes;
-        # without a file, a failure that happened twenty minutes ago is gone by
-        # the time anyone can read it.
+        # Tee to a log. This install is long and its console window closes,
+        # so the log keeps any failure readable afterwards.
         from realme.core.env import data_home
         logfile = data_home() / "engine-install.log"
         logfile.parent.mkdir(parents=True, exist_ok=True)
@@ -2454,8 +2398,7 @@ def _main(argv=None):
         if build_cpp:
             # The remaining half. `install` lays down the runtime, the weights
             # and the draft voices; the C++ engine still has to be converted
-            # and compiled, and asking for "all engines" and getting only the
-            # draft voice is not what anyone means.
+            # and compiled.
             from realme.engines import cpp as C
             print("\n[4/5] Converting the weights to GGUF")
             try:
@@ -2609,9 +2552,8 @@ def _main(argv=None):
                 a.script, minutes=a.minutes, mode=a.mode)
         except OSError as e:
             # Windows answers `open("...")` with "Permission denied", not "no
-            # such file", so the raw errno is actively misleading -- it reads
-            # like a locked file rather than a path that was never a path.
-            # Someone pasted a placeholder from an instruction and got that.
+            # such file", so the raw errno reads like a locked file rather
+            # than an invalid path. Show what was given and how it resolved.
             given = Path(a.script) if a.script else None
             sys.exit(f"Cannot read the script file.\n"
                      f"  you gave  : {a.script}\n"
@@ -2657,17 +2599,16 @@ def _main(argv=None):
         print(f"Benchmarking {len(engines)} engine(s): {', '.join(engines)}")
         print(f"  {est['utterances']} utterances, {est['words']} words, "
               f"about {est['audio_minutes']:.1f} min of narration each")
-        # Say where the words came from. Someone reasonably asked why the
-        # bench was talking about confounding when their reference clip was
-        # not, and nothing on screen answered that.
+        # Say where the words came from: the built-in script, or the file
+        # given with --script.
         where = str(a.script) if a.script else \
             "built-in epidemiology sentences (bench.DEFAULT_SCRIPT)"
         print(f"  script   : {where}")
         print(f"  split    : {a.mode}")
         print(f"  reference: {ref or '-'}  [{ref_label}]")
         print(f"  output   : {outdir}")
-        # Say the cost out loud before spending it. At these real-time factors
-        # a five-minute script across three engines is not a coffee break.
+        # State the worst-case run time before starting; at these real-time
+        # factors a long script across several engines takes a while.
         print(f"\n  This could take up to ~{est['worst_case_minutes']:.0f} "
               f"minutes. Use --minutes 1 for a quick read first.")
         if not a.yes and sys.stdin.isatty():
@@ -2694,8 +2635,8 @@ def _main(argv=None):
                                                 threads=a.threads,
                                                 speeds=speeds))
                 except KeyboardInterrupt:
-                    # Keep whatever finished. A run abandoned at engine three
-                    # should still tell you about engines one and two.
+                    # Keep whatever finished and report the engines that
+                    # completed before the interrupt.
                     print("\n  Interrupted - reporting what finished.")
                     stopped = True
                     break
@@ -2726,8 +2667,8 @@ def _main(argv=None):
             sys.exit(str(e))
 
         if not a.at.strip():
-            # No split points: show what there is to split, and stop. Choosing
-            # the boundaries is the part only the author can do.
+            # No split points: show what there is to split, and stop. The
+            # author chooses the boundaries.
             print(f"{a.video.name}: {len(cuts)} slides, "
                   f"{meta['total_s'] / 60:.1f} minutes\n")
             print(f"  {'slide':>5}  {'starts':>9}  words")
@@ -2880,14 +2821,9 @@ def _main(argv=None):
                 print(f"  [MISS] {nm}: {e}")
         # Through the FACTORY, with the enrolled reference -- not `cls()`.
         #
-        # This is the third time this exact shortcut has cost something. The
-        # factory's own docstring was written because doctor called `cls()`
-        # bare and reported qwen3 permanently unavailable; the call was
-        # changed back at some point, so doctor went on testing a construction
-        # path no other command uses. When a factory change broke every
-        # cloning engine, doctor would still have said [ok] for all of them.
-        #
-        # Ask the question the renderer asks, or do not ask.
+        # Constructing adapters any other way would test a path no render
+        # uses: a bare `cls()` has no reference clip, and a fault in the
+        # factory would not show up here.
         from realme.adapters.factory import build as _build
         print("Voices (built the way a render builds them):")
         for nm in REGISTRY:
@@ -2922,10 +2858,9 @@ def _main(argv=None):
     if a.cmd == "dialogue":
         from realme.pipeline.dialogue import build_dialogue
         # The guest defaults to the draft voice, never to the instructor's
-        # engine. Left as `a.guest_tts or a.tts`, `--tts qwen3cpp` gave a
-        # debate between two copies of the same cloned person, and the
-        # female-guest default could never fire because it only applies to
-        # piper. A dialogue needs two voices; that is the whole form.
+        # engine (`a.guest_tts or a.tts` would make `--tts qwen3cpp` clone
+        # the instructor twice), and the female-guest default applies only
+        # to piper. A dialogue needs two distinct voices.
         from realme.pipeline import casting
         guest_spec = a.guest_tts or "piper"
         if a.guest_voice and casting.split_spec(guest_spec)[1] is None:
@@ -2947,8 +2882,8 @@ def _main(argv=None):
     if a.cmd == "studio":
         from realme.app.server import serve, is_loopback
         if not is_loopback(a.host) and not a.allow_network:
-            # Before anything is printed or opened: the refusal is the whole
-            # answer, not a footnote under a URL that looks like it worked.
+            # Refuse before anything is printed or opened, so no URL is shown
+            # for a server that will not start.
             print(f"Refusing --host {a.host}: the Studio has no login, so "
                   f"that would put your lectures, cloned voice and API keys "
                   f"on the network. Leave --host at 127.0.0.1, or add "
@@ -3066,9 +3001,8 @@ def _main(argv=None):
                   f"{len(lx.entries)} entries, all valid.")
             return 1 if probs else 0
         if a.action == "list":
-            # Mark which entries are yours. Without it a list of thirty terms
-            # gives no clue which three you added and which twenty-seven ship
-            # with the project -- and only yours survive an update.
+            # Mark the user's own entries, to tell them apart from the ones
+            # that ship with the project.
             for e in lx.entries.values():
                 mine = "*" if e.term in lx.user_terms else " "
                 print(f"{mine} {e.term:14} -> {e.spoken_fallback():22} {e.note}")

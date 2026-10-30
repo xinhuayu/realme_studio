@@ -1,50 +1,37 @@
 """
 Re-recording only what changed.
 
-A lecture is not written once. A figure is replaced, a definition is corrected,
-two slides are inserted in the middle -- and re-rendering forty minutes of
-audio to change ninety seconds of it is the kind of cost that stops people
-correcting things at all.
+A figure is replaced, a definition is corrected, two slides are inserted in
+the middle -- and only the affected slides should be rendered again.
 
-Everything needed for this already existed. The render ledger caches each
-segment's audio on its text and voice, and each segment's video on top of that,
-so an untouched slide is already free to "re-render". The missing pieces were
-two: the video key did not include the slide PICTURE, so a changed image with
-unchanged narration silently reused the old frame; and nothing compared two
-versions of a deck to say which slides those were.
+The render ledger caches each segment's audio on its text and voice, and each
+segment's video on top of that, including the slide PICTURE (see
+lecture.render), so an untouched slide costs nothing to "re-render". This
+module compares two versions of a deck to say which slides changed.
 
-This module supplies the comparison. The key is fixed in lecture.render.
-
-Two questions, and conflating them was the bug.
+Two separate questions:
 
   WHICH OLD SLIDE IS THIS?  decides where the narration and cue words go.
   DOES IT NEED RE-RENDERING? decides what the render costs.
 
-They are not the same question. Re-exporting a deck with a different theme
-changes every pixel while changing no content: the narration still belongs to
-the same slide, and the video still has to be remade. Answering only the
-second question -- which is what comparing pictures does -- moved everyone's
-notes onto the wrong slides.
+Re-exporting a deck with a different theme changes every pixel while changing
+no content: the narration still belongs to the same slide, and the video
+still has to be remade. Comparing pictures answers only the second question
+and would move notes onto the wrong slides.
 
 Identity comes from TEXT. A slide is what it says, and text survives a change
-of font, a removed logo, a different page number and a re-export. Measured on
-two real versions of one lecture, re-themed between them:
-
-    the same slide, re-themed     text 0.93-1.00   pixels 0.9-9.4
-    an edited slide               text 0.85-0.91   pixels 12-16
-    a different slide             text 0.00-0.31   pixels 14-41
-
-The pixel column does not separate those rows. The text column does.
+of font, a removed logo, a different page number and a re-export. Across a
+re-theme, text overlap separates the same slide (about 0.93 and up), an
+edited slide (about 0.85-0.91) and a different slide (0.31 or less); pixel
+distance does not.
 
 Word overlap answers WHICH SLIDE, and only that. Whether the wording changed is
 answered exactly, by `wording_change` -- an overlap score cannot tell six
-changed words on a long slide from none, and once told it wrong.
+changed words on a long slide from none.
 
-Pixels still decide one case text cannot: a slide with no text at all. Two
-image-only slides look identical to a text comparison -- both empty -- and in
-the deck this was built against, one was unchanged and the other was a newly
-added graph. That is exactly where pixels are decisive, and it is the only
-place they are consulted.
+Pixels decide the one case text cannot: a slide with no text at all. Two
+image-only slides look identical to a text comparison -- both empty -- so
+pixels are consulted there, and only there.
 """
 from __future__ import annotations
 import hashlib
@@ -57,52 +44,35 @@ def slide_digest(png: Path) -> str:
 
     Content, not modification time: re-rasterising an unchanged deck produces
     new files with new timestamps and identical pixels, and mtimes would call
-    every slide changed. This project has been bitten by exactly that before,
-    in the update checker.
+    every slide changed.
     """
     return hashlib.sha256(Path(png).read_bytes()).hexdigest()[:16]
 
 
-#: Text overlap above which two slides are the same slide. Well below the
-#: 0.85 an edited slide scored and well above the 0.31 an unrelated one did.
+#: Text overlap above which two slides are the same slide. Well below an
+#: edited slide's ~0.85 and well above an unrelated one's ~0.31.
 SAME_SLIDE_TEXT = 0.62
 
-#: There is no threshold for "did the wording change". There was one, and it
-#: was wrong in the only way that matters.
+#: There is no threshold for "did the wording change". Word-set overlap
+#: measures how MUCH changed, and the question is WHETHER anything did: six
+#: changed words on a 91-word slide score 0.97, the same as an untouched
+#: re-themed slide. So matched slides are instead required to be
+#: word-for-word identical after normalisation.
 #:
-#: It read `similarity >= 0.95 means unchanged`, calibrated against edits that
-#: happened to be large: a re-themed but untouched slide scored 0.97 and
-#: genuinely edited ones 0.86-0.91, so 0.95 sat neatly between them. Then a
-#: real edit -- "and figures" inserted, "often" replaced by "or supplemental
-#: materials also" -- landed on a 91-word slide and scored 0.97. Six changed
-#: words on a long slide are indistinguishable from none, by that measure,
-#: and the slide was reported as unchanged.
-#:
-#: No threshold can fix that, because word-set overlap is a measure of how
-#: MUCH changed and the question is WHETHER anything did. Those two versions
-#: are asked instead to be word-for-word identical after normalisation, and
-#: the evidence is measured on the same two real decks:
-#:
-#:     genuinely unchanged slides    0 token differences, over 168 and 131 words
-#:     two slides that swapped order 1 difference, the printed page number
-#:     the edited slide              6 words added, 1 replaced
-#:
-#: Exactness is also the safe side of the error. Being told a slide is edited
-#: when only a ligature moved costs one unticked checkbox; being told it is
-#: unchanged when it is not costs a wrong video, which is what happened.
+#: Exactness errs on the safe side. A false "edited" (only a ligature moved)
+#: costs one unticked checkbox; a false "unchanged" costs a wrong video.
 #: `wording_change` forgives the page number explicitly and reports everything
 #: else with the words that changed, so a false alarm can be dismissed on
-#: sight rather than on trust.
+#: sight.
 
 #: A slide with fewer than this many words cannot be identified by text.
-#: Three, not four: a three-word slide title matched its counterpart exactly
-#: across a re-theme, and a four-word floor pushed it into the pixel path
-#: where the re-theme then made it look like a new slide.
+#: Three, not four: a three-word title slide still matches by text across a
+#: re-theme, whereas the pixel path would see the re-theme as a new slide.
 MIN_WORDS_FOR_TEXT = 3
 
 #: Pixel distance below which two TEXT-LESS slides are the same slide.
-#: Loose, because it is comparing across a possible re-theme: measured, the
-#: same image-only slide scored 0.9-2.8 and different ones 14-41.
+#: Loose, because it is comparing across a possible re-theme: the same
+#: image-only slide typically scores under 3 and different ones over 14.
 IDENTITY_PIXELS = 10.0
 
 #: Pixel distance above which a matched slide needs a NEW FRAME. Tight,
@@ -116,10 +86,9 @@ def _page_numbers(new_i: int, old_j: int) -> set:
     The page numbers these two slides might be printing.
 
     Both the position and, for a deck that is an excerpt, nothing reliable at
-    all -- the old deck this was built against starts at printed page 4 while
-    sitting at position 1. So this removes the obvious candidates and the
-    threshold absorbs the rest, rather than pretending the number can be
-    predicted.
+    all -- an excerpt may start at printed page 4 while sitting at position 1.
+    So this removes the obvious candidates and the threshold absorbs the rest,
+    since the number cannot be predicted.
     """
     return {str(new_i + 1), str(old_j + 1)}
 
@@ -134,11 +103,9 @@ def text_similarity(a: str, b: str, ignore: set | None = None) -> float:
     Jaccard overlap of word sets. Order-insensitive on purpose: moving a
     bullet up a slide does not make it a different slide.
 
-    `ignore` drops tokens that are page furniture rather than content. The
-    case that forced it: two versions of one slide, identical in every word,
-    differing only in the page number printed in the corner -- '4' against
-    '2'. That scored 0.93 and was reported as edited wording, which would have
-    sent someone to re-read narration that needed nothing.
+    `ignore` drops tokens that are page furniture rather than content, such
+    as the page number printed in the corner, so two otherwise identical
+    slides score 1.0.
     """
     A, B = _tokens(a), _tokens(b)
     if ignore:
@@ -180,9 +147,8 @@ def wording_change(before: str, after: str,
     by deleting those tokens up front, so a body word that happens to be "2"
     still counts.
 
-    Returns (changed, description). The description names the change in words,
-    because a flag the reader cannot check is a flag they must either obey or
-    ignore, and both are worse than evidence.
+    Returns (changed, description). The description names the changed words
+    so the reader can check the flag.
     """
     import difflib
     A, B = _seq(before), _seq(after)
@@ -297,9 +263,8 @@ def match_slides(old_texts: list[str], new_texts: list[str], *,
 
     One distance, two thresholds, because the two questions want opposite
     leniency. Identity must survive a re-theme, so it is generous. Redrawing
-    must catch a re-theme, so it is strict. A single threshold cannot do both,
-    and trying to make it forced a choice between misplacing notes and
-    shipping stale frames.
+    must catch a re-theme, so it is strict. A single threshold would either
+    misplace notes or keep stale frames.
     """
     n_old, n_new = len(old_texts), len(new_texts)
     wordy = [len(_tokens(t)) >= MIN_WORDS_FOR_TEXT for t in new_texts]
@@ -342,7 +307,7 @@ def match_slides(old_texts: list[str], new_texts: list[str], *,
             continue
         j = match[i]
         # OLD first, NEW second: the description says what happened to the
-        # slide, and reading it backwards reported an insertion as a deletion.
+        # slide, and the reverse order would report an insertion as a deletion.
         changed, what = wording_change(old_texts[j], new_texts[i],
                                        _page_numbers(i, j))
         moved = (j != i)

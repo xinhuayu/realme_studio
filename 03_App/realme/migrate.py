@@ -1,23 +1,20 @@
 """
 Moving a working install to another machine.
 
-The point is to arrive with nothing left to download and nothing to compile:
-the code, the tools already built, the model weights, and the enrolled voice --
-so the new machine records a lecture on the first afternoon rather than
-repeating a week of setup.
+The package arrives with nothing left to download and nothing to compile:
+the code, the tools already built, the model weights, and the enrolled voice.
 
 **What is deliberately left out.** `tools/qwen3` is 4 GB of PyTorch weights and
-a CPU-only virtual environment for the engine that measured slower and less like
-the speaker; `tools/vc` is 1.3 GB of voice-conversion weights for a path that was
-tried, measured and closed. Their adapters travel -- they are a few KB, and
-`realme engine install` brings the payload back on demand -- but their downloads
-do not. That is the difference between a 2.5 GB package and an 8 GB one.
+a CPU-only virtual environment for the optional Python Qwen3 engine; `tools/vc`
+is 1.3 GB of voice-conversion weights for the optional conversion path. Their
+adapters travel -- they are a few KB, and `realme engine install` brings the
+payload back on demand -- but their downloads do not. That is the difference
+between a 2.5 GB package and an 8 GB one.
 
-**The one thing that can still go wrong.** ggml compiles for the CPU it is built
-on. A binary built on a 2024 laptop can meet an older processor and die with an
-illegal-instruction error, which looks like a corrupt download and is not. Build
-with `--portable` before packaging, or rebuild on the target; both are in the
-README this writes.
+**CPU target.** ggml compiles for the CPU it is built on. A binary built on a
+newer processor can fail on an older one with an illegal-instruction error,
+which looks like a corrupt download and is not. Build with `--portable` before
+packaging, or rebuild on the target; both are in the README this writes.
 """
 from __future__ import annotations
 import shutil
@@ -26,14 +23,13 @@ import zipfile
 from pathlib import Path
 
 #: Installed payload worth carrying. Everything else under tools/ is rebuildable
-#: or was deliberately retired.
+#: or optional.
 KEEP_TOOLS = ("ffmpeg", "piper", "qwen3cpp")
 
-#: Engine source for paths that were closed. Excluded on request; the adapters
-#: remain and will say plainly that the payload is missing.
+#: Engine source for optional paths that are not packaged. Excluded on
+#: request; the adapters remain and say that the payload is missing.
 #: Matched anywhere in the path, not as a prefix: `shipped_files` yields
-#: `03_App/realme/engines/ov/...`, so a startswith test silently matched
-#: nothing and packaged them anyway.
+#: `03_App/realme/engines/ov/...`, which a startswith test would not match.
 DROP_CODE = ("/realme/engines/ov/", "/realme/engines/knnvc/")
 
 #: The developer's own launchers and the scripts only they run. A package for
@@ -80,11 +76,9 @@ def _walk(base: Path, prefix: str, keep=None) -> list[tuple[Path, str]]:
 def _piper_keep(rel: Path) -> bool:
     """The draft voices the application actually offers, and no others.
 
-    `tools/piper` accumulates. Auditioning voices installs them, and eleven of
-    them is 795 MB -- most of it voices nobody chose, riding along in every
-    package because the folder was copied wholesale. The list of voices the
-    Studio offers already exists in one place; this asks it rather than keeping
-    a second copy that would drift.
+    `tools/piper` accumulates, because auditioning voices installs them (tens of
+    MB each). Only the voices the Studio offers are packed, read from
+    `DRAFT_VOICES` rather than from a second list.
 
     Both files travel or neither does: a piper voice is the `.onnx` AND its
     `.onnx.json`, and a half-present one fails at load rather than at install.
@@ -122,9 +116,9 @@ def collect(root: Path, data: Path, include_key: bool = False,
     """Everything the package holds, grouped so the plan can be read.
 
     `include_qwen`: carry the local Qwen3 engine (about 2.2 GB of the package).
-    None means yes: the local clone is a standard part of RealMe (October
-    2026), and a package without it leaves the recipient a compiler to
-    install. Packed only if it is installed here.
+    None means yes: the local clone is a standard part of RealMe, and a
+    package without it leaves the recipient a compiler to install. Packed
+    only if it is installed here.
     """
     if include_qwen is None:
         include_qwen = True
@@ -132,9 +126,7 @@ def collect(root: Path, data: Path, include_key: bool = False,
     groups: dict[str, list[tuple[Path, str]]] = {}
 
     # Collect the guide video to the root first, exactly as the update
-    # packager does. Its own docstring says it is called by both packagers,
-    # and it was not called here -- so a migration package carried the
-    # guide's deck with no video, and only a preflight line said so.
+    # packager does, so the package carries it with the guide's deck.
     # Best effort, not a refusal: migrate reports its problems and lets the
     # person decide, and the preflight below still names a missing video.
     ensure_guide_video(root, log=lambda *_: None)
@@ -153,10 +145,8 @@ def collect(root: Path, data: Path, include_key: bool = False,
         code.append((root / rel, f"RealMe/{posix}"))
     groups["code"] = code
 
-    # Through the project's own resolver, not `root/"tools"`. An engine
-    # installed in the legacy location is still the engine, and hard-coding the
-    # path here would quietly package nothing -- which a dry run shows as three
-    # empty rows and a package that arrives useless.
+    # Through the project's own resolver, not `root/"tools"`, so an engine
+    # installed in the legacy location is still found and packed.
     from realme.core.paths import find_tool
     for name in KEEP_TOOLS:
         if name == "qwen3cpp" and not include_qwen:
@@ -177,10 +167,9 @@ def collect(root: Path, data: Path, include_key: bool = False,
     #
     # Carried when the package is for ANOTHER MACHINE OF YOURS, and left out
     # when it is for another person. A cloned voice is not a setting: it is a
-    # recording of someone, with a consent statement attached to it, and the
-    # default -- carry everything so the new machine records on the first
-    # afternoon -- is exactly wrong when the new machine belongs to a
-    # colleague. `include_voice=False` is what `--no-voice` passes.
+    # recording of someone, with a consent statement attached to it, so it
+    # must not go to a colleague. `include_voice=False` is what `--no-voice`
+    # passes.
     if include_voice:
         voice = _walk(data / "profile", "profile_data/profile")
         voice += _walk(data / "voice", "profile_data/voice")
@@ -296,10 +285,9 @@ system memory are named as such rather than recommended.
 
 #: The README for a package going to another PERSON.
 #:
-#: Deliberately not a variant of the one above with two sentences changed. The
-#: first step differs -- there is no voice to restore, there is a voice to
-#: record -- and that is the step everything else depends on, so the two
-#: documents diverge from the top rather than at a footnote.
+#: A separate document rather than a variant of the one above: the first
+#: step differs (there is no voice to restore, there is a voice to record),
+#: and everything else depends on it.
 def readme_fresh(include_qwen: bool = False) -> str:
     """The README inside a package for a colleague.
 
@@ -534,10 +522,8 @@ PACKAGE_NAME = {True: "RealMe_Migration.zip",    # for another machine of yours
 def resolve_out(out, default_dir: Path, name: str) -> Path:
     """Where `--out` means the archive to go.
 
-    `--out D:\\Transfer` named a folder that already existed, and the
-    command tried to open the folder itself as a zip and crashed. A folder
-    is the natural thing to type -- the launchers ask "where to write it"
-    -- so a folder gets the default name inside it.
+    A folder is the natural thing to type -- the launchers ask "where to
+    write it" -- so a folder gets the default name inside it.
 
       - nothing given            -> default_dir / name
       - an existing folder       -> that folder / name
@@ -594,11 +580,10 @@ def write_package(out: Path, groups: dict, log=print, readme: str = "") -> Path:
 def personal_entries(zip_path: Path) -> list:
     """Anything in the finished package that belongs to a person, not the tool.
 
-    Read back from the ARCHIVE, not from the plan that built it. A flag that
-    was supposed to exclude something and a file that is actually absent are
-    different claims, and only the second one is worth making to somebody
-    before you send them your voice. Cheap: the central directory carries the
-    names, so nothing is decompressed.
+    Read back from the ARCHIVE, not from the plan that built it, so the check
+    reflects what was actually written rather than what a flag intended.
+    Cheap: the central directory carries the names, so nothing is
+    decompressed.
     """
     import zipfile as _z
     try:
@@ -611,10 +596,7 @@ def personal_entries(zip_path: Path) -> list:
         if n.startswith("profile_data/"):
             return True
         # `.env` holds a key; `example.env` is the blank template and is meant
-        # to travel. `core.build._excluded` already draws exactly this line,
-        # and this did not -- so a correct package was refused for carrying
-        # the file the packager deliberately includes. Two places, one
-        # decision, and they disagreed.
+        # to travel. This must match the line `core.build._excluded` draws.
         if base.endswith(".env") and base != "example.env":
             return True
         if "/voice_reference" in n or "consent" in base.lower():
@@ -627,13 +609,11 @@ def personal_entries(zip_path: Path) -> list:
                                   ".opus", ".aac")):
             return True
         # Video is deliberately NOT on that list. The one video that ships,
-        # `RealMe_Guide_narrated_v2.mp4`, is narrated in the author's cloned
-        # voice and travels in every package on purpose: it is the demo a
+        # the guide video (`core.build.GUIDE_VIDEO`), is narrated in the
+        # author's cloned voice and travels in every package on purpose: it is the demo a
         # recipient checks their install against, and the README links to it
-        # (preflight checks the pair). Decided 19 September 2026 for the
-        # earlier `test_slides.mp4`, and kept when the narrated guide replaced
-        # it in October. If a second video ever ships, decide again here
-        # rather than by omission.
+        # (preflight checks the pair). If a second video ever ships, decide
+        # here explicitly whether it counts as personal.
         return False
 
     return sorted(n for n in names if personal(n))
@@ -728,9 +708,8 @@ def _repoint_profile(data: Path, log=print) -> list[str]:
             continue                      # same layout; nothing to do
         # Separator-agnostic basename. `Path(r"C:\...\x.wav").name` under
         # POSIX returns the WHOLE string -- backslashes are ordinary characters
-        # there -- so the rewritten path was nonsense and the check that it
-        # exists quietly declined to fix anything. This function exists to cross
-        # exactly that boundary, so it cannot assume the host's separator.
+        # there. A profile can come from another OS, so the host's separator
+        # cannot be assumed.
         base = str(old_path).replace("\\", "/").rsplit("/", 1)[-1]
         here = Path(data) / "profile" / "baked_assets" / base
         if here.is_file():
@@ -752,12 +731,11 @@ def preflight(root: Path, data: Path, groups: dict,
     """
     The "did you remember" list, run rather than recited.
 
-    Every item here is something that has actually been forgotten while
-    assembling one of these: packaging code that an unapplied update had already
-    superseded, carrying a binary compiled for the wrong processor, shipping a
-    reference the profile no longer points at. Each returns (ok, message) so the
-    caller can print the whole list rather than stopping at the first problem --
-    you want to fix them in one pass, not one round trip each.
+    Checks for the usual packaging mistakes: packaging code that an unapplied
+    update supersedes, carrying a binary compiled for the wrong processor,
+    shipping a reference the profile no longer points at. Each returns
+    (ok, message) so the caller can print the whole list rather than stopping
+    at the first problem.
     """
     out: list[tuple[bool, str]] = []
 

@@ -1,30 +1,23 @@
 """
 Matching the draft voice's pace to the speaker's own.
 
-Where this matters is DIALOGUE. Two voices alternate there, and one speaking
-noticeably faster than the other is audible as a mismatch -- the guest sounds
-like they are rushing you, or you sound like you are holding them up.
+This is used for DIALOGUE, where two voices alternate and a difference in
+pace is audible as a mismatch.
 
-Where it does not matter is lecture and narration drafting. A draft is
-scaffolding: it is replaced by the cloned voice before anything is published,
-so matching its pace to yours buys nothing and makes every iteration longer.
-Those keep the voice's own pace.
+Lecture and narration drafts keep the voice's own pace: a draft is replaced
+by the cloned voice before anything is published.
 
-A constant cannot do this job: two people do not share a speaking rate, and
-any number chosen by ear is about whoever was listening.
-
-So: measure both, and divide.
+Speaking rates differ between people, so the speed is measured, not fixed:
 
   your rate     words in the enrolment transcript / seconds of SPEECH in the
-                enrolment recording (silence removed -- pauses are rhythm, and
-                counting them turns a thoughtful speaker into a slow one)
+                enrolment recording (silence removed, so pauses do not count
+                as slow speech)
 
   piper's rate  the same text through piper at speed 1.0, measured the same way
 
   speed         your rate / piper's rate, clamped
 
-Clamped because a wildly wrong transcript would otherwise produce a wildly
-wrong speed, and a draft voice at 0.4 is not a draft voice.
+Clamped so that a wrong transcript cannot produce an extreme speed.
 """
 from __future__ import annotations
 import re
@@ -34,8 +27,8 @@ from pathlib import Path
 from realme.core.media import duration_of, require
 
 #: Speech at -32 dB and gaps from 0.18 s: the same thresholds
-#: `prosody.measure_reference_pauses` uses, so the two measurements describe
-#: the same recording rather than two different ideas of silence.
+#: `prosody.measure_reference_pauses` uses, so both measurements agree on
+#: what counts as silence.
 NOISE_DB = "-32dB"
 MIN_SILENCE_S = 0.18
 
@@ -44,40 +37,26 @@ FALLBACK_SPEED = 0.8
 
 #: A measured correction this small is reported as no correction at all.
 #:
-#: Not a tolerance for sloppiness -- the measurement still happens and the
-#: number is still printed. It is that two takes of the same passage by the
-#: same person differ by 3-5% (193.8 and 183.1 words a minute of speech on one
-#: measured pair), so a 1.5% gap between a speaker and their clone is inside
-#: the variation of the thing being measured. Retiming is not free: atempo
-#: costs 2-11% of the energy above 4 kHz, which is the band a voice sounds
-#: "smoothed" in. Paying that to chase a difference nobody can hear, and which
-#: the next recording session would move anyway, is a bad trade.
+#: The measurement is still made and printed. Two takes of the same passage
+#: by the same person differ by 3-5%, so a smaller gap between a speaker and
+#: their clone is within normal variation. Retiming has a cost: atempo removes
+#: 2-11% of the energy above 4 kHz, which makes a voice sound smoothed.
 RATE_DEADBAND = 0.03
 
 #: What a person reading aloud can actually be, in words per minute of SPEECH
 #: (pauses excluded, so these are higher than the familiar 110-160 figures for
-#: conversation). Auctioneers and sports commentators reach 250; a lecture does
-#: not. Anything outside this band is not a measurement of a person, it is a
-#: mismatch between the recording and the text it was measured against.
-#:
-#: This band exists because of a real 25% error. A re-recorded enrolment was a
-#: SHORTER passage than the first, and the transcript on disk still described
-#: the first one: 163 words divided by 28.8 seconds of new speech gave 323
-#: words a minute. The calibration believed it, asked for a 1.846x speed-up,
-#: clamped it to MAX_SPEED, and stored 1.25 as if it had been measured. Every
-#: lecture after that was retimed a quarter faster than the speaker.
-#:
-#: `store_audio` already carried the warning in a comment -- "a mismatch there
-#: silently degrades every clone" -- and nothing checked it. This is the check.
+#: conversation). A rate outside this band indicates a mismatch between the
+#: recording and its transcript, for example a re-recorded enrolment whose
+#: transcript still describes the earlier passage. Such a rate is refused
+#: rather than clamped and stored.
 HUMAN_WPM_MIN, HUMAN_WPM_MAX = 90.0, 260.0
 
 
 def check_human_wpm(wpm: float, wav: Path, text: str) -> float:
     """`wpm` back, or a refusal that says which of the two inputs is wrong.
 
-    Measured, not assumed: the message carries the word count and the seconds
-    of speech, because the fix is almost always to paste the transcript of the
-    passage that was actually read.
+    The message carries the word count and the seconds of speech; the usual
+    fix is to paste the transcript of the passage that was actually read.
     """
     if HUMAN_WPM_MIN <= wpm <= HUMAN_WPM_MAX:
         return wpm
@@ -122,9 +101,8 @@ def calibrate(reference_wav, reference_text: str, *, voice: str | None = None,
     Measure both rates and return the speed that makes them agree.
 
     Renders a sample through piper, because piper's rate at speed 1.0 is a
-    property of the voice file and is not written down anywhere. It costs a few
-    seconds -- piper runs at about RTF 0.08 -- and it is the only way to get a
-    number rather than an opinion.
+    property of the voice file and is not recorded anywhere. It costs a few
+    seconds; piper runs at about RTF 0.08.
     """
     reference_wav = Path(reference_wav)
     mine = words_per_minute(reference_wav, reference_text)
@@ -167,20 +145,18 @@ def calibrate_all(reference_wav, reference_text: str, *, voices=None,
                   workdir: Path | None = None, log=print) -> dict:
     """Measure YOUR rate once, and every offered voice's rate beside it.
 
-    The quotient was never the durable thing. Your words per minute is a fact
-    about you; each voice's is a fact about that voice; the speed that matches
-    them is arithmetic, and doing it per voice at cast time is what stops a
-    ratio measured against one speaker being applied to another.
+    The rates are stored, not the quotient: the matching speed is computed
+    per voice at cast time, so a ratio measured against one speaker is never
+    applied to another.
 
     Piper runs at about RTF 0.08, so measuring three voices costs a few
     seconds.
     """
     from realme.adapters.tts import DRAFT_VOICES
     voices = list(voices or DRAFT_VOICES)
-    # Checked once, before the loop. Every voice fails on a stale transcript,
-    # and the collected failure below reads "No draft voice could be
-    # measured. Install them with `realme engine install`" -- which blames
-    # the engines for a problem in the text file.
+    # Checked once, before the loop. A stale transcript makes every voice
+    # fail, and the collected failure below would point at the engines
+    # instead of the text file.
     once = words_per_minute(Path(reference_wav), reference_text)
     if once:
         check_human_wpm(once, Path(reference_wav), reference_text)
@@ -208,29 +184,20 @@ def calibrate_all(reference_wav, reference_text: str, *, voices=None,
 
 # ------------------------------------------------------- any engine, not piper
 #
-# `calibrate` above measures PIPER, because matching a draft voice to the
-# instructor is what it was written for. A cloned voice was assumed not to need
-# it: the clone speaks at the speaker's own rate by construction.
+# `calibrate` above measures PIPER, for matching a draft voice. A cloned voice
+# can need it too: zero-shot cloning copies the reference's delivery as well
+# as its timbre, so a reference read slowly for the microphone gives a clone
+# that lectures slowly. A 5% difference adds about forty seconds to a
+# fifteen-minute lecture.
 #
-# That assumption holds only while the enrolment recording is at the speaker's
-# own rate. Zero-shot cloning copies the reference's DELIVERY, not just its
-# timbre -- so a reference read carefully for the microphone produces a clone
-# that lectures carefully, forever, at a pace the speaker has never used in a
-# classroom. Measured on one such pair: 193.8 words a minute of speech in the
-# first enrolment, 183.1 in a more deliberate re-recording of the same passage.
-# Five per cent sounds like nothing and is forty seconds added to a
-# fifteen-minute lecture, in the direction people already complain about.
-#
-# The fix is the same arithmetic as for piper, with the engine swapped: measure
-# the target rate, measure what the engine does at pace 1.0, divide. What it
-# must NOT be is a number somebody picked by listening.
+# Same arithmetic as for piper, with the engine swapped: measure the target
+# rate, measure what the engine does at pace 1.0, divide.
 
 def engine_wpm(engine, sample: str, out_wav: Path, *, pace: float = 1.0) -> float | None:
     """Words per minute of speech this engine produces, measured.
 
-    Nothing about an engine's natural rate is written down -- not for piper,
-    whose rate is a property of the voice file, and not for a hosted model,
-    whose rate is a property of whatever it was cloned from.
+    An engine's natural rate is not recorded anywhere: for piper it is a
+    property of the voice file, for a hosted model of the clone's reference.
     """
     engine.synthesize(sample, Path(out_wav), pace=pace)
     return words_per_minute(Path(out_wav), sample)
@@ -246,7 +213,7 @@ def calibrate_engine(engine_name: str, reference_wav, reference_text: str, *,
     `target_wpm` defaults to the enrolment recording's own articulation rate.
     Pass it explicitly when the enrolment is not how you actually lecture --
     a reference recorded slowly for clarity is the usual case, and calibrating
-    against it would preserve exactly the thing you wanted corrected.
+    against it would keep that slow pace.
     """
     reference_wav = Path(reference_wav)
     mine = target_wpm or words_per_minute(reference_wav, reference_text)
@@ -268,8 +235,7 @@ def calibrate_engine(engine_name: str, reference_wav, reference_text: str, *,
     # pipeline, so what `engine_wpm` gets back below is already the engine's
     # own rate. This stays as the guard for the other case: an engine that
     # applies a stored correction itself would be measured through it, and
-    # each calibration would then multiply on top of the last -- reporting an
-    # already-corrected voice as matching when it does not.
+    # each calibration would then multiply on top of the last.
     if (getattr(engine, "rate_match", 1.0) != 1.0
             and not getattr(engine, "retimes_after", False)):
         log(f"  (ignoring the stored correction {engine.rate_match:.3f} "
@@ -286,13 +252,10 @@ def calibrate_engine(engine_name: str, reference_wav, reference_text: str, *,
     raw = mine / theirs
     log(f"  target     {mine:5.1f} words/min of speech")
     log(f"  {engine_name:<22} {theirs:5.1f} words/min at pace 1.0")
-    # A saturated calibration is a failed measurement, not a setting.
-    #
-    # Clamping and storing the clamp is how 1.846 became a stored 1.25 that
-    # looked deliberate. A clone speaks at the rate of what it was cloned
-    # from, so a correction anywhere near the bounds means one of the two
-    # measurements is wrong -- and the retiming needed to realise it would be
-    # audible as an artefact even if it were right.
+    # A calibration outside the bounds is refused, not clamped. A clone speaks
+    # at roughly the rate of its reference, so a correction near the bounds
+    # means one of the two measurements is wrong, and the retiming would be
+    # audible as an artefact anyway.
     if not MIN_SPEED <= raw <= MAX_SPEED:
         raise ValueError(
             f"Not stored: matching this would need a {raw:.3f}x retime, "
@@ -318,9 +281,7 @@ def reference_drift(reference_wav, reference_text: str,
                     previous_wpm: float | None) -> dict:
     """Has a re-recorded enrolment changed how fast you talk?
 
-    Worth saying out loud at the moment of enrolment, because the clone
-    inherits it and the person listening to the result months later will hear
-    "the voice is slow" without connecting it to a recording session.
+    Reported at enrolment, because the clone inherits the change in pace.
     """
     now = words_per_minute(Path(reference_wav), reference_text)
     out = {"wpm": round(now, 1) if now else None,
@@ -345,17 +306,14 @@ def reference_drift(reference_wav, reference_text: str,
 #
 # Duration alone cannot tell "it dropped a sentence" from "it said everything
 # faster", and those want opposite responses: the first means use smaller
-# calls, the second means keep the size and retime. Measured on one probe, the
-# difference was invisible by duration and obvious by syllable count -- the
-# long calls carried their content and simply hurried through it.
+# calls, the second means keep the size and retime. Syllable count separates
+# the two where duration cannot.
 #
-# Two further things duration gets wrong, both found the same way:
+# Two further things duration gets wrong:
 #
-#   * Edge silence. Every call comes back with a little lead-in and tail --
-#     0.27 s and 0.41 s on the run that prompted this. Comparing one long call
-#     against the SUM of N short ones therefore compares it against N copies of
-#     that padding: 7.5 seconds of phantom shortfall over eleven sentences,
-#     which is most of an 11% "SHORT" verdict with nothing wrong at all.
+#   * Edge silence. Every call comes back with a short lead-in and tail
+#     (a few tenths of a second each). Comparing one long call against the
+#     SUM of N short ones counts N copies of that padding as a shortfall.
 #   * Pauses. A model given a whole paragraph places its own pauses; a model
 #     given one sentence cannot. Speaking time is the comparable quantity.
 
@@ -378,11 +336,10 @@ def speech_profile(path) -> dict:
     n = max((len(sig) - win) // hop, 1)
     env = np.array([np.sqrt((sig[i * hop:i * hop + win] ** 2).mean())
                     for i in range(n)]) + 1e-12
-    # Two thresholds, not one. A purely relative threshold has no opinion
-    # about an empty file: digital silence is uniformly 1e-12, every frame is
-    # 0 dB below the peak, and the whole clip measures as speech. The absolute
-    # floor (-80 dBFS) is what makes "nothing here" an answer the measurement
-    # can give. Found by a test asserting the obvious thing about a silent wav.
+    # Two thresholds, not one. With a purely relative threshold, digital
+    # silence (uniformly 1e-12) is 0 dB below its own peak and the whole clip
+    # measures as speech. The absolute floor (-80 dBFS) lets a silent file
+    # measure as silent.
     peak = float(env.max())
     if peak < 1e-4:
         return {"duration_s": len(sig) / sr, "speech_s": 0.0, "syllables": 0,

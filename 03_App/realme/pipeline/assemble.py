@@ -1,11 +1,8 @@
 """
-Turning a join into a LECTURE, not just a file.
+Turning a join into an editable project, not just a video file.
 
-Merging two sections from different lectures produces a video. What it does
-not produce, on its own, is anything you can edit: the narration that belongs
-to those slides is still in two other projects, split between them, numbered
-for decks that no longer describe what you just made. Fix a sentence in the
-new lecture and there is nowhere to fix it.
+Merging sections from different lectures produces a video, but the narration
+for those slides stays in the source projects, numbered for their own decks.
 
 So a join can also assemble a project. Each input contributes the slides it
 actually covers -- its cut list records their ORIGINAL numbers, which is why
@@ -16,16 +13,15 @@ actually covers -- its cut list records their ORIGINAL numbers, which is why
     a deck built from those images, so the result can be re-rendered
 
 The result is an ordinary project. It opens in the editor, its notes can be
-corrected, and it can be rendered again in your own voice -- or split again,
-since the join already wrote a combined cut list.
+corrected, and it can be rendered again -- or split again, since the join
+already wrote a combined cut list.
 
 WHAT IT REFUSES. A source with no cut list cannot say which slides its video
 covers, and a source whose manifest does not contain those slides cannot say
-what was said over them. Either way the honest answer is that the notes for
-that stretch are unknown, and the assembly stops and says which input and why.
-Half a manifest is worse than none: it would put one lecture's narration under
-another lecture's slides, and every slide after the gap would be wrong by the
-same amount -- the exact failure the revision code was rewritten to prevent.
+what was said over them. Either way the notes for that stretch are unknown,
+and the assembly stops and says which input and why. A partial manifest would
+put one lecture's narration under another lecture's slides and shift every
+slide after the gap.
 """
 from __future__ import annotations
 import json, shutil
@@ -72,8 +68,7 @@ def covered_slides(video: Path) -> list[int]:
     """Which original slide numbers this video contains, in order.
 
     From the cut list beside it. A video without one is not refused here --
-    the caller decides -- but it returns nothing, and nothing is what an
-    assembly cannot work from.
+    the caller decides -- but it returns an empty list.
     """
     seg = Path(video).with_name(Path(video).stem + "_segments.json")
     if not seg.is_file():
@@ -120,8 +115,7 @@ def build_deck(images: list[Path], out_pdf: Path) -> Path:
     A merged lecture has no deck of its own, and `render` needs one: it
     rasterises from the deck whenever the slide images are missing, and the
     Studio reads `deck_path.txt` before it will render at all. Building one
-    from the images that are already there costs nothing and makes the result
-    an ordinary project rather than a special case.
+    from the existing images makes the result an ordinary project.
     """
     try:
         import pymupdf as fitz

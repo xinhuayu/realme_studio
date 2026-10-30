@@ -1,15 +1,9 @@
 """
-Who speaks, in which voice, at what pace. **One place. Only this one.**
+Who speaks, in which voice, at what pace. **The single place this is decided.**
 
-The CLI grew `--speed`, `--guest-voice` and a female-guest default; the Studio
-went on calling `build(name)` twice with nothing, so a dialogue generated from
-the web page ran at the lecture pace with two identical voices. The settings
-existed and the web page could not reach them.
-
-This is the same failure the adapter factory was written to end -- two callers,
-two ideas of what a dialogue needs -- one level up. Casting a dialogue is a
-decision, not a pair of constructor calls, so it lives in a function both
-callers use.
+The CLI and the Studio both cast dialogues through this module, so the pace,
+guest voice and guest default (`--speed`, `--guest-voice`) apply equally to
+both.
 
 A voice is named `engine` or `engine:voice`, e.g. `piper:en_US-lessac-medium`.
 The suffix is a piper voice file and applies only to piper, because `model`
@@ -19,9 +13,8 @@ looking for a TTS model called "en_US-lessac-medium".
 from __future__ import annotations
 
 #: Conversation reads faster than narration at the same rate, so a dialogue
-#: runs a notch below the draft pace. Judgment, not measurement -- `--speed`
-#: and the Studio's control both override it, and if a measured number ever
-#: replaces this it should replace it here.
+#: runs a notch below the draft pace. A judgement, not a measurement;
+#: `--speed` and the Studio's control both override it.
 DIALOGUE_SPEED = 0.72
 
 PIPER_ENGINES = ("piper",)
@@ -34,16 +27,15 @@ def split_spec(spec: str) -> tuple[str, str | None]:
 
 
 #: How far a saved voice speed may go either way, as a factor (+/-30%).
-#: Past that a stretch is audible as a stretch, and the answer is a
-#: different voice or a different pace setting, not more of this one.
+#: Past that the time-stretch is audible.
 VOICE_SPEED_RANGE = (0.70, 1.30)
 
 
 def voice_key(spec: str, tts=None) -> str:
     """The name a voice's saved speed is filed under: `engine` for a cloning
     engine, `piper:<voice>` for a draft voice. A bare `piper` is resolved to
-    the voice the adapter actually loaded, so Amy is Amy however she was
-    asked for."""
+    the voice the adapter actually loaded, so a voice is filed under one
+    name however it was asked for."""
     engine, voice = split_spec(spec)
     if voice is None and engine in PIPER_ENGINES and tts is not None:
         voice = getattr(tts, "model", None) or None
@@ -100,14 +92,11 @@ def cast(instructor: str, guest: str | None = None, *, speed: float | None = Non
     Build the two adapters a dialogue needs.
 
     The guest defaults to the DRAFT voice, never to the instructor's engine:
-    with a cloning instructor, `guest or instructor` produced a debate between
-    two copies of the same person.
+    with a cloning instructor that would give two copies of the same voice.
 
     `registers=False` returns the instructor UNWRAPPED. An experiment that
-    compares ways of controlling the voice has to start from a voice that is
-    not already controlled -- the first `--compare` run asked for a "plain"
-    arm, got a register-switching one, and then crashed trying to shift it,
-    which was the honest outcome of a silently non-plain control.
+    compares ways of controlling the voice (e.g. the "plain" arm of
+    `--compare`) has to start from a voice that is not already controlled.
     """
     if build is None:
         from realme.adapters.factory import build as build
@@ -120,9 +109,9 @@ def cast(instructor: str, guest: str | None = None, *, speed: float | None = Non
             host_voice if host_engine in PIPER_ENGINES else None)
 
     if speed is None:
-        # This is where a measured pace belongs: two voices alternating, where
-        # one rushing the other is audible. Asked for THIS guest voice, because
-        # the ratio is yours divided by that voice's, and voices differ.
+        # Two alternating voices need a measured pace, or one audibly rushes
+        # the other. Asked for THIS guest voice, because the ratio is the
+        # user's rate divided by that voice's, and voices differ.
         speed = guest_speed(guest_voice, profile, log=log)
 
     kw = {"profile": profile} if profile is not None else {}
@@ -135,8 +124,8 @@ def cast(instructor: str, guest: str | None = None, *, speed: float | None = Non
     if registers:
         cast_out["instructor"] = with_registers(cast_out["instructor"], profile,
                                                 log=log)
-    # Each voice at the speed saved for it, so Amy is 15% quicker as the
-    # interlocutor exactly as she is narrating. Outermost, after registers,
+    # Each voice at the speed saved for it, the same as when it narrates.
+    # Outermost, after registers,
     # because it acts on the finished take.
     data = getattr(profile, "data", None)
     cast_out["instructor"] = with_voice_speed(
@@ -153,25 +142,17 @@ def guest_speed(voice: str | None, profile=None, *, log=None,
     """
     How fast the guest speaks, measured for THIS voice, measuring it if needed.
 
-    The constant below was the fallback for a voice nobody had measured, and it
-    is the worst of the three possible answers. `measured_speed` is careful:
-    handed a voice it has no number for, it returns None rather than a ratio
-    belonging to a different speaker. Casting then applied 0.72 anyway -- a
-    figure never measured against anything -- and 0.72 happened to be SLOWER
-    than the ratio measured against Ryan, applied to Amy, who is slower than
-    Ryan at speed 1.0 to begin with. Two penalties, neither of them measured.
-    That is the guest who drags.
-
-    So when the number is missing, get the number. Piper runs at about RTF
-    0.08 and the calibration is sixty words, so measuring a voice costs a few
-    seconds, once ever -- it is written back to the profile and the next cast
-    reads it. The constant survives only for the case where there is nothing
-    to measure from: no enrolment recording, no transcript, no piper.
+    `measured_speed` returns None for a voice it has no number for, rather
+    than a ratio belonging to a different speaker. In that case the voice is
+    measured now: piper runs at about RTF 0.08 and the calibration is sixty
+    words, so it costs a few seconds, once -- the result is written back to
+    the profile and the next cast reads it. `DIALOGUE_SPEED` is used only when
+    there is nothing to measure from: no enrolment recording, no transcript,
+    no piper.
     """
     from realme.adapters.tts import measured_speed, speed_from
-    # The profile in hand first, the one on disk only when there is none.
-    # Asking the disk while holding an updated profile is how the same voice
-    # got measured twice.
+    # The profile in hand first, the one on disk only when there is none:
+    # the in-memory profile may hold a measurement not yet on disk.
     got = (speed_from(profile.data, voice) if profile is not None else None)
     if got is None:
         got = measured_speed(voice)
@@ -206,9 +187,8 @@ def guest_speed(voice: str | None, profile=None, *, log=None,
                 f"{r['voice_wpm']:.1f} w/min  ->  speed {r['speed']:.3f}")
         return float(r["speed"])
     except Exception as e:
-        # Never fail a render over a pace measurement, but never do it
-        # silently either: a guest at the fallback is a guest that will be
-        # complained about, and the complaint should arrive with its cause.
+        # Never fail a render over a pace measurement, but log the fallback
+        # and its cause.
         if log:
             log(f"  could not measure {voice} against your rate ({e}); "
                 f"falling back to {DIALOGUE_SPEED:g} — run "
@@ -220,9 +200,8 @@ def with_registers(adapter, profile, *, log=None):
     """Wrap a cloned voice so each turn is spoken in its matching register.
 
     Only when registers have actually been enrolled, and only for a voice that
-    clones -- a stock piper voice has no reference to swap. Without them this
-    returns the adapter untouched, so a dialogue behaves exactly as it did
-    before anyone recorded anything.
+    clones -- a stock piper voice has no reference to swap. Otherwise this
+    returns the adapter untouched and the dialogue uses the plain voice.
     """
     from pathlib import Path as _P
     if profile is None or not getattr(adapter, "is_voice_clone", False):
@@ -263,8 +242,8 @@ def with_expression(adapter, profile, *, alpha=None, alphas=None,
 
     Returns the adapter untouched whenever anything is missing -- no
     directions extracted, a voice that does not clone, an engine that takes a
-    reference file rather than a vector -- so a dialogue behaves exactly as it
-    did before anyone ran `realme voice tau`.
+    reference file rather than a vector -- and the dialogue uses the plain
+    voice, as without `realme voice tau`.
     """
     from pathlib import Path as _P
     if profile is None or not getattr(adapter, "is_voice_clone", False):
@@ -287,9 +266,8 @@ def with_expression(adapter, profile, *, alpha=None, alphas=None,
         ts = TAU.load(store)
         TAU.check_engine(ts, adapter)
     except Exception as e:
-        # Loudly. A direction set that cannot be used is worth one line; a
-        # dialogue that quietly renders flat when the user asked for
-        # expression is the kind of null result that gets believed.
+        # Logged, so a dialogue rendered without the requested expression
+        # says why.
         if log:
             log(f"  emotion directions not used: {e}")
         return adapter
@@ -307,10 +285,9 @@ def speaker_name(spec: str, adapter=None, *, fallback: str = "my guest") -> str:
     """
     What the host calls this voice out loud.
 
-    A podcast introduces its co-host by name, and the name a synthetic
-    interlocutor has is its voice: Ryan, Lessac. The script writer labels the
-    second speaker "AI Interlocutor", which is a slot rather than a name and
-    reads as a stage direction when spoken.
+    A podcast introduces its co-host by name, and a synthetic interlocutor's
+    name is its voice's: Ryan, Lessac. The script writer's label "AI
+    Interlocutor" is a role, not a name.
 
     Taken from the curated voice labels rather than parsed out of the file
     name, so "Ryan - male, US" yields "Ryan" and a voice added later with a

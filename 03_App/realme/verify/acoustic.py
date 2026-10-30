@@ -4,16 +4,14 @@ Deciding, from the audio itself, which pronunciation was spoken.
 This is rungs 4 and 5 of the verification ladder, and it closes the gap between
 "the file is correct" and "the words are correct".
 
-THE IDEA. Round-trip ASR is the obvious approach and it is a poor one here: the
-published evidence is that word-error rate is anti-correlated with the thing we
-care about, and that ASR fails hardest on exactly our risk surface -- proper
-nouns, abbreviations and digits. An ASR that hears "ip-twuh" will helpfully
-"correct" it to IPTW, hiding the very error we are hunting.
+THE IDEA. Round-trip ASR is a poor fit here: published evidence shows that
+word-error rate is anti-correlated with pronunciation accuracy, and that ASR
+fails hardest on proper nouns, abbreviations and digits. An ASR that hears
+"ip-twuh" will "correct" it to IPTW, hiding the error.
 
-So we do not ask an open-set question. We ask a closed-set one. For every
-lexicon term we already know both the pronunciation we intended AND the
-pronunciation we observed the engine produce when left alone -- that pair is
-what a lexicon entry IS. Synthesize both with the same voice, slide each over
+So the question is closed-set rather than open-set. Every lexicon term records
+both the intended pronunciation AND the one the engine produces when left
+alone. Synthesize both with the same voice, slide each over
 the rendered audio, and see which one the audio actually matches. "Which of
 these two?" needs no confidence threshold and no language model.
 
@@ -24,8 +22,8 @@ cloned neural voice -- it costs two short synthesis calls per term, cached.
 
 WHAT IT CANNOT DO. It verifies terms that are IN the lexicon. A term nobody has
 noticed yet is not checked, because there is no competing variant to compare
-against -- which is why the linter in `realme/text/prepare.py` matters: it
-nominates candidates, and this pass convicts them.
+against. The linter in `realme/text/prepare.py` nominates candidates; this
+pass confirms them.
 
 No model downloads, no GPU, numpy and scipy only.
 """
@@ -43,14 +41,9 @@ import numpy as np
 def read_wav(path: Path) -> tuple[np.ndarray, int]:
     """Mono float32 in [-1, 1]. Handles 8/16/32-bit PCM, and anything else.
 
-    "Anything else" is not generosity. `core.media.ensure_reference_wav`
-    already exists because this exact thing happened to the engines: a phone
-    records .m4a, the C++ adapter parses RIFF headers by hand and said "Not a
-    RIFF file", and the fix was to convert once, in one place, so nothing
-    downstream has to care. This module then re-learned it the same way --
-    `realme voice takes` is the first command anyone points at a fresh
-    recording, and it died inside Python's `wave` with "file does not start
-    with RIFF id", which names the format it wanted and not the format it got.
+    A phone may record .m4a, and `realme voice takes` is often pointed at
+    such a fresh recording; Python's `wave` would reject it. As with
+    `core.media.ensure_reference_wav`, non-WAV input is converted first.
 
     A real WAV costs one extra `open` and four bytes read; anything else is
     converted to a temporary 24 kHz mono WAV and read from there.
@@ -174,7 +167,7 @@ def best_window_distance(haystack: np.ndarray, template: np.ndarray,
     """
     Slide a template across a longer clip and keep the best match.
 
-    We do not need to know where in the utterance the term falls -- searching
+    The term's position in the utterance need not be known -- searching
     removes any dependence on the character-offset estimate used elsewhere, so
     a timing approximation cannot cause a false accusation.
     """
@@ -210,16 +203,15 @@ class AcousticVerifier:
     Synthesize the competing pronunciations once per term, then judge audio.
 
     `min_margin` is a relative gap, not an absolute distance, so it does not
-    need retuning per voice. Below it the result is reported as inconclusive --
-    which is the honest answer and much more useful than a coin-flip verdict.
+    need retuning per voice. Below it the result is reported as inconclusive
+    rather than as a coin-flip verdict.
     """
 
     #: Templates shorter than this many MFCC frames (10 ms each) carry too
-    #: little acoustic evidence to separate two candidates. Measured: a
-    #: two-letter term like "OR" produces ~40 frames and returns a margin
-    #: indistinguishable from noise, which showed up as a FALSE NEGATIVE in
-    #: testing -- it called a genuinely mispronounced "OR" correct. Refusing to
-    #: judge is the honest answer; the linter still flags such terms for a human.
+    #: little acoustic evidence to separate two candidates: a two-letter term
+    #: like "OR" produces ~40 frames and a margin indistinguishable from noise,
+    #: which risks a FALSE NEGATIVE. Such terms are not judged; the linter
+    #: still flags them for a human.
     MIN_TEMPLATE_FRAMES = 55
 
     def __init__(self, tts, lexicon, cache_dir: Path, *, min_margin: float = 0.18):
@@ -228,15 +220,14 @@ class AcousticVerifier:
         self.cache_dir = Path(cache_dir)
         self.cache_dir.mkdir(parents=True, exist_ok=True)
         # 0.18 rather than something tighter, deliberately. A wrong "this is
-        # fine" is far more damaging than "I could not tell": the first ships a
-        # mispronounced lecture with a clean bill of health, the second sends a
-        # human to listen. Bias the threshold toward admitting ignorance.
+        # fine" passes a mispronounced lecture; "inconclusive" sends a human
+        # to listen. So the threshold is biased toward inconclusive.
         self.min_margin = min_margin
         self._templates: dict[str, tuple[np.ndarray, np.ndarray] | None] = {}
-        # Templates belong to a voice. The documented draft-then-final
-        # workflow renders both in one project, and a template synthesised by
-        # the 22 kHz draft voice was being DTW-matched against the 24 kHz
-        # clone -- a different filterbank, a meaningless verdict.
+        # Templates belong to a voice. The draft-then-final workflow renders
+        # both in one project, and a template synthesised by the 22 kHz draft
+        # voice must not be DTW-matched against the 24 kHz clone -- a
+        # different filterbank, a meaningless verdict.
         import hashlib
         try:
             fp = str(tts.voice_fingerprint())
@@ -251,8 +242,8 @@ class AcousticVerifier:
             try:
                 self.tts.synthesize(text, path)
             except Exception as e:
-                # Silently dropping the term made "terms_checked" shrink with
-                # no trace of why.
+                # Recorded rather than dropped, so "terms_checked" does not
+                # shrink without a trace.
                 self.synth_errors.append(f"{name}: {type(e).__name__}: {e}")
                 return None
         try:

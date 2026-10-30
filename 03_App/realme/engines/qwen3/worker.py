@@ -410,7 +410,7 @@ class Qwen3TTSEngine:
         processing_mode = str(body.get("processing_mode") or "fast").strip().lower()
         if processing_mode not in {"fast", "fresh"}:
             raise ValueError("processing_mode must be fast or fresh.")
-        # The UI keeps the original app's conservative 30–60% control. Map it
+        # The UI offers a conservative 30–60% control. Map it
         # to Qwen's standard generation temperature without exposing unbounded
         # model kwargs to the worker.
         temperature = 0.65 + ((variation - 0.30) / 0.30) * 0.45

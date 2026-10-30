@@ -2,22 +2,19 @@
 Reading text files that RealMe, or Windows, wrote earlier.
 
 Every `write_text` in this project names `encoding="utf-8"`, and every
-`read_text` names it too. That is correct and it is also, on its own, a way
-to lose every project made before the rule existed.
+`read_text` names it too. Files written by an older version, or by any
+program that used Python's default, may not be utf-8.
 
-Python's `open()` on Windows defaults to the ANSI code page -- cp1252 here.
-So until September 2026 a manifest was WRITTEN as cp1252 and READ back as
-cp1252, and the pair agreed. Naming utf-8 on both sides fixed new files and
-broke old ones: an em dash in the narration is one byte 0x97 in cp1252, which
-is not valid utf-8, and `Manifest.model_validate_json` never got to see the
-file. Comparing a deck against an older project raised UnicodeDecodeError
-from `pathlib`, with nothing in the message about encodings at all.
+Python's `open()` on Windows defaults to the ANSI code page, typically
+cp1252. An em dash is one byte 0x97 in cp1252, which is not valid utf-8, so a
+strict utf-8 read of such a file raises UnicodeDecodeError from `pathlib`,
+with nothing in the message about encodings.
 
 `read_text` here reads the bytes and decides what they are, rather than
 asserting it. When the file turns out to be legacy cp1252 it is rewritten as
-utf-8 in place, so the guess happens once per file and never again -- and its
-modification time is preserved, because the Studio orders projects by it and
-a repair is not an edit.
+utf-8 in place, so the guess happens once per file -- and its modification
+time is preserved, because the Studio orders projects by it and a repair is
+not an edit.
 
 Use this for any file RealMe itself wrote, and for text the user supplies:
 Notepad still offers "ANSI", and Word exports it by default.
@@ -27,7 +24,7 @@ import os
 from pathlib import Path
 
 #: Files this process repaired, newest last. The Studio's doctor check reads
-#: it so a repair is visible somewhere other than a console nobody watched.
+#: it so a repair is visible outside the console.
 REPAIRED: list[str] = []
 
 
@@ -49,8 +46,8 @@ def _decode(raw: bytes) -> tuple[str, str]:
 def read_text(path, *, repair: bool = True, log=None) -> str:
     """The file's text, whatever encoding it was actually written in.
 
-    A file that is already utf-8 -- which is every file written since the
-    rule changed -- costs one `decode` and nothing else.
+    A file that is already utf-8 -- every file RealMe writes -- costs one
+    `decode` and nothing else.
     """
     p = Path(path)
     raw = p.read_bytes()
@@ -67,8 +64,8 @@ def read_text(path, *, repair: bool = True, log=None) -> str:
             tmp.write_text(text, encoding="utf-8")
             tmp.replace(p)
             # A repair is not an edit. `/api/projects` sorts by the
-            # manifest's mtime, and re-dating it would silently reorder the
-            # project list the first time each old project was opened.
+            # manifest's mtime, and re-dating it would reorder the project
+            # list.
             os.utime(p, (st.st_atime, st.st_mtime))
             note += " and rewriting it as utf-8"
         except OSError as e:

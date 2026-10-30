@@ -1,8 +1,8 @@
 """
 qwen3-tts.cpp in-process, through its C API — no child process at all.
 
-Written to get past Windows Application Control, and it turns out to be the
-better design anyway.
+This runs under Windows Application Control, and it is also faster than the
+CLI.
 
 **Why it gets past the block.** Application Control policies (Smart App Control,
 WDAC) refuse to *launch* untrusted executables. `qwen3-tts-cli.exe` is a fresh,
@@ -10,8 +10,8 @@ unsigned binary, so it is refused. But the same build also produces
 `qwen3tts.dll`, a complete C API over the identical code, and loading a library
 into an already-trusted process is a different operation from starting a new
 one. Python is signed and trusted; it does the running, and the DLL is just
-data it maps. This is not a bypass of anything -- the code is the same code you
-compiled, the policy's job is to gate what starts, and nothing new starts.
+data it maps. The code is the same code that was compiled; the policy gates
+what starts, and nothing new starts.
 
 It may still be refused if the policy enforces DLL rules too. That is a
 configuration difference, and the adapter reports it plainly rather than
@@ -22,9 +22,8 @@ weights and re-encodes the reference speaker every single time. This holds the
 model open for the life of the process and extracts the speaker embedding
 **once**, then reuses it. Upstream's own profiling puts the speaker encoder at
 the largest single cost of a cloned utterance, so skipping it per-utterance is
-not a marginal saving. It also makes the comparison against the Python worker
-honest: both are now servers, and the benchmark measures synthesis rather than
-startup.
+not a marginal saving. Like the Python worker it is a server, so a benchmark of
+the two measures synthesis rather than startup.
 """
 from __future__ import annotations
 import ctypes
@@ -40,12 +39,9 @@ from realme.adapters.base import BaseTTS, AdapterUnavailable
 from realme.core.media import probe, retime
 
 SAMPLE_RATE = 24000
-#: Every language the weights speak, with the id the engine expects.
-#:
-#: This held three. The model and `main.cpp` have always handled ten, so seven
-#: were unreachable through the Python adapter and an unknown code silently
-#: became English -- which sounds like a mispronunciation rather than like a
-#: setting that did not take.
+#: Every language the weights speak, with the id the engine expects (the same
+#: ten `main.cpp` handles). An unknown code falls back to English with a
+#: warning (see `_params`).
 LANGUAGE_IDS = {
     "en": 2050,   # English
     "de": 2053,   # German
@@ -73,7 +69,7 @@ class Audio(Structure):
 
 #: Threads one engine uses at most. Measured on a 6-core machine with the
 #: count applied: 6 threads 3.45 times real time, 8 -> 3.72, 12 -> 3.55. Past
-#: one per core there was nothing to gain, and 6 is where the engine stopped
+#: one per core there is nothing to gain, and 6 is where the engine stops
 #: getting faster; a machine with more cores than this runs more engines
 #: instead (`pipeline/prerecord.py`).
 MAX_ENGINE_THREADS = 6
@@ -120,7 +116,7 @@ def _bind(lib: ctypes.CDLL) -> None:
         raise AdapterUnavailable(
             "The shared library loaded, but exports no functions.\n"
             "  On Windows a DLL must declare its exports at build time, and "
-            "this one was\n  built before RealMe passed that flag. Rebuild "
+            "this one was\n  built without that flag. Rebuild "
             "just the C++ side:\n\n"
             "    realme engine cpp --cpp-action build --force\n\n"
             "  ggml is not rebuilt, so this is minutes rather than the full "
@@ -148,8 +144,8 @@ def _bind(lib: ctypes.CDLL) -> None:
     lib.qwen3_tts_synthesize_with_embedding.argtypes = [
         c_void_p, c_char_p, POINTER(c_float), c_int32, POINTER(Params)]
     lib.qwen3_tts_synthesize_with_embedding.restype = POINTER(Audio)
-    # RealMe's batch entry point, in engines built since it was added
-    # (engines/cpp.py, apply_batch_patch). Optional: older builds lack it.
+    # RealMe's batch entry point (engines/cpp.py, apply_batch_patch).
+    # Optional: older builds lack it.
     fn = getattr(lib, BATCH_FN, None)
     if fn is not None:
         fn.argtypes = [c_void_p, POINTER(c_char_p), c_int32, POINTER(c_float),
@@ -167,9 +163,9 @@ QUANT_ENV = "REALME_QWEN3CPP_QUANT"
 def quant_setting(home: Path | None = None) -> str:
     """The model lectures use: REALME_QWEN3CPP_QUANT when set (Twin Setup,
     `realme key`), else the 8-bit model where it has been made (a build or
-    rebuild makes it), else the 16-bit one. The 8-bit model became the
-    default in October 2026: 1.35 against 1.51 seconds of work per second of
-    speech on a 6-core PC, and not told apart in listening."""
+    rebuild makes it), else the 16-bit one. The 8-bit model is preferred:
+    1.35 against 1.51 seconds of work per second of speech on a 6-core PC,
+    and not told apart in listening."""
     v = os.environ.get(QUANT_ENV, "").strip().lower()
     if v:
         return "q8_0" if v.startswith("q8") else "f16"
@@ -186,7 +182,7 @@ def q8_ready(home: Path | None = None) -> bool:
 
 
 #: Sentences per pass where this computer has not measured its own
-#: (`_Bench_Batch.bat`): what a 6-core PC measured best, October 2026 --
+#: (`_Bench_Batch.bat`): what measures best on a 6-core PC --
 #: 16-bit 1.51 s of work per second of speech at 8 (2.54 one at a time),
 #: 8-bit 1.35 at 4 (1.77). The sound is identical whatever the size; only the
 #: memory differs, and the prerecorder lowers it where memory is short.
@@ -203,7 +199,7 @@ def batch_measured() -> dict:
         return {}
     if not isinstance(saved, dict):
         return {}
-    if "batch" in saved:                       # the first, flat format
+    if "batch" in saved:                       # an older, flat format
         saved = {saved.get("quant") or "f16": saved}
     out = {}
     for q, v in saved.items():
@@ -216,11 +212,11 @@ def batch_measured() -> dict:
 
 #: The engine's vocoder switches RealMe turns on unless they are set: the
 #: one-pass snake with RealMe's sine, and the 32-bit vocoder. Measured on a
-#: 6-core PC (October 2026): the vocoder 0.85 -> 0.55 seconds of work
-#: per second of speech, the samples 62 dB below the speech apart and not
-#: heard in listening. A value set in the shell, in the settings file
-#: (`realme key`) or in Twin Setup ("0" for the original) wins. Engines built
-#: before these changes ignore them. Read once per process by the engine, so
+#: 6-core PC: the vocoder 0.85 -> 0.55 seconds of work per second of speech,
+#: the samples 62 dB below the speech apart and not heard in listening. A
+#: value set in the shell, in the settings file (`realme key`) or in Twin
+#: Setup ("0" for the original) wins. Older engine builds ignore them. Read
+#: once per process by the engine, so
 #: a change takes effect in a new process.
 VOCODER_DEFAULTS = {"QWEN3_TTS_FAST_SNAKE": "1", "QWEN3_TTS_VOCODER_F32": "1"}
 #: Which of them this process set itself (not the user's own values).
@@ -354,17 +350,14 @@ class Qwen3DllTTS(BaseTTS):
         #: made meanwhile. Pickled with it, so the recording processes agree.
         self.quant = quant_setting(self.home)
         self.reference_wav = Path(reference_wav) if reference_wav else None
-        # What the engine runs its calculations on, now that it is actually
-        # passed on. It was not, until October 2026: upstream stores the count
-        # and never gives it to GGML, so every engine ran on 4 threads whatever
-        # this said -- which is why 6, 8, 12 and 16 once measured the same.
-        # With the count applied (`realme engine-timing`, a 12-thread machine
-        # with 6 cores): 4 -> 4.36 times real time, 6 -> 3.45, 8 -> 3.72,
+        # The thread count the engine runs its calculations on. Upstream
+        # stores the count but never gives it to GGML; RealMe's build passes
+        # it on. Measured on a 12-thread, 6-core machine (`realme
+        # engine-timing`): 4 -> 4.36 times real time, 6 -> 3.45, 8 -> 3.72,
         # 12 -> 3.55. So one thread per core, which is half the logical
-        # processors on any machine with two per core; 6 at most, because
-        # past that the extra was noise. Engines built before the fix ignore
-        # it and stay on 4 (`_Rebuild_Voice_Engine.bat` brings them up to
-        # date).
+        # processors on any machine with two per core; 6 at most. Older
+        # engine builds ignore it and stay on 4 (`_Rebuild_Voice_Engine.bat`
+        # updates them).
         self.threads = int(threads) or default_threads()
         self.temperature = float(self._default("temperature")
                                  if temperature is None else temperature)
@@ -381,9 +374,8 @@ class Qwen3DllTTS(BaseTTS):
         self._embedding_for = None
         self._embeddings: dict = {}
         #: An emotion direction to add to the speaker embedding, or None.
-        #: None is the shipping state and produces the identical bytes this
-        #: adapter produced before the field existed; nothing sets it unless
-        #: `realme.expressive` is explicitly wired in.
+        #: None is the default and leaves the enrolled voice unchanged;
+        #: nothing sets it unless `realme.expressive` is explicitly wired in.
         self._expression = None
 
     #: Several copies may record at once, each in its own process with its
@@ -438,9 +430,8 @@ class Qwen3DllTTS(BaseTTS):
             fp = f"{fp}:q8_0"
         # A shifted embedding is a different voice and must key differently,
         # or the ledger serves the unshifted take it rendered earlier. The
-        # wrapper that sets expressions labels itself too; two labels for one
-        # change costs a re-render at worst, an unnoticed cache hit at best,
-        # and only one of those is a bug.
+        # wrapper that sets expressions labels itself too; the redundancy
+        # costs at most a re-render, never a wrong cache hit.
         if self._expression is not None:
             vec, alpha = self._expression
             h = hashlib.sha256(
@@ -473,8 +464,8 @@ class Qwen3DllTTS(BaseTTS):
         # backend registry NAME, so it must be asked for explicitly, and it is
         # NVIDIA-only.
         # Read by the engine when it creates its backend -- once per process,
-        # so it is set before the library is loaded. An engine built before
-        # the thread fix ignores it.
+        # so it is set before the library is loaded. Older engine builds
+        # ignore QWEN3_TTS_THREADS.
         os.environ["QWEN3_TTS_THREADS"] = str(self.threads)
         if self.backend and self.backend != "auto":
             os.environ["QWEN3_TTS_BACKEND"] = self.backend
@@ -552,8 +543,8 @@ class Qwen3DllTTS(BaseTTS):
         models = self._models_dir(make=True)
         if self._handle is None:
             # Load once, for the life of the process. Announced because it is
-            # slow and silence looks like a hang -- and because seeing it
-            # exactly once is how you confirm the model is not being reloaded.
+            # slow and silence looks like a hang, and so the log shows the
+            # model is loaded only once.
             import sys as _sys, time as _t
             built = self._built_gpu()
             asked = os.environ.get("QWEN3_TTS_BACKEND", "auto")
@@ -625,11 +616,11 @@ class Qwen3DllTTS(BaseTTS):
         key = str(ref.resolve())
         # Cached per REFERENCE, not one slot.
         #
-        # One slot was right while there was one voice. Registers alternate --
-        # a pressing turn, then a conceding one -- and a single slot re-runs
-        # the speaker encoder on every switch, which is the most expensive
-        # thing in a cloned utterance. Four registers cost four extractions
-        # for the whole dialogue instead of one per turn.
+        # Registers alternate -- a pressing turn, then a conceding one -- and
+        # a single slot would re-run the speaker encoder on every switch,
+        # which is the most expensive thing in a cloned utterance. Four
+        # registers cost four extractions for the whole dialogue instead of
+        # one per turn.
         hit = self._embeddings.get(key)
         if hit is not None:
             return hit
@@ -638,9 +629,9 @@ class Qwen3DllTTS(BaseTTS):
         import sys as _sys, time as _t
         # Disk first. The encoder takes a minute or two on CPU and returns
         # the same 1024 floats every time from the same clip and the same
-        # weights, so paying it again on every restart is pure waste -- and
-        # it is paid at the first Render, which is exactly when somebody is
-        # waiting. Same idea as the kNN-VC matching set, cached the same way.
+        # weights, so it is not paid again on every restart (it would land on
+        # the first Render). Same idea as the kNN-VC matching set, cached the
+        # same way.
         cached = self._embedding_from_disk(ref)
         if cached is not None:
             self._embedding, self._embedding_for = cached, key
@@ -653,10 +644,8 @@ class Qwen3DllTTS(BaseTTS):
             self._handle, str(ref).encode("utf-8"), buf, size)
         took = _t.perf_counter() - t0
         if n <= 0:
-            # The fallback re-encodes the reference clip on EVERY utterance.
-            # It used to happen silently, which is the worst way for it to
-            # happen: throughput drops by most of a factor of two and nothing
-            # says why, so the cost gets blamed on cloning itself. Say it.
+            # The fallback re-encodes the reference clip on EVERY utterance,
+            # which nearly halves throughput, so say so.
             print(f"  [qwen3cpp] the speaker encoder would not return an "
                   f"embedding (returned {n}) -- falling back to re-encoding "
                   f"{ref.name} on every utterance, which is much slower",
@@ -677,8 +666,7 @@ class Qwen3DllTTS(BaseTTS):
 
         Keyed on the CONTENTS of the reference, not its path: enrolment
         always writes the same filename, so a path key would serve the old
-        voice after re-recording -- the same fault the render ledger had.
-        The model files are in the key because a different encoder produces
+        voice after re-recording. The model files are in the key because a different encoder produces
         a different vector from the same clip.
         """
         import hashlib
@@ -750,7 +738,7 @@ class Qwen3DllTTS(BaseTTS):
 
         Passing None restores the enrolled voice exactly. That is the state
         the adapter is in unless something sets it, so the lecture, narration
-        and ordinary dialogue paths are byte-identical to before.
+        and ordinary dialogue paths use the unshifted embedding.
         """
         if vector is None or not len(vector):
             self._expression = None
@@ -765,9 +753,8 @@ class Qwen3DllTTS(BaseTTS):
         cannot drift.
 
         When one is set it builds a NEW buffer. Writing into the cached one
-        would poison every later utterance with whatever the last turn asked
-        for, and the symptom would be a dialogue that grows steadily more
-        insistent for no visible reason.
+        would carry whatever the last turn asked for into every later
+        utterance.
         """
         if self._expression is None:
             return buf, n
@@ -823,9 +810,8 @@ class Qwen3DllTTS(BaseTTS):
                 else:
                     if self._expression is not None:
                         # The fingerprint says this take is shifted; the
-                        # voice-file path cannot shift anything. Rendering it
-                        # flat and caching it as shifted is the one outcome
-                        # worse than failing.
+                        # voice-file path cannot shift anything. Fail rather
+                        # than render it flat and cache it as shifted.
                         raise AdapterUnavailable(
                             "An expression shift was requested but the engine "
                             "could not extract a speaker embedding, so it "

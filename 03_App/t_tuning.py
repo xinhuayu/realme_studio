@@ -219,9 +219,8 @@ def section_studio():
         S._TTS_CACHE.clear()
 
     print("\na sentence heard on the Lecture tab is kept for that lecture")
-    # The preview route looked only for an explainer's narration folder, so on
-    # the Lecture tab a heard sentence was thrown away while the page said
-    # "kept for the render". It goes into the lecture's own ledger now.
+    # The page says "kept for the render", so a sentence previewed on the
+    # Lecture tab goes into the lecture's own ledger.
     pdir = S.PROJECTS / "lec_keep"
     (pdir / "_work").mkdir(parents=True, exist_ok=True)
     (pdir / "_work" / "manifest.json").write_text("{}", encoding="utf-8")
@@ -382,13 +381,12 @@ def section_lecture():
           "and back at its own speed, the first render's slides are reused")
 
     print("\na slide whose audio changed is never served from an old video")
-    # The reported failure: a 90-slide lecture ended "FAIL:
-    # duration_matches_script". A slide's video was cached under its WRITTEN
-    # narration, but its audio is made from what the text layer turns that
-    # narration into. When that changed -- a lexicon entry, a fix to how money
-    # or markup is read, a new acronym rule -- the sentence was recorded again
-    # and the slide's old video, with the old audio in it, was reused anyway:
-    # the wrong words in the video, and a duration the script no longer has.
+    # A slide's audio is made from what the text layer turns its narration
+    # into, so the video key must cover that spoken text, not only the
+    # WRITTEN narration. Otherwise a lexicon entry, a change to how money or
+    # markup is read, or a new acronym rule re-records the sentence but
+    # reuses the old video: the wrong words, and a duration the script no
+    # longer has ("FAIL: duration_matches_script").
     from realme.text.lexicon import Entry, save_user_entries
     save_user_entries([Entry(term="cohort", respelling=
                              "cohort, that is the group we followed for years")])

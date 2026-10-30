@@ -2,11 +2,11 @@
 """
 A package for a colleague must not contain the sender.
 
-Written because `realme migrate` was designed for "my other laptop", where
-carrying the enrolled voice and the profile is the whole point, and handing the
-same package to another person is a different act with the same command. The
-flag that changes it is one word, and a flag that is set is not evidence that a
-file is absent -- so the check reads the FINISHED ARCHIVE back.
+`realme migrate` serves two cases with one command: moving to the user's own
+other computer, where carrying the enrolled voice and the profile is the
+point, and handing a package to another person, where they must stay out. One
+flag separates the two, and a flag that is set is not evidence that a file is
+absent, so the check reads the FINISHED ARCHIVE back.
 
 No engine, no weights, no network: a fake project tree and a fake data folder.
 """
@@ -20,23 +20,18 @@ HERE = Path(__file__).resolve().parent
 # Isolated from the real installation, deliberately and before any import
 # that reads it.
 #
-# These suites build their own fake tree and fake data folder -- and then
-# asked the REAL one anyway, because the code they exercise resolves those
-# through `data_home()` and `find_tool()`, which read the environment at call
-# time. On a clean machine both come back empty and the fixtures are used; on
-# a working machine the test silently measured against the instructor's own
-# profile and packaged his own engine folder. Eight checks failed on his
-# machine and none in the sandbox, which is the worst way for a test to be
-# wrong.
+# These suites build their own fake tree and fake data folder, but the code
+# they exercise resolves those through `data_home()` and `find_tool()`, which
+# read the environment at call time. Without the redirect, on a machine with
+# RealMe installed, a test would measure against the real profile and package
+# the real engine folder, and its result would depend on the machine.
 _ISO = tempfile.mkdtemp(prefix="t_migrate_iso_")
 os.environ["REALME_HOME"] = str(Path(_ISO) / "home")
 os.environ["REALME_TOOLS"] = str(Path(_ISO) / "tools")
 # And the home directory, because `core.env.candidates()` reads
 # `Path.home()/"RealMeStudio"/".env"` as well -- a path REALME_HOME does not
 # cover. This suite builds packages and asserts what does and does not travel
-# in them, including a key; without this it could read the real one. It was
-# not failing, which is the point: an exposure that has not bitten yet is
-# still an exposure.
+# in them, including a key; without this it could read the real one.
 os.environ["HOME"] = str(Path(_ISO) / "home")
 os.environ["USERPROFILE"] = str(Path(_ISO) / "home")
 
@@ -62,9 +57,8 @@ def fake_tree(tmp: Path):
     (root / "README.md").write_text("# hi\n")
     (root / "START_HERE.md").write_text("# start\n")
     (root / ".gitignore").write_text("*.pyc\n")
-    # The blank template. It is SUPPOSED to travel, and a check that called it
-    # a key file refused a perfectly good package -- which is how this test
-    # came to exist.
+    # The blank template. It is SUPPOSED to travel, so the key-file check
+    # must not mistake it for a key.
     (root / "03_App" / "example.env").write_text("GEMINI_API_KEY=\n")
     (root / "realme.bat").write_text("@echo off\n")
     (root / "scripts" / "sample.txt").write_text("a sample\n")
@@ -113,9 +107,8 @@ def main() -> int:
     try:
         root, data = fake_tree(tmp)
         # `collect()` finds the engine payload with `find_tool`, which searches
-        # REALME_TOOLS first. Without this it found the real tools\ folder and
-        # packaged the author's own build -- ffplay.exe, the test_*.exe
-        # harnesses, build_info.json -- against a fixture's expectations.
+        # REALME_TOOLS first. Without this it would find an installed tools\
+        # folder and package that build instead of the fixture.
         os.environ["REALME_TOOLS"] = str(root / "tools")
 
         print("\nwhat each kind of package carries")
@@ -288,10 +281,10 @@ def main() -> int:
               M.personal_entries(d) != [], str(M.personal_entries(d)))
 
         print("\n--out may name a folder")
-        # `realme migrate --out D:\Transfer` with an existing folder tried to
-        # open the folder as a zip and crashed. The launchers pass whatever
-        # was typed, quoted, and cmd turns a quoted path ending in a
-        # backslash into one ending in a stray quote.
+        # `realme migrate --out D:\Transfer` with an existing folder writes
+        # the package inside it. The launchers pass whatever was typed,
+        # quoted, and cmd turns a quoted path ending in a backslash into one
+        # ending in a stray quote.
         name = M.PACKAGE_NAME[False]
         dest = tmp / "Transfer (work)"
         dest.mkdir()
@@ -374,9 +367,9 @@ def main() -> int:
               (g / B.guide_video_name(nxt)).read_bytes() == b"NEXT")
 
         print("\nthe first update zip from a fresh tree is stamped")
-        # On a tree that had never built one, the file list was taken before
-        # the stamp was written, so the zip had no BUILD_ID and
-        # `update_pending` could only guess. Run the real packager on a copy.
+        # On a tree that has never built one, the stamp must be written
+        # before the file list is taken, or the zip has no BUILD_ID and
+        # `update_pending` can only guess. Run the real packager on a copy.
         import subprocess
         fresh = tmp / "fresh"
         shutil.copytree(root, fresh, ignore=shutil.ignore_patterns("tools"))
