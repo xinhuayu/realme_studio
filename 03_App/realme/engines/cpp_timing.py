@@ -42,7 +42,7 @@ from realme.engines.cpp import (THREADS_ANCHOR as _THREADS_ANCHOR,  # noqa: E402
                                 apply_broadcast_patch, apply_ffn_patch,
                                 apply_quant_patch, apply_snake_patch,
                                 apply_path_patch, apply_thread_patch,
-                                apply_vocoder_patch)
+                                apply_vocoder_patch, apply_vocoder2_patch)
 _GGML_DIR_LINE = 'set(GGML_DIR "${CMAKE_CURRENT_SOURCE_DIR}/ggml")'
 
 #: The default thread counts to compare. 4 is GGML's default.
@@ -79,6 +79,7 @@ def patch_sources(out: Path, ggml_dir: Path) -> None:
     apply_snake_patch(out)
     apply_quant_patch(out)
     apply_vocoder_patch(out)
+    apply_vocoder2_patch(out)
     apply_path_patch(out)
     apply_profile_patch(out)
 
@@ -166,9 +167,10 @@ def patched(out: Path) -> bool | None:
     except OSError:
         return None
     from realme.engines.cpp import (BCAST_MARK, FFN_MARK, QUANT_MARK, SNAKE_MARK,
-                                    VOC_MARK)
+                                    VOC2_MARK, VOC_MARK)
     return (FFN_MARK in tc and "ggml_is_quantized" in tc and BCAST_MARK in dc
-            and SNAKE_MARK in dc and VOC_MARK in dc and "realme_prof_cb" in dc
+            and SNAKE_MARK in dc and VOC_MARK in dc and VOC2_MARK in dc
+            and "realme_prof_cb" in dc
             and QUANT_MARK in ca)
 
 
@@ -581,9 +583,12 @@ VARIANTS = (
              "QWEN3_TTS_FAST_SNAKE": "1", "QWEN3_TTS_VOCODER_F32": "1"}),
     ("q8", {**_BASE, "QWEN3_TTS_FFN_F32": "1", "QWEN3_TTS_BROADCAST": "1",
             "QWEN3_TTS_FAST_SNAKE": "1", "REALME_QWEN3CPP_QUANT": "q8_0"}),
+    ("voc2", {**_BASE, "QWEN3_TTS_FFN_F32": "1", "QWEN3_TTS_BROADCAST": "1",
+              "QWEN3_TTS_FAST_SNAKE": "1", "QWEN3_TTS_VOCODER_F32": "2"}),
 )
 #: Runs when none are named: everything but the 8-bit model and the 32-bit
-#: vocoder, which are asked for by name (--variants fast,q8 / fast,voc).
+#: vocoders, which are asked for by name (--variants fast,q8 /
+#: fast,voc,voc2).
 DEFAULT_VARIANTS = ("before", "after", "snake", "fast")
 
 
@@ -650,6 +655,7 @@ def _run_variant(tag: str, env: dict, threads: int, texts, outdir: Path,
     return {"sentences": recs, "vocoder_ops": parse_ops(raw),
             "switched_on": "F32 copy: on" in raw,
             "vocoder_f32": "vocoder F32: on" in raw,
+            "vocoder2": "vocoder 2: on" in raw,
             "tinyblas": "tinyBLAS yes" in raw, **s}
 
 
@@ -667,6 +673,7 @@ def compare(threads: int, sentences: int = 4, *, outdir: Path,
              "snake": "plus the one-pass snake, library sine",
              "fast": "plus the one-pass snake, RealMe's sine",
              "voc": "as 'fast', with the 32-bit vocoder",
+             "voc2": "as 'fast', with the copy-free 32-bit vocoder",
              "q8": "as 'fast', with the 8-bit model"}
     for tag, env in variants:
         log(f"\n  {tag}: {threads} threads, {names.get(tag, tag)}; "
@@ -683,11 +690,17 @@ def compare(threads: int, sentences: int = 4, *, outdir: Path,
     if "voc" in results and "fast" in results:
         results["voc_vs_fast"] = audio_difference(
             outdir / "identity_fast.wav", outdir / "identity_voc.wav")
+    if "voc2" in results and "voc" in results:
+        results["voc2_vs_voc"] = audio_difference(
+            outdir / "identity_voc.wav", outdir / "identity_voc2.wav")
+    if "voc2" in results and "fast" in results:
+        results["voc2_vs_fast"] = audio_difference(
+            outdir / "identity_fast.wav", outdir / "identity_voc2.wav")
     return results
 
 
 def compare_report(res: dict) -> tuple[str, dict]:
-    order = ("before", "after", "snake", "fast", "voc", "q8")
+    order = ("before", "after", "snake", "fast", "voc", "voc2", "q8")
     cols = [(t, res[t]) for t in order if "rtf" in res.get(t, {})]
     if not cols:
         return "The comparison did not finish; see the stopwatch files.", {}
@@ -790,6 +803,35 @@ def compare_report(res: dict) -> tuple[str, dict]:
                 lines.append("  If you cannot hear a difference, to use it, in "
                              "5_Command_Prompt.bat:  realme key "
                              "QWEN3_TTS_VOCODER_F32 1   (off: ... 0)")
+    v2, d2 = res.get("voc2", {}), res.get("voc2_vs_voc")
+    base2 = next((t for t in ("voc", "fast") if "rtf" in res.get(t, {})), None)
+    if "rtf" in v2 and base2:
+        b2 = res[base2]
+        gain = b2["rtf"] / v2["rtf"]
+        vg = part(b2, "vocoder") / (part(v2, "vocoder") or 1e-9)
+        verdict.update({"voc2_speedup": round(gain, 3), "voc2_against": base2,
+                        "voc2_vocoder_speedup": round(vg, 3),
+                        "voc2_difference": d2 or res.get("voc2_vs_fast")})
+        lines.append("")
+        if not v2.get("vocoder2"):
+            lines.append("The copy-free 32-bit vocoder did not switch on in this "
+                         "engine; run _Rebuild_Voice_Engine.bat, then this again.")
+        else:
+            lines.append(f"The copy-free 32-bit vocoder: the vocoder {vg:.2f} times "
+                         f"as fast as '{base2}', recording {gain:.2f} times as fast "
+                         f"({100 * (1 - v2['rtf'] / b2['rtf']):.0f}% less time).")
+            if d2 and d2.get("identical"):
+                lines.append("  Identical to 'voc', sample for sample.")
+            elif d2 and d2.get("max_step") is not None:
+                lines.append(f"  Differs from 'voc' by at most {d2['max_step']} "
+                             f"steps of 32768 ({d2['differ_pct']}% of samples), "
+                             f"{d2['snr_db']} dB below the speech: the same "
+                             f"arithmetic in a different order.")
+            elif d2:
+                lines.append("  The comparison sentence came out a different "
+                             "length; do not use it -- send this file.")
+            lines.append("  RealMe uses it by default on an engine built with it "
+                         "(off: realme key QWEN3_TTS_VOCODER_F32 1).")
     q = res.get("q8", {})
     if "rtf" in q:
         base_tag = next((t for t in ("fast", "snake", "after") if "rtf" in res.get(t, {})), None)

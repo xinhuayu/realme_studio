@@ -357,7 +357,7 @@ def main() -> int:
               "with no setting and the 8-bit model made: 8-bit, the default", r)
         import shutil as _sh2
         _sh2.rmtree(qd)
-        check(c.post("/api/local-clone", json={"batch": 16}).status_code == 400
+        check(c.post("/api/local-clone", json={"batch": 17}).status_code == 400
               and c.post("/api/local-clone", json={"quant": "q4"}).status_code == 400,
               "nonsense is refused")
         import realme.adapters.tts_qwen3_dll as QD
@@ -410,6 +410,34 @@ def main() -> int:
               "and back to the default takes the settings out again", envf)
         check(c.post("/api/local-clone", json={"vocoder": "turbo"}).status_code == 400,
               "an unknown vocoder is refused")
+        bi = q.home / "build_info.json"
+        had = bi.read_text(encoding="utf-8") if bi.is_file() else None
+        try:
+            bi.write_text('{"vocoder2": true}', encoding="utf-8")
+            for k in (*QD.VOCODER_DEFAULTS, QD.FRAMES_ENV):
+                os.environ.pop(k, None)
+                QD.DEFAULTED.discard(k)
+            QD.apply_vocoder_defaults(q.home)
+            check(os.environ.get("QWEN3_TTS_VOCODER_F32") == "2"
+                  and QD.FRAMES_ENV not in os.environ and QD.vocoder_setting() == "fast",
+                  "an engine built with the copy-free vocoder gets it, with no length limit")
+            os.environ["QWEN3_TTS_VOCODER_F32"] = "1"      # the user's own choice
+            QD.DEFAULTED.discard("QWEN3_TTS_VOCODER_F32")
+            QD.apply_vocoder_defaults(q.home)
+            check(os.environ["QWEN3_TTS_VOCODER_F32"] == "1"
+                  and os.environ.get(QD.FRAMES_ENV) in ("125", "250", "375"),
+                  "the first 32-bit vocoder, if chosen, keeps its limit by memory")
+            os.environ.pop("QWEN3_TTS_VOCODER_F32", None)
+            os.environ.pop(QD.FRAMES_ENV, None)
+            QD.DEFAULTED.discard(QD.FRAMES_ENV)
+            r = c.post("/api/local-clone", json={"vocoder": "fast"}).json()
+            check(r["vocoder"] == "fast" and os.environ["QWEN3_TTS_VOCODER_F32"] == "2",
+                  "and Twin Setup's 'faster' gives it too")
+        finally:
+            if had is None:
+                bi.unlink(missing_ok=True)
+            else:
+                bi.write_text(had, encoding="utf-8")
         os.environ[BATCH_ENV] = "1"          # set in the shell, not by RealMe
         r = c.get("/api/local-clone").json()
         check(BATCH_ENV in r["shell"]
@@ -477,12 +505,26 @@ def main() -> int:
           and cpp.PATCHES.index("apply_vocoder_patch") > cpp.PATCHES.index("apply_snake_patch"),
           "every build applies the vocoder patch, after the snake's")
     vinc = cpp.vocoder_source().read_text(encoding="utf-8")
-    check("v && v[0] == '1'" in vinc and "QWEN3_TTS_LOW_MEM" in vinc
+    check("v && (v[0] == '1' || v[0] == '2')" in vinc and "QWEN3_TTS_LOW_MEM" in vinc
           and vinc.count('ggml_set_name(r, "realme_sgemm")') == 1
           and vinc.count('ggml_set_name(R, "realme_sgemm")') == 1
           and "ggml_backend_is_cpu(backend)" in vinc,
           "it is off unless switched on, off in low-memory mode, CPU only, and "
           "names exactly its two multiplies for tinyBLAS")
+    check(cpp.PATCHES.index("apply_vocoder2_patch") == cpp.PATCHES.index("apply_vocoder_patch") + 1
+          or cpp.PATCHES.index("apply_vocoder2_patch") > cpp.PATCHES.index("apply_vocoder_patch"),
+          "every build applies the copy-free vocoder after the 32-bit one")
+    v2 = cpp.vocoder2_source().read_text(encoding="utf-8")
+    check("v && v[0] == '2' && realme_vocoder_f32_wanted()" in v2
+          and "ggml_backend_is_cpu(backend)" in v2
+          and v2.count('ggml_set_name(r, "realme_sgemm")') == 1
+          and v2.count('ggml_set_name(R, "realme_sgemm")') == 1
+          and v2.count('ggml_set_name(z2, "realme_sgemm")') == 1
+          and "ggml_set_name(t," not in v2,
+          "the copy-free vocoder: only with QWEN3_TTS_VOCODER_F32=2 (and so never in "
+          "low-memory mode), CPU only, naming only its own three multiplies")
+    check("INT32_MAX" in vinc and "mode[0] == '2'" in vinc,
+          "with it, no length limit unless one is set")
     g = Path(_ISO) / "ggml"
     (g / "src" / "ggml-cpu").mkdir(parents=True)
     gc = g / "src" / "ggml-cpu" / "ggml-cpu.c"
@@ -633,6 +675,36 @@ def main() -> int:
     check(BB.verdict(slow)["batch"] == 8,
           "a size near the fastest but not itself clearly faster than one at "
           "a time does not hide the one that is", BB.verdict(slow))
+    big = [{"batch": 1, "work_per_speech_s": 1.30}, {"batch": 4, "work_per_speech_s": 0.89},
+           {"batch": 8, "work_per_speech_s": 0.84}, {"batch": 12, "work_per_speech_s": 0.82},
+           {"batch": 16, "work_per_speech_s": 0.81}]
+    check(BB.verdict(big)["batch"] == 8,
+          "with 12 and 16 measured too, the smallest size within 6% of the fastest", BB.verdict(big))
+    check(BB.DEFAULT_SIZES == (1, 2, 4, 8, 12, 16), "the measurement tries up to 16 per pass")
+
+    class _Passes:
+        def __init__(self):
+            self.passes = []
+
+        def synthesize(self, text, out):
+            self.passes.append(1)
+            tone(out, 0.2)
+            return out
+
+        def synthesize_batch(self, items):
+            self.passes.append(len(items))
+            for _, out, _, _ in items:
+                tone(out, 0.2)
+            return [o for _, o, _, _ in items]
+
+    fake = _Passes()
+    od = Path(_ISO) / "passes"
+    od.mkdir()
+    BB.measure(fake, [1, 12, 16], [f"s{i}" for i in range(16)], od, log=lambda *_: None)
+    check(fake.passes[:16] == [1] * 16 and fake.passes[16:] == [12, 16],
+          "each size records whole passes only (12 per pass: one pass of 12)", fake.passes)
+    from realme.pipeline import prerecord as PR
+    check(PR.MAX_BATCH == 16, "a pass takes up to 16 sentences")
     return summary()
 
 

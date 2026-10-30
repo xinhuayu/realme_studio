@@ -62,6 +62,7 @@ and one third in the vocoder. Each change below attacks one of the two.
 | transformers | several sentences per pass: the weights read once per step for all of them | 4 per pass: 1.66; 8: 1.51 |
 | transformers | 8-bit model: half the bytes per step | 4 per pass: 1.35 |
 | vocoder | F32 convolutions through GGML's tinyBLAS (gated to the vocoder), transposed convolutions as matrix products, outputs padded so tinyBLAS takes all of them | vocoder 0.85 → 0.55 s per s; 4 per pass: 1.07 |
+| vocoder | the decoder stage copy-free: the signal laid out channel by channel, so each convolution reads its taps through overlapping rows instead of an unrolled copy; bias, snake, padding and regrouping by dilation fused into one pass | 1 at a time: 1.49 → 1.31; 4 per pass: 0.79; 8: 0.74; 16: 0.72. A third of the vocoder's working memory; the same samples as the line above (about 120 dB apart) |
 
 Principles kept throughout:
 
@@ -94,7 +95,8 @@ slide videos on the spare threads; 10.8 s of video left after the audio).
 1. Stage the vendored source into `tools/qwen3cpp/` (never build in place;
    the vendored copy stays diffable against upstream).
 2. Apply `PATCHES` in order: threads, `ffn_down`, broadcast, batch, snake,
-   8-bit copier, Unicode paths, 32-bit vocoder. Each is a set of exact-text
+   8-bit copier, Unicode paths, 32-bit vocoder, its copy-free decoder stage.
+   Each is a set of exact-text
    anchors that must each be found once; a source that has changed is
    refused, not half-patched. The `.inc` files in `qwen3cpp_batch/` carry the
    larger pieces of new code.
@@ -127,9 +129,9 @@ set:
 | Setting | Default | Set by the user in |
 |---|---|---|
 | model | 8-bit once made, else 16-bit (`quant_setting`) | Twin Setup *model*; `REALME_QWEN3CPP_QUANT` |
-| sentences per pass | measured by `_Bench_Batch.bat`, else 8 (16-bit) / 4 (8-bit), lowered where free memory is short | Twin Setup; `REALME_RECORD_BATCH` (1 = off) |
-| fast snake, 32-bit vocoder | on (`VOCODER_DEFAULTS`) | Twin Setup *Vocoder*; `QWEN3_TTS_FAST_SNAKE`, `QWEN3_TTS_VOCODER_F32` |
-| 32-bit vocoder's longest sentence | 30 s with 32 GB of memory, 20 s with 16, 10 s below (`FRAMES_BY_MEMORY`) | `QWEN3_TTS_VOCODER_F32_MAX_FRAMES` |
+| sentences per pass (up to 16) | measured by `_Bench_Batch.bat` (1, 2, 4, 8, 12, 16; the smallest within 6% of the fastest), else 8 (16-bit) / 4 (8-bit), lowered where free memory is short | Twin Setup; `REALME_RECORD_BATCH` (1 = off) |
+| fast snake, 32-bit vocoder | on (`vocoder_defaults`): the copy-free form (`2`) on an engine built with it, else `1` | Twin Setup *Vocoder*; `QWEN3_TTS_FAST_SNAKE`, `QWEN3_TTS_VOCODER_F32` |
+| 32-bit vocoder's longest sentence | none with `2`; with `1`, 30 s with 32 GB of memory, 20 s with 16, 10 s below (`FRAMES_BY_MEMORY`) | `QWEN3_TTS_VOCODER_F32_MAX_FRAMES` |
 | threads | one per physical core, up to 6 | `QWEN3_TTS_THREADS` |
 
 A value from the shell wins over the settings file (`.env` in the data
@@ -174,7 +176,10 @@ reduced to fit.
   with the exact fixes, in a GGML with the gate; batch equals one at a time;
   sentences over the vocoder's length limit equal upstream; the 8-bit copier;
   all under AddressSanitizer and UndefinedBehaviorSanitizer; the exported
-  release built standalone gives the same samples.
+  release built standalone gives the same samples. The copy-free decoder
+  stage against the 32-bit vocoder: about 120 dB apart with each snake mode,
+  batch equal to one at a time, without tinyBLAS (GGML's own multiply) about
+  58 dB apart, off in low-memory mode, and clean under both sanitizers.
 - On the lecturer's computer: `_Engine_Speedup_Check.bat`,
   `_Engine_Check_8bit.bat`, `_Engine_Check_Vocoder.bat` (the same sentences
   each way, measured and left to listen to) and `_Bench_Batch.bat`.
@@ -208,8 +213,12 @@ command-line options override it.
   sizes. It is compute-bound and the transformers memory-bound, so running
   the vocoder for one pass alongside the generation of the next, on a
   processor with hyperthreads, is the next step worth measuring.
-- **The 32-bit vocoder's memory** is why long sentences fall back to the
-  original vocoder; decoding long sentences in overlapping chunks would lift
-  that limit at the cost of boundary checks.
+- **The vocoder's matrix multiplies** are now most of its time (about three
+  quarters with the copy-free decoder stage). A kernel that packs its inputs
+  could take more of the processor's peak than tinyBLAS's tiles do.
+- **The 8-bit products of a pass** run GGML's one-column kernel once per
+  sentence; a kernel that multiplies all of a pass's sentences together,
+  with the same sums for one sentence as for several, is the next step for
+  the generation side.
 - The upstream CLI's `-j` is still not applied (upstream behaviour);
   `QWEN3_TTS_THREADS` is.

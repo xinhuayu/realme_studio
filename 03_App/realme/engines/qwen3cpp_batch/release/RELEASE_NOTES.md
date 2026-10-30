@@ -1,3 +1,18 @@
+# realme-qwen3-tts.cpp 1.2.0
+
+- **The vocoder's decoder stage without copies** (`QWEN3_TTS_VOCODER_F32=2`):
+  each convolution reads its inputs in place, through overlapping rows of a
+  channel-by-channel layout, instead of through a sevenfold unrolled copy;
+  bias, snake, padding and residual adds are fused. With the 8-bit model on
+  the 15-watt, 6-core test PC: 1.31 seconds of work per second of speech one
+  sentence at a time (from 1.49), 0.79 at 4 per pass (from 1.07), 0.74 at 8,
+  0.72 at 16 -- about five times as fast as upstream. A third of the
+  vocoder's working memory, with the same samples as `1` (about 120 dB
+  apart). It needs less memory than the original vocoder at any length, so
+  it has no length limit. The voice server uses it by default.
+- The transposed convolutions' overlap-add reads its input in order (the
+  same sums, faster).
+
 # realme-qwen3-tts.cpp 1.1.0
 
 - **A voice server** (`server/`): the engine behind OpenAI's speech API on

@@ -211,25 +211,41 @@ def batch_measured() -> dict:
 
 
 #: The engine's vocoder switches RealMe turns on unless they are set: the
-#: one-pass snake with RealMe's sine, and the 32-bit vocoder. Measured on a
-#: 6-core PC: the vocoder 0.85 -> 0.55 seconds of work per second of speech,
-#: the samples 62 dB below the speech apart and not heard in listening. A
-#: value set in the shell, in the settings file (`realme key`) or in Twin
-#: Setup ("0" for the original) wins. Older engine builds ignore them. Read
-#: once per process by the engine, so
-#: a change takes effect in a new process.
+#: one-pass snake with RealMe's sine, and the 32-bit vocoder -- in its
+#: copy-free form ("2") where the engine was built with it, else "1". On a
+#: 6-core PC "1" took the vocoder from 0.85 to 0.55 seconds of work per
+#: second of speech, the samples 62 dB below the speech apart and not heard
+#: in listening; "2" gives the same samples (about 120 dB apart) in about a
+#: third less time and a third of the working memory. A value set in the
+#: shell, in the settings file (`realme key`) or in Twin Setup ("0" for the
+#: original) wins. Read once per process by the engine, so a change takes
+#: effect in a new process.
 VOCODER_DEFAULTS = {"QWEN3_TTS_FAST_SNAKE": "1", "QWEN3_TTS_VOCODER_F32": "1"}
 #: Which of them this process set itself (not the user's own values).
 DEFAULTED: set = set()
 
 
-#: The longest sentence the 32-bit vocoder takes, in codes (12.5 a second).
-#: It needs about 1.8 times the original's working memory (a 20-second
-#: sentence 4.6 GB at its peak against 2.5; 30 s about 6 against 3.7), on
-#: top of the engine and several sentences per pass, so by the machine's
-#: memory (a "16 GB" machine reports a little under 16): 32 GB or more,
-#: 30 s; 16 GB or more, 20 s; less, 10 s. Longer sentences are decoded the
-#: original way. A value set in the shell or settings file wins.
+def vocoder_defaults(home: Path | None = None) -> dict:
+    """VOCODER_DEFAULTS for the engine in `home` (default: the installed one)."""
+    out = dict(VOCODER_DEFAULTS)
+    try:
+        from realme.engines.cpp import vocoder2_built
+        if vocoder2_built(home):
+            out["QWEN3_TTS_VOCODER_F32"] = "2"
+    except Exception:
+        pass
+    return out
+
+
+#: The longest sentence the 32-bit vocoder ("1") takes, in codes (12.5 a
+#: second). It needs about 1.8 times the original's working memory (a
+#: 20-second sentence 4.6 GB at its peak against 2.5; 30 s about 6 against
+#: 3.7), on top of the engine and several sentences per pass, so by the
+#: machine's memory (a "16 GB" machine reports a little under 16): 32 GB or
+#: more, 30 s; 16 GB or more, 20 s; less, 10 s. Longer sentences are decoded
+#: the original way. The copy-free form ("2") needs less memory than the
+#: original at any length and has no limit. A value set in the shell or
+#: settings file wins.
 FRAMES_ENV = "QWEN3_TTS_VOCODER_F32_MAX_FRAMES"
 FRAMES_BY_MEMORY = ((31.0, 375), (15.0, 250), (0.0, 125))
 
@@ -240,28 +256,28 @@ def vocoder_frames_default() -> str:
     return str(next(f for gb, f in FRAMES_BY_MEMORY if total >= gb))
 
 
-def apply_vocoder_defaults() -> None:
+def apply_vocoder_defaults(home: Path | None = None) -> None:
     from realme.core import env as _env
-    if not os.environ.get(FRAMES_ENV):
-        os.environ[FRAMES_ENV] = vocoder_frames_default()
-        DEFAULTED.add(FRAMES_ENV)
-        _env._OURS.add(FRAMES_ENV)
-    for k, v in VOCODER_DEFAULTS.items():
+    for k, v in vocoder_defaults(home).items():
         if not os.environ.get(k):
             os.environ[k] = v
             DEFAULTED.add(k)
             # RealMe's own value, like one from the settings file: a later
             # re-read of `.env` replaces it, and it is not "set in the shell".
             _env._OURS.add(k)
+    if os.environ.get("QWEN3_TTS_VOCODER_F32") == "1" and not os.environ.get(FRAMES_ENV):
+        os.environ[FRAMES_ENV] = vocoder_frames_default()
+        DEFAULTED.add(FRAMES_ENV)
+        _env._OURS.add(FRAMES_ENV)
 
 
 def vocoder_setting() -> str:
     """"fast" (both on, the default), "original" (both "0"), or "mixed"."""
     snake = os.environ.get("QWEN3_TTS_FAST_SNAKE") or VOCODER_DEFAULTS["QWEN3_TTS_FAST_SNAKE"]
     voc = os.environ.get("QWEN3_TTS_VOCODER_F32") or VOCODER_DEFAULTS["QWEN3_TTS_VOCODER_F32"]
-    if snake != "0" and voc == "1":
+    if snake != "0" and voc in ("1", "2"):
         return "fast"
-    if snake == "0" and voc != "1":
+    if snake == "0" and voc not in ("1", "2"):
         return "original"
     return "mixed"
 
@@ -448,7 +464,7 @@ class Qwen3DllTTS(BaseTTS):
             raise AdapterUnavailable(
                 f"The C++ shared library is not there: {lib_path}\n"
                 f"    Build it:  realme engine cpp")
-        apply_vocoder_defaults()          # before the engine reads them
+        apply_vocoder_defaults(self.home)   # before the engine reads them
         if os.name == "nt":
             # ggml.dll and friends sit beside it and are NOT on PATH. Without
             # this the load fails with a bare "DLL load failed" that names the

@@ -13,8 +13,10 @@ Two checks, in this order:
   identical   two sentences with sampling switched off, recorded one at a
               time and then together: the sound must match sample for
               sample, or nothing is saved.
-  faster      the same sentences one at a time, then 2, 4, 8 (by default) per
-              pass, as seconds of work per second of speech.
+  faster      the same sentences one at a time, then 2, 4, 8, 12 and 16 (by
+              default) per pass, as seconds of work per second of speech.
+              Each size records whole passes: 16 sentences, or 12 at 12 per
+              pass.
 
 The fastest pass size is saved -- or a smaller one within NEAR of it,
 since a smaller pass needs less memory -- provided it is clearly (GAIN)
@@ -35,7 +37,7 @@ GAIN = 1.15
 #: size is compared with the fastest, not with the size below it, so a
 #: larger pass that is still clearly faster is not missed.
 NEAR = 0.06
-DEFAULT_SIZES = (1, 2, 4, 8)
+DEFAULT_SIZES = (1, 2, 4, 8, 12, 16)
 
 
 def _same(a: Path, b: Path) -> bool:
@@ -63,11 +65,13 @@ def measure(tts, sizes, texts, outdir: Path, log=print) -> list[dict]:
     from realme.core.media import duration_of
     rows = []
     for b in sizes:
-        log(f"\n  {b} per pass: {len(texts)} sentences ...")
+        # Whole passes only, so no size is measured on a short last pass.
+        use = texts[:max(b, len(texts) // b * b)]
+        log(f"\n  {b} per pass: {len(use)} sentences ...")
         t0 = time.perf_counter()
         paths = []
-        for i in range(0, len(texts), b):
-            chunk = texts[i:i + b]
+        for i in range(0, len(use), b):
+            chunk = use[i:i + b]
             outs = [outdir / f"b{b}_{i + j:02d}.wav" for j in range(len(chunk))]
             if b == 1:
                 paths.append(tts.synthesize(chunk[0], outs[0]))
@@ -147,7 +151,8 @@ def main_cli(sizes, sentences: int, outdir: Path, reference: Path | None,
         if fit != list(sizes):
             log(f"  {free:.0f} GB free: measuring {fit} only")
         sizes = fit
-    texts = (list(DEFAULT_SCRIPT) * 4)[:max(2, sentences, max(sizes))]
+    n_texts = max(2, sentences, max(sizes))
+    texts = (list(DEFAULT_SCRIPT) * (n_texts // len(DEFAULT_SCRIPT) + 1))[:n_texts]
     log("  warming up ...")
     tts.synthesize(texts[0], outdir / "warmup.wav")
     log("  checking the sound is identical (sampling off) ...")

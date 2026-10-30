@@ -43,8 +43,8 @@ time, faster -- and joined with a short pause. Requests that arrive together
 for the same voice and language are recorded in the same pass.
 
 The engine's speed switches are turned on unless set in the environment
-already: QWEN3_TTS_FAST_SNAKE=1 and QWEN3_TTS_VOCODER_F32=1 (with its longest
-sentence chosen by the machine's memory), and QWEN3_TTS_THREADS. --exact
+already: QWEN3_TTS_FAST_SNAKE=1, QWEN3_TTS_VOCODER_F32=2 (the copy-free
+32-bit vocoder), and QWEN3_TTS_THREADS. --exact
 leaves them off, for upstream's numbers.
 """
 from __future__ import annotations
@@ -155,11 +155,14 @@ def set_engine_defaults(exact: bool, threads: int | None) -> dict:
     want = {"QWEN3_TTS_THREADS": str(threads or min(6, physical_cores()))}
     if not exact:
         gb = total_memory_gb() or 0.0
-        want.update({"QWEN3_TTS_FAST_SNAKE": "1", "QWEN3_TTS_VOCODER_F32": "1",
-                     # The 32-bit vocoder's longest sentence (codes, 12.5 a
-                     # second): 30 s with 32 GB, 20 s with 16, 10 s below.
-                     "QWEN3_TTS_VOCODER_F32_MAX_FRAMES":
-                         "375" if gb >= 31 else "250" if gb >= 15 else "125"})
+        # The copy-free 32-bit vocoder ("2"): no length limit, as it needs
+        # less memory than the original at any length.
+        want.update({"QWEN3_TTS_FAST_SNAKE": "1", "QWEN3_TTS_VOCODER_F32": "2"})
+        if os.environ.get("QWEN3_TTS_VOCODER_F32") == "1":
+            # The older 32-bit vocoder, if asked for: its longest sentence
+            # (codes, 12.5 a second) 30 s with 32 GB, 20 s with 16, 10 s below.
+            want["QWEN3_TTS_VOCODER_F32_MAX_FRAMES"] = (
+                "375" if gb >= 31 else "250" if gb >= 15 else "125")
     for k, v in want.items():
         os.environ.setdefault(k, v)
     return {k: os.environ[k] for k in want}
@@ -464,7 +467,7 @@ def make_handler(recorder: Recorder, voices: Voices, info: dict,
     accepted = {MODEL_ID, *(aliases or [])}
 
     class Handler(BaseHTTPRequestHandler):
-        server_version = "realme-qwen3-tts/1.1"
+        server_version = "realme-qwen3-tts/1.2"
 
         def log_message(self, fmt, *args):
             sys.stderr.write(f"  {self.address_string()} {fmt % args}\n")

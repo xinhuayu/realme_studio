@@ -80,8 +80,19 @@ def main() -> int:
     os.environ["QWEN3_TTS_VOCODER_F32"] = "0"
     sw = S.set_engine_defaults(False, 3)
     check(sw["QWEN3_TTS_FAST_SNAKE"] == "1" and sw["QWEN3_TTS_VOCODER_F32"] == "0"
-          and sw["QWEN3_TTS_THREADS"] == "3" and sw["QWEN3_TTS_VOCODER_F32_MAX_FRAMES"] in ("125", "250", "375"),
-          "fast switches on unless already set; the vocoder limit by memory", sw)
+          and sw["QWEN3_TTS_THREADS"] == "3" and "QWEN3_TTS_VOCODER_F32_MAX_FRAMES" not in sw,
+          "fast switches on unless already set", sw)
+    for k in list(sw):
+        os.environ.pop(k, None)
+    sw = S.set_engine_defaults(False, 3)
+    check(sw["QWEN3_TTS_VOCODER_F32"] == "2" and "QWEN3_TTS_VOCODER_F32_MAX_FRAMES" not in sw,
+          "the copy-free vocoder by default, with no length limit", sw)
+    for k in list(sw):
+        os.environ.pop(k, None)
+    os.environ["QWEN3_TTS_VOCODER_F32"] = "1"
+    sw = S.set_engine_defaults(False, 3)
+    check(sw["QWEN3_TTS_VOCODER_F32_MAX_FRAMES"] in ("125", "250", "375"),
+          "the first 32-bit vocoder, if asked for, has its limit by memory", sw)
     for k in list(sw):
         os.environ.pop(k, None)
     sw = S.set_engine_defaults(True, None)

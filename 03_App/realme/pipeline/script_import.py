@@ -111,3 +111,88 @@ def to_manifest(imported: ImportedScript, project_id: str, title: str = ""):
                           spoken_text=s.script or "(no narration)",
                           prosody=Prosody())
                   for i, s in enumerate(imported.sections)])
+
+
+def to_script_text(manifest, titles=()) -> tuple[str, tuple[str, ...]]:
+    """A lecture's narration as one notes file, in the format
+    `parse_slide_script` reads: `[[slide N: Title]]` then that slide's
+    narration, for every slide 1..N. Importing the result gives the same
+    narration slide by slide. Delivery markers ([[pause]] and the rest) are
+    kept as written; cue words are not part of the format and are left out.
+
+    `manifest` is a Manifest, or its JSON as a dict (`_work/manifest.json`).
+    `titles` are the slides' headings, by slide, where known.
+    Returns the text and any warnings."""
+    if isinstance(manifest, dict):
+        from realme.core.schema import Manifest
+        manifest = Manifest.model_validate(manifest)
+    by_slide: dict[int, list[str]] = {}
+    for s in sorted(manifest.segments, key=lambda s: (s.slide_index, s.segment_id)):
+        by_slide.setdefault(s.slide_index, []).append(s.spoken_text.strip())
+    n = max(by_slide) + 1 if by_slide else 0
+    titles = list(titles or ())
+    out: list[str] = []
+    warnings: list[str] = []
+    for i in range(n):
+        title = titles[i] if i < len(titles) else ""
+        title = " ".join(str(title or "").replace("]]", "]").split())[:80]
+        out.append(f"[[slide {i + 1}: {title}]]" if title else f"[[slide {i + 1}]]")
+        out.append("")
+        body = "\n\n".join(t for t in by_slide.get(i, []) if t)
+        if not body:
+            warnings.append(f"Slide {i + 1} has no narration.")
+        for line in body.split("\n"):
+            if _marker(line):
+                warnings.append(f"Slide {i + 1}: the line '{line.strip()[:40]}' "
+                                f"reads as a slide label; edit it before importing.")
+        out.append(body)
+        out.append("")
+    return "\n".join(out).rstrip() + "\n", tuple(warnings)
+
+
+def looks_like_json(raw: str, filename: str = "") -> bool:
+    """A RealMe narration file (`manifest.json`) rather than a notes file."""
+    return filename.lower().endswith(".json") or raw.lstrip("﻿ \t\r\n").startswith("{")
+
+
+def manifest_from_json(raw: str, project_id: str):
+    """A lecture's narration in RealMe's own format (`_work/manifest.json`,
+    as saved by the Studio and carried in a lecture's .zip), made ready for
+    a new lecture: narration, cue words, pace and pauses kept; what belongs
+    to its old renders (measured lengths, captions, slide pictures, revision
+    marks) cleared. The same strictness as a notes file: every slide 1..N
+    present. Returns the Manifest and the number of slides."""
+    import json
+    from pydantic import ValidationError
+    from realme.core.schema import Manifest
+    try:
+        data = json.loads(raw.lstrip("﻿"))
+    except ValueError as e:
+        raise ScriptImportError(f"This .json file could not be read: {e}")
+    if not isinstance(data, dict) or "segments" not in data:
+        raise ScriptImportError("This .json file is not a RealMe lecture's "
+                                "narration (it has no 'segments').")
+    data = {**data, "project_id": project_id or data.get("project_id") or "imported"}
+    data.setdefault("title", data["project_id"])
+    try:
+        m = Manifest.model_validate(data)
+    except ValidationError as e:
+        raise ScriptImportError("This .json file is not a RealMe lecture's narration: "
+                                + "; ".join(f"{'.'.join(str(x) for x in err['loc'])}: "
+                                            f"{err['msg']}" for err in e.errors()[:4]))
+    if m.mode != "lecture":
+        raise ScriptImportError(f"This .json file is a {m.mode}, not a lecture.")
+    if not m.segments:
+        raise ScriptImportError("This .json file has no narration.")
+    slides = sorted({s.slide_index for s in m.segments})
+    if slides != list(range(len(slides))):
+        missing = sorted(set(range(slides[-1] + 1)) - set(slides))
+        raise ScriptImportError(
+            f"The narration skips slide(s) {[i + 1 for i in missing]}. Refusing "
+            f"to guess which slide each section belongs to.")
+    segs = []
+    for i, s in enumerate(sorted(m.segments, key=lambda s: (s.slide_index, s.segment_id))):
+        segs.append(s.model_copy(update={
+            "segment_id": i + 1, "measured_audio_s": None, "spoken_cues": [],
+            "slide_digest": "", "revision": "", "rerender": True}))
+    return m.model_copy(update={"segments": segs}), len(slides)

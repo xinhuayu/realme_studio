@@ -963,6 +963,132 @@ def section_transcript_box():
         "$('lec-out').scrollIntoView({behavior:'smooth', block:'start'})" not in ui)
 
 
+def section_notes_export():
+    """The narration out as a notes file, and back in unchanged."""
+    from realme.core.schema import Manifest, Segment
+    from realme.pipeline.script_import import parse_slide_script, to_script_text
+    print("\nN1. the narration as a notes file ([[slide N: Title]])")
+    texts = ["Today is about confounding. [[pause]] A confounder is related to both.",
+             "Here is the classic example.\n\nIt has two paragraphs.",
+             "$\\hat{\\beta}$ is the estimate; [[emphasis]]read it twice[[/emphasis]]."]
+    m = Manifest(project_id="w4", title="Week 4", segments=[
+        Segment(segment_id=i + 1, slide_index=i, spoken_text=t) for i, t in enumerate(texts)])
+    text, warns = to_script_text(m, ["Confounding", "", "Estimates ]] here"])
+    check(text.startswith("[[slide 1: Confounding]]\n\nToday is about")
+          and "[[slide 2]]\n" in text and "[[slide 3: Estimates ] here]]" in text
+          and not warns, "one labelled section per slide, titles where known", text)
+    back = parse_slide_script(text)
+    check([s.script for s in back.sections] == [t.strip() for t in texts]
+          and [s.slide_number for s in back.sections] == [1, 2, 3]
+          and back.sections[0].title == "Confounding",
+          "importing it gives the same narration, slide by slide", back)
+    check(to_script_text(json.loads(m.model_dump_json()))[0] == to_script_text(m)[0],
+          "the manifest's JSON gives the same file")
+    m2 = Manifest(project_id="x", title="x", segments=[
+        Segment(segment_id=1, slide_index=0, spoken_text="One."),
+        Segment(segment_id=2, slide_index=2, spoken_text="Read on.\n## Slide 9")])
+    t2, w2 = to_script_text(m2)
+    check("[[slide 2]]" in t2 and any("no narration" in w for w in w2)
+          and any("reads as a slide label" in w for w in w2),
+          "a slide with no narration, and a line that would read as a label, are reported", w2)
+
+    S, c = _client()
+    pd = S.PROJECTS / "Notes_export"
+    (pd / "_work").mkdir(parents=True, exist_ok=True)
+    (pd / "_work" / "manifest.json").write_text(m.model_dump_json(), encoding="utf-8")
+    r = c.get("/api/lecture/Notes_export/notes.md")
+    check(r.status_code == 200 and r.text.startswith("[[slide 1]]")
+          and "Notes_export_notes.md" in r.headers.get("content-disposition", "")
+          and r.headers.get("content-type", "").startswith("text/markdown"),
+          "the Studio downloads it as <lecture>_notes.md", f"{r.status_code} {r.text[:80]}")
+    check(c.get("/api/lecture/Nope_none/notes.md").status_code == 404,
+          "a lecture with no narration is a 404 with a sentence")
+    ui = (HERE / "realme/app/ui.html").read_text(encoding="utf-8")
+    check("keepAction('notes')" in ui and "/notes.md" in ui,
+          "the Keep, download or remove panel offers it")
+    out = Path(_ISO) / "exported_notes.md"
+    code, js, _ = run_json(["export-script", str(pd / "_work" / "manifest.json"),
+                            "-o", str(out), "--json"])
+    check(code == 0 and out.read_text(encoding="utf-8") == to_script_text(m)[0]
+          and js.get("ok"), "realme export-script writes it from the JSON file",
+          (code, js))
+    code, js, _ = run_json(["export-script", str(pd), "-o", str(out), "--json"])
+    check(code == 0, "or from the lecture's folder", (code, js))
+
+    print("\nN2. New with my notes takes a RealMe narration .json too")
+    from realme.pipeline.script_import import (ScriptImportError, looks_like_json,
+                                               manifest_from_json)
+    from realme.core.schema import Prosody
+    rich = Manifest(project_id="old", title="Week 4", script_source="claude", segments=[
+        Segment(segment_id=7, slide_index=1, spoken_text="Second slide.", cues=["cohort"],
+                measured_audio_s=4.2, slide_digest="abc", revision="edited", rerender=False),
+        Segment(segment_id=3, slide_index=0, spoken_text="First slide.",
+                prosody=Prosody(pace=0.9, lead_in_s=1.5), spoken_cues=[(0.0, 1.0, "First")])])
+    raw = rich.model_dump_json()
+    check(looks_like_json(raw, "n.txt") and looks_like_json("x", "manifest.json")
+          and not looks_like_json("[[slide 1]]\nHi", "n.md"),
+          "a .json file, or text that is JSON, is read as RealMe's own format")
+    m3, n3 = manifest_from_json(raw, "new_pid")
+    s0, s1 = m3.segments
+    check(n3 == 2 and m3.project_id == "new_pid" and m3.title == "Week 4"
+          and [s.slide_index for s in m3.segments] == [0, 1]
+          and [s.segment_id for s in m3.segments] == [1, 2]
+          and s0.prosody.pace == 0.9 and s0.prosody.lead_in_s == 1.5 and s1.cues == ["cohort"]
+          and s1.measured_audio_s is None and s1.slide_digest == "" and s1.revision == ""
+          and s1.rerender is True and s0.spoken_cues == [],
+          "narration, cue words, pace and pauses kept; old render details cleared", m3)
+    for bad, why in (('{"x": 1}', "no 'segments'"), ("{not json", "could not be read"),
+                     (rich.model_copy(update={"segments": rich.segments[:1]}).model_dump_json()
+                      .replace('"slide_index":1', '"slide_index":2'), "skips slide"),
+                     (rich.model_copy(update={"mode": "podcast"}).model_dump_json(), "not a lecture")):
+        try:
+            manifest_from_json(bad, "x")
+            got = ""
+        except ScriptImportError as e:
+            got = str(e)
+        check(why in got, f"refused, with a reason: {why}", got)
+    r = c.post("/api/lecture/script/import",
+               files={"file": ("J.pdf", b"x", "application/pdf"),
+                      "notes": ("manifest.json", b'{"segments": 3}', "application/json")})
+    check(r.status_code == 400 and "narration" in r.text,
+          "a broken .json is refused before any lecture is made", r.text[:120])
+    try:
+        import pymupdf
+    except ImportError:
+        pymupdf = None
+    if pymupdf is not None:
+        doc = pymupdf.open()
+        for t in ("First", "Second"):
+            doc.new_page().insert_text((72, 72), t)
+        deck = doc.tobytes()
+        r = c.post("/api/lecture/script/import",
+                   files={"file": ("JsonDeck.pdf", deck, "application/pdf"),
+                          "notes": ("manifest.json", raw.encode(), "application/json")})
+        ok = r.status_code == 200
+        j = _wait(S, r.json()["job_id"], 60) if ok else None
+        saved = None
+        if ok and j is not None and j.status == "done":
+            saved = json.loads((S.PROJECTS / r.json()["project_id"] / "_work"
+                                / "manifest.json").read_text(encoding="utf-8"))
+        check(saved is not None and saved["project_id"] == r.json()["project_id"]
+              and [g["spoken_text"] for g in saved["segments"]] == ["First slide.", "Second slide."]
+              and saved["segments"][1]["cues"] == ["cohort"],
+              "a deck and its .json become a lecture with the same narration and cues",
+              (r.status_code, getattr(j, "status", None), getattr(j, "error", None)))
+        r = c.post("/api/lecture/script/import",
+                   files={"file": ("JsonDeck.pdf", deck, "application/pdf"),
+                          "notes": ("manifest.json",
+                                    rich.model_copy(update={"segments": rich.segments[1:]})
+                                    .model_dump_json().replace('"slide_index":1', '"slide_index":0')
+                                    .encode(), "application/json")})
+        j = _wait(S, r.json()["job_id"], 60) if r.status_code == 200 else None
+        check(j is not None and j.status == "error" and "1 slide sections" in str(j.error),
+              "a .json for a different number of slides is refused",
+              (getattr(j, "status", None), getattr(j, "error", None)))
+    ui = (HERE / "realme/app/ui.html").read_text(encoding="utf-8")
+    check('accept=".txt,.md,.json"' in ui, "the Studio's notes picker takes .json")
+
+
 def main() -> int:
     import shutil
     if not shutil.which("ffmpeg"):
@@ -977,6 +1103,7 @@ def main() -> int:
     section_voice_choice()
     section_plain_language()
     section_transcript_box()
+    section_notes_export()
     return summary()
 
 

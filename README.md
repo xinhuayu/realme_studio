@@ -103,8 +103,9 @@ and how it was checked, is in
   Packages do not carry `models_q8\`; a build or the first recording makes it.
 - Defaults: the 8-bit model once made (`REALME_QWEN3CPP_QUANT=f16` for the
   16-bit one), one thread per core up to 6 (`REALME_ENGINE_THREADS`), the
-  fast snake and the 32-bit vocoder (`QWEN3_TTS_FAST_SNAKE`,
-  `QWEN3_TTS_VOCODER_F32`, `QWEN3_TTS_VOCODER_F32_MAX_FRAMES`), several
+  fast snake and the copy-free 32-bit vocoder (`QWEN3_TTS_FAST_SNAKE`,
+  `QWEN3_TTS_VOCODER_F32=2` on an engine built with it, else `1` with
+  `QWEN3_TTS_VOCODER_F32_MAX_FRAMES` by memory), several
   sentences per pass (`REALME_RECORD_BATCH`, 1 = off). A computer with cores
   to spare records with more than one engine at once: one per 6 cores, at
   most 4, as free memory allows (`REALME_RECORD_WORKERS`). Slide videos are

@@ -31,7 +31,7 @@ a failure here costs time, never takes.
                             the cores and memory allow; for Gemini, what
                             `realme gemini-parallel` measured, or 2.
     REALME_RECORD_BATCH     the local clone only: sentences recorded together
-                            in one pass of one engine (1-8). Its two models
+                            in one pass of one engine (1-16). Its two models
                             spend their time reading their weights, once per
                             step; a pass of several sentences reads them once
                             for all. Unset: what `realme bench-batch`
@@ -101,6 +101,8 @@ def engines_for_machine(base) -> int:
 
 
 BATCH_ENV = "REALME_RECORD_BATCH"
+#: The most sentences one pass takes.
+MAX_BATCH = 16
 #: Memory one more sentence in a pass needs: its own caches, sized for the
 #: longest sentence the engine allows (4096 slices).
 GB_PER_BATCH_SENTENCE = 0.5
@@ -128,7 +130,7 @@ def batch_for(tts, n_takes: int) -> int:
             b = batch_default(getattr(base, "quant", None))
         except ImportError:
             b = 1
-    return max(1, min(8, b, n_takes))
+    return max(1, min(MAX_BATCH, b, n_takes))
 
 
 def _asked() -> int | None:

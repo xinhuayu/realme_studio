@@ -101,8 +101,13 @@ def stand_in_engine(tree: Path) -> None:
         T.PROFILE_INCLUDE_ANCHOR + cpp.BCAST_HELPER_ANCHOR + "a); }\n"
         + "\n".join(a for a, _ in cpp.BCAST_EDITS) + "\n" + cpp.SNAKE_ANCHOR
         + T.PROFILE_SCHED_ANCHOR + T.PROFILE_PRINT_ANCHOR + "\n"
-        # the vocoder patch's anchors; its first, the #define, is above
-        + "\n".join(a for a, _ in cpp.VOC_EDITS[1:]) + "\n",
+        # the vocoder patch's anchors; its first, the #define, is above. The
+        # dec0 convolution comes with the two upstream lines before it, and
+        # the tanh after the last, which the copy-free vocoder's patch needs.
+        + "\n".join(("     // Causal padding: left pad with 6 (kernel_size - 1 = 7 - 1 = 6)\n"
+                     "     cur = ggml_pad_ext(ctx0, cur, 6, 0, 0, 0, 0, 0, 0, 0);\n     " + a)
+                    if "dec0_conv_w" in a else a for a, _ in cpp.VOC_EDITS[1:]) + "\n"
+        + "    cur = ggml_tanh(ctx0, cur);\n",
         encoding="utf-8")
     (tree / "src" / "audio_tokenizer_decoder.h").write_text(
         "struct audio_decoder_model {\n" + cpp.VOC_HEADER_ANCHOR + "\n",
@@ -199,9 +204,17 @@ def main() -> int:
           and (src / "src" / "realme_vocoder.inc").is_file(),
           "and the 32-bit vocoder: every convolution routed, copies made at "
           "load and freed with the model")
+    check('#include "realme_vocoder2.inc"' in dc and "realme_voc2_prepare(model_" in dc
+          and "realme_voc2_back(ctx0, model_, cur)" in dc and "realme2_f32;" in dh
+          and "ggml_backend_buffer_free(model.realme2_buffer)" in dc
+          and dc.index("realme_voc2_back(") < dc.index("model_.dec0_conv_w, cur, 1)")
+          and (src / "src" / "realme_vocoder2.inc").is_file(),
+          "and the copy-free vocoder: tried before the decoder stage, copies "
+          "made at load and freed with the model")
     check(T.patched(src) is True, "and the copy knows it carries them")
     check(not cpp.apply_ffn_patch(src) and not cpp.apply_broadcast_patch(src)
           and not cpp.apply_snake_patch(src) and not cpp.apply_vocoder_patch(src)
+          and not cpp.apply_vocoder2_patch(src)
           and not T.apply_profile_patch(src), "patching twice changes nothing")
     bad = Path(_ISO) / "bad"
     (bad / "src").mkdir(parents=True)
@@ -304,7 +317,22 @@ def main() -> int:
     text, v = T.compare_report(res3)
     check("did not switch on" in text and "QWEN3_TTS_VOCODER_F32 1" not in text,
           "one that did not switch on says so and offers nothing", text)
+    res4 = {"voc": {**rec(2.48, 0.18 / 2.48), "vocoder_f32": True, "tinyblas": True},
+            "voc2": {**rec(2.42, 0.12 / 2.42), "vocoder2": True},
+            "voc2_vs_voc": {"identical": False, "max_step": 1, "differ_pct": 0.1,
+                            "snr_db": 120.0}}
+    text, v = T.compare_report(res4)
+    check(v.get("voc2_vocoder_speedup") == round(0.18 / 0.12, 3)
+          and v.get("voc2_against") == "voc" and "120.0 dB below" in text
+          and "copy-free" in text,
+          "the copy-free vocoder is compared with 'voc'", text)
+    res4["voc2"]["vocoder2"] = False
+    text, v = T.compare_report(res4)
+    check("did not switch on" in text, "one that did not switch on says so", text)
     envs = dict(T.VARIANTS)
+    check(envs["voc2"]["QWEN3_TTS_VOCODER_F32"] == "2"
+          and envs["voc2"]["QWEN3_TTS_FAST_SNAKE"] == "1",
+          "'voc2' is 'fast' with the copy-free vocoder")
     check(all(e.get("REALME_QWEN3CPP_QUANT") and e.get("QWEN3_TTS_VOCODER_F32")
               for e in envs.values())
           and envs["voc"]["QWEN3_TTS_VOCODER_F32"] == "1"

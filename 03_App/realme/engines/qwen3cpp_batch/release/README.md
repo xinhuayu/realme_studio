@@ -3,7 +3,8 @@
 A revised [qwen3-tts.cpp](https://github.com/predict-woo/qwen3-tts.cpp) — C++
 inference for [Qwen3-TTS](https://huggingface.co/Qwen/Qwen3-TTS-12Hz-0.6B-Base)
 voice cloning on the [GGML](https://github.com/ggml-org/ggml) tensor library —
-made **3.5 to 3.7 times as fast on an ordinary CPU**, with the same sound.
+made **about five times as fast on an ordinary CPU** (2.9 times one sentence
+at a time), with the same sound.
 
 It is the local voice engine of [RealMe Studio](#about-realme-studio), which
 turns slide decks into narrated lecture videos in the lecturer's own cloned
@@ -22,19 +23,20 @@ Measured on a small PC with a 6-core, 12-thread laptop processor (Intel i7-10710
 cloning a real voice, as **seconds of work per second of speech** (lower is faster; 1.0 is
 real time):
 
-| | 1 sentence at a time | 4 per pass | 8 per pass |
-|---|---|---|---|
-| upstream | 3.79 | — | — |
-| + exact fixes (threads, `ffn_down`, broadcast) | 2.82 | — | — |
-| + one-pass snake | 2.59 | — | — |
-| + several sentences per pass | 2.54 | 1.66 | 1.51 |
-| + 8-bit model | 1.77 | 1.35 | 1.30 |
-| + 32-bit vocoder (everything) | **1.49** | **1.07** | **1.02** |
+| | 1 sentence at a time | 4 per pass | 8 per pass | 16 per pass |
+|---|---|---|---|---|
+| upstream | 3.79 | — | — | — |
+| + exact fixes (threads, `ffn_down`, broadcast) | 2.82 | — | — | — |
+| + one-pass snake | 2.59 | — | — | — |
+| + several sentences per pass | 2.54 | 1.66 | 1.51 | — |
+| + 8-bit model | 1.77 | 1.35 | 1.30 | — |
+| + 32-bit vocoder | 1.49 | 1.07 | 1.02 | — |
+| + the vocoder copy-free (everything) | **1.31** | **0.79** | **0.74** | **0.72** |
 
-An hour of speech now takes about an hour of work on that 15-watt laptop
-processor, against almost four. In RealMe Studio, a 51-slide, 52-minute
-lecture (564 sentences) recorded in 56 minutes on it, with the 8-bit model,
-4 sentences per pass and the 32-bit vocoder.
+An hour of speech now takes about three quarters of an hour of work on that
+15-watt laptop processor, against almost four. (The last row was measured on
+16 sentences, the others on 8.) Beyond 8 per pass the gain is small: 12 per
+pass gave 0.73.
 
 **Other hardware.** The transformers' steps mostly wait on memory, so faster
 memory (DDR5, more channels) speeds them up; the vocoder is arithmetic, so
@@ -53,6 +55,7 @@ model on a given machine is for measuring.
 | **8-bit (Q8_0) copy of the model**, written by the engine's own library from the 16-bit GGUF, no PyTorch. | a different model; not told apart in listening | API: `qwen3_tts_realme_quantize_q8`; `tools/quantize_q8.py` |
 | **One-pass snake activation** in the vocoder, with an AVX2 sine. | `exact`: identical; `1`: about 70 dB below the speech | `QWEN3_TTS_FAST_SNAKE=1` (or `exact`) |
 | **32-bit vocoder**: convolutions unrolled and multiplied in F32 instead of rounding the signal to F16 at every layer; transposed convolutions as one matrix multiply plus an overlap-add; these products only through GGML's tinyBLAS. | about 50–60 dB below the speech; not told apart in listening | `QWEN3_TTS_VOCODER_F32=1` |
+| **The vocoder's decoder stage without copies**: the signal laid out channel by channel, so each convolution reads its taps through overlapping rows instead of an unrolled copy; bias, snake, padding and residual adds fused. About a third less vocoder time than the line above and a third of its memory -- less than upstream's at any length. | the same samples as `1` (about 120 dB apart) | `QWEN3_TTS_VOCODER_F32=2` |
 | **Unicode paths on Windows**: model and audio files opened with `ggml_fopen`. | identical | on |
 
 Every change that gives identical sound was checked sample for sample against
@@ -126,7 +129,7 @@ starts:
 ```bat
 set QWEN3_TTS_THREADS=6
 set QWEN3_TTS_FAST_SNAKE=1
-set QWEN3_TTS_VOCODER_F32=1
+set QWEN3_TTS_VOCODER_F32=2
 build\qwen3-tts-cli -m models_q8 -r voices\realme.wav -t "Hello." -o hello.wav
 ```
 
@@ -134,8 +137,8 @@ build\qwen3-tts-cli -m models_q8 -r voices\realme.wav -t "Hello." -o hello.wav
 |---|---|
 | `QWEN3_TTS_THREADS=N` | CPU threads (one per physical core, up to about 6, is best for this model) |
 | `QWEN3_TTS_FAST_SNAKE=1` / `exact` | one-pass snake with RealMe's sine / with the C library's (identical) |
-| `QWEN3_TTS_VOCODER_F32=1` | the 32-bit vocoder |
-| `QWEN3_TTS_VOCODER_F32_MAX_FRAMES=N` | longest sentence for it, in codes at 12.5 a second (default 250, 20 s); longer ones use the original vocoder. It needs about 1.8 times the original's working memory (20 s: 4.6 GB against 2.5) |
+| `QWEN3_TTS_VOCODER_F32=2` | the 32-bit vocoder, copy-free (fastest; `1` is the first version, with the same samples) |
+| `QWEN3_TTS_VOCODER_F32_MAX_FRAMES=N` | longest sentence for it, in codes at 12.5 a second; longer ones use the original vocoder. Default: none with `2`; 250 (20 s) with `1`, which needs about 1.8 times the original's working memory (20 s: 4.6 GB against 2.5) |
 | `QWEN3_TTS_SGEMM=0` | GGML's own multiply for the vocoder too |
 | `QWEN3_TTS_FFN_F32=0`, `QWEN3_TTS_BROADCAST=0` | the exact fixes off, for comparison |
 | `QWEN3_TTS_LOW_MEM=1` | upstream's low-memory mode; the copies and batches stay off in it |

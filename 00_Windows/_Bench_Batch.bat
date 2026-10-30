@@ -4,11 +4,12 @@ REM ===================================================================
 REM  Does the free local clone (qwen3cpp) record faster with several
 REM  sentences in one pass, on this computer?
 REM
-REM  Records a few sentences in your voice one at a time, then 2, 4 and 8
-REM  per pass (as memory allows), after checking that a pass gives the same sound sample
-REM  for sample. Saves the best size; lectures then use it. Needs a voice
-REM  engine built with batches: run _Rebuild_Voice_Engine.bat first.
-REM  Takes about 15-25 minutes. Leave the computer alone while it runs.
+REM  Records 16 sentences in your voice one at a time, then 2, 4, 8, 12 and
+REM  16 per pass (as memory allows), after checking that a pass gives the
+REM  same sound sample for sample. Saves the best size; lectures then use
+REM  it. Needs a voice engine built with batches: run
+REM  _Rebuild_Voice_Engine.bat first. Takes about 20-40 minutes. Leave the
+REM  computer alone while it runs.
 REM
 REM  Options pass through, for example:
 REM      _Bench_Batch.bat --sizes 1,2,4 --sentences 8

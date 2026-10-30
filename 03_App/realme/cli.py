@@ -988,11 +988,12 @@ def _main(argv=None):
     bb = sub.add_parser("bench-batch",
                         help="Does recording several sentences in one pass "
                              "help on this computer? Saves the answer")
-    bb.add_argument("--sizes", default="1,2,4,8",
-                    help="Sentences per pass to compare, starting at 1 "
-                         "(default 1,2,4,8; sizes that do not fit in free memory are skipped)")
-    bb.add_argument("--sentences", type=int, default=8,
-                    help="Sentences recorded at each size (default 8)")
+    bb.add_argument("--sizes", default="1,2,4,8,12,16",
+                    help="Sentences per pass to compare, starting at 1, up to 16 "
+                         "(default 1,2,4,8,12,16; sizes that do not fit in free memory are skipped)")
+    bb.add_argument("--sentences", type=int, default=16,
+                    help="Sentences recorded at each size (default 16; a size "
+                         "records whole passes, so 12 per pass records 12)")
     bb.add_argument("--reference", default=None,
                     help="As for `realme bench`: tuned (default), raw, or a path")
     bb.add_argument("--out", type=Path, default=None,
@@ -1219,9 +1220,20 @@ def _main(argv=None):
     arg.add_argument("--resume", type=Path, help="Continue a saved argument")
 
     si = sub.add_parser("import-script",
-                        help="Turn one narration file into slide sections")
+                        help="Turn one narration file (.txt or .md, or a RealMe "
+                             "narration .json) into slide sections")
     si.add_argument("path", type=Path)
     si.add_argument("--project", default="", help="Project id to write into")
+
+    se = sub.add_parser("export-script",
+                        help="Write a lecture's narration as a notes file "
+                             "([[slide N: Title]] sections), as import-script reads")
+    se.add_argument("source", type=Path,
+                    help="The lecture's folder, its _work/manifest.json, or a "
+                         "lecture name under RealMeStudio\\projects")
+    se.add_argument("-o", "--out", type=Path, default=None,
+                    help="The .md file to write (default: <lecture>_notes.md "
+                         "in the current folder)")
 
     pv = sub.add_parser("preview", help="Hear one utterance before rendering anything")
     pv.add_argument("text", help="A sentence or two of narration")
@@ -2484,10 +2496,10 @@ def _main(argv=None):
         from realme.core.env import data_home
         try:
             sizes = [int(x) for x in a.sizes.replace(" ", "").split(",") if x]
-            if not sizes or sizes[0] != 1 or any(x < 1 or x > 8 for x in sizes):
+            if not sizes or sizes[0] != 1 or any(x < 1 or x > 16 for x in sizes):
                 raise ValueError
         except ValueError:
-            sys.exit("--sizes starts at 1 and goes up to 8, like 1,2,4")
+            sys.exit("--sizes starts at 1 and goes up to 16, like 1,2,4")
         ref, label = B.resolve_reference(a.reference)
         if ref is not None and Path(ref).is_file():
             from realme.core.media import ensure_reference_wav
@@ -2947,9 +2959,26 @@ def _main(argv=None):
         return 0 if not s["mispronounced"] else 1
 
     if a.cmd == "import-script":
-        from realme.pipeline.script_import import parse_slide_script, to_manifest, ScriptImportError
+        from realme.pipeline.script_import import (parse_slide_script, to_manifest,
+                                                   ScriptImportError, looks_like_json,
+                                                   manifest_from_json)
+        raw = _TXT(a.path)
+        if looks_like_json(raw, a.path.name):
+            # A RealMe narration file: cue words, pace and pauses come too.
+            try:
+                m, n = manifest_from_json(raw, Path(a.project).name if a.project else "")
+            except ScriptImportError as e:
+                sys.exit(str(e))
+            print(f"{n} slide{'s' if n != 1 else ''} (a RealMe narration file)")
+            if a.project:
+                out = Path(a.project) / "_work" / "manifest.json"
+                out.parent.mkdir(parents=True, exist_ok=True)
+                out.write_text(m.model_dump_json(indent=2), encoding="utf-8")
+                print(f"\nWrote {out}\n  now: realme lecture <deck> -o {a.project} "
+                      f"--script imported")
+            return 0
         try:
-            imported = parse_slide_script(_TXT(a.path))
+            imported = parse_slide_script(raw)
         except ScriptImportError as e:
             sys.exit(str(e))
         print(f"{len(imported.sections)} slides ({imported.marker_format} markers)")
@@ -2966,6 +2995,39 @@ def _main(argv=None):
                            .model_dump_json(indent=2), encoding="utf-8")
             print(f"\nWrote {out}\n  now: realme lecture <deck> -o {a.project} "
                   f"--script imported")
+        return 0
+
+    if a.cmd == "export-script":
+        from realme.pipeline.script_import import to_script_text
+        from realme.core.env import data_home
+        src = Path(a.source)
+        if src.is_file():
+            manifest, pdir = src, (src.parent.parent if src.parent.name == "_work" else None)
+        else:
+            if not src.is_dir() and (data_home() / "projects" / src.name).is_dir():
+                src = data_home() / "projects" / src.name
+            manifest, pdir = src / "_work" / "manifest.json", src
+        if not manifest.is_file():
+            sys.exit(f"No narration found at {manifest}. Give the lecture's "
+                     f"folder or its _work/manifest.json.")
+        try:
+            data = json.loads(_TXT(manifest))
+            titles = []
+            if pdir is not None:
+                cache = pdir / "_work" / "slide_titles.json"
+                if cache.is_file():
+                    titles = json.loads(_TXT(cache)).get("titles", [])
+            text, warns = to_script_text(data, titles)
+        except (ValueError, KeyError) as e:
+            sys.exit(f"{manifest} is not a lecture's narration: {e}")
+        name = (pdir.name if pdir is not None else manifest.stem)
+        out = a.out or Path(f"{name}_notes.md")
+        out.write_text(text, encoding="utf-8")
+        n = text.count("[[slide ")
+        print(f"Wrote {out}: {n} slide{'s' if n != 1 else ''}")
+        for w in warns:
+            print(f"  ! {w}")
+        _result(report={"slides": n}, warnings=list(warns), files={"notes": out})
         return 0
 
     if a.cmd == "preview":

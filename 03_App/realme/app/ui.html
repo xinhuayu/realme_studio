@@ -352,12 +352,14 @@ Consider a cohort where 15.3 percent received the intervention…</pre>
       <p class="hint"><code>## Slide 1</code> and <code>## Slide 1 - Title</code>
         work too. Slide numbers must run 1…N with none skipped or repeated: a
         script that does not is refused rather than mapped onto the wrong
-        slides.</p>
+        slides. A lecture's own narration file works as well, and keeps its cue
+        words, pace and pauses: <code>_work\manifest.json</code> in the
+        lecture's folder, or <code>record\script.json</code> in its .zip.</p>
       <label>Slide deck (PDF; a .pptx needs LibreOffice)
         <input type="file" id="ideck" accept=".pdf,.pptx,.ppt,.odp">
       </label>
-      <label>Your narration (.txt or .md)
-        <input type="file" id="inotes" accept=".txt,.md">
+      <label>Your narration (.txt or .md, or a RealMe narration .json)
+        <input type="file" id="inotes" accept=".txt,.md,.json">
       </label>
       <div class="actions"><button class="act" id="btn-import" onclick="importScript()">Import notes</button></div>
     </div>
@@ -392,10 +394,14 @@ Consider a cohort where 15.3 percent received the intervention…</pre>
         the video. Until then, fixing one sentence records one sentence.</p>
       <p class="hint"><b>Download everything</b> puts the video, captions,
         timing, narration and deck in one .zip — to keep, to move to another
-        computer, or to remove the lecture here and bring it back later.</p>
+        computer, or to remove the lecture here and bring it back later.
+        <b>Download the narration</b> saves the narration as last saved, one
+        <code>[[slide N: Title]]</code> section per slide — the notes format
+        <i>New with my notes</i> reads.</p>
       <div class="actions">
         <button class="ghost" onclick="keepAction('compact')">Keep only the video and text files</button>
         <button class="ghost" onclick="keepAction('bundle')">Download everything (.zip)</button>
+        <button class="ghost" onclick="keepAction('notes')">Download the narration (.md)</button>
         <button class="ghost" onclick="keepAction('remove')">Remove this lecture</button>
       </div>
       <div class="row">
@@ -2138,6 +2144,10 @@ async function keepAction(what){
   const pid = $('opproj').value;
   const out = $('keep-out');
   if(!pid){ out.textContent = 'Choose a lecture first.'; return; }
+  if(what === 'notes'){
+    location.href = `/api/lecture/${encodeURIComponent(pid)}/notes.md`;
+    return;
+  }
   if(what === 'bundle'){
     out.textContent = 'Preparing the .zip — a long lecture takes a moment.';
     location.href = `/api/lecture/${encodeURIComponent(pid)}/bundle`;
@@ -3260,7 +3270,7 @@ function paintLocalClone(r){
   const how = (r.measured||{})[r.quant] ? 'measured on this computer' : 'the default';
   $('lc-batch').innerHTML =
     `<option value="auto">Automatic — ${auto} (${how})</option>`
-    + [1,2,4,8].map(n => `<option value="${n}">${n === 1 ? '1 — one at a time' : n}</option>`).join('');
+    + [1,2,4,8,12,16].map(n => `<option value="${n}">${n === 1 ? '1 — one at a time' : n}</option>`).join('');
   $('lc-batch').value = String(r.batch);
   $('lc-batch').disabled = !r.batches_built;
   const shell = r.shell || [];
@@ -3278,7 +3288,7 @@ function paintLocalClone(r){
     : 'Sentences per pass: this engine records one at a time. Run _Rebuild_Voice_Engine.bat to record several per pass.');
   if(shell.length) notes.push(`${shell.join(' and ')} ${shell.length > 1 ? 'are' : 'is'} set outside RealMe and decides this until it is unset there.`);
   notes.push('Each model keeps its own recordings: a lecture recorded in the other model is recorded again the next time it renders, and switching back reuses the earlier takes.');
-  notes.push('The faster vocoder turns the codes into sound about 1.5 times as fast, at a difference of 62 dB below the speech that was not heard in listening; a change of vocoder takes effect when the Studio is started again, and recordings already made are kept.');
+  notes.push('The faster vocoder turns the codes into sound well over one and a half times as fast as the original, at a difference of about 60 dB below the speech that was not heard in listening; a change of vocoder takes effect when the Studio is started again, and recordings already made are kept.');
   $('lc-note').textContent = notes.join(' ');
 }
 

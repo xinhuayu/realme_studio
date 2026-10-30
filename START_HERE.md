@@ -219,6 +219,19 @@ Here is the classic example ...
 none skipped or repeated; a file that does not is refused rather than put on
 the wrong slides.
 
+A lecture's own narration file works too: `_work\manifest.json` in the
+lecture's folder (`%USERPROFILE%\RealMeStudio\projects\<lecture>`), or
+`record\script.json` in its *Download everything* .zip -- not the other .json
+files beside the video, which are timing records. It keeps the cue words, pace and pauses as
+well as the narration -- the way to start a new lecture from an old one's
+narration, on a new deck with the same number of slides.
+
+Any lecture's narration comes out in this format too: **Download the
+narration (.md)** under *Open a lecture → Keep, download or remove*, or
+`realme export-script <lecture folder or its _work\manifest.json>`. Edit it
+in any editor and bring it back with *New with my notes*. Cue words are not
+part of the file.
+
 ---
 
 ## 6. Making the narration read well
@@ -335,6 +348,8 @@ the file and its date before you press Render.
   sentence.
 - **Download everything** puts the video, captions, timing, narration and
   deck in one .zip.
+- **Download the narration (.md)** saves just the narration, one
+  `[[slide N: Title]]` section per slide (section 5).
 - **Remove this lecture** deletes it.
 - **Bring back a lecture from its .zip** makes it editable again, on this
   computer or another.
@@ -494,16 +509,17 @@ the working engine back.
   its model from memory, so a pass of several sentences reads it once for
   all of them. The sound is exactly the same as one at a time. By default 8
   per pass with the 16-bit model and 4 with the 8-bit one, fewer where memory
-  is short; `00_Windows\_Bench_Batch.bat` measures the best size for your
-  computer and saves it.
+  is short; `00_Windows\_Bench_Batch.bat` measures 1 to 16 per pass on your
+  computer and saves the best size (the smallest within 6% of the fastest).
 - **The 8-bit model**, which reads half as much per step (1.35 against 1.51
   seconds of work per second of speech, and not told apart in listening).
   Lectures use it once a build has made it; until then, the 16-bit one.
 - **A faster vocoder** (the part that turns the model's codes into sound):
-  1.5 to 1.9 times as fast, the samples 62 dB below the speech apart. It
-  needs more working memory, so it takes sentences up to 30 seconds on a
-  computer with 32 GB or more, 20 seconds with 16 GB, 10 seconds below; a
-  longer sentence is turned into sound the original way.
+  its convolutions in 32 bits, reading the signal in place rather than
+  through unrolled copies -- well over one and a half times as fast as the
+  original, the samples about 60 dB below the speech apart (not heard in
+  listening), and with less working memory than the original, so sentences
+  of any length use it.
 - **Slide videos made while it records**, where the processor has threads
   the engine leaves free (a 6-core, 12-thread desktop has six).
 
@@ -566,9 +582,8 @@ model and pass size take effect from the next preview or render; the vocoder
 when the Studio is started again. Each model keeps its own recordings, so a
 lecture recorded in the other model is recorded again the next time it
 renders. (`realme key REALME_QWEN3CPP_QUANT f16`, `REALME_RECORD_BATCH`,
-`QWEN3_TTS_FAST_SNAKE 0`, `QWEN3_TTS_VOCODER_F32 0` and
-`QWEN3_TTS_VOCODER_F32_MAX_FRAMES` set the same things from the command
-line.) `00_Windows\_Engine_Check_8bit.bat` and `_Engine_Check_Vocoder.bat`
+`QWEN3_TTS_FAST_SNAKE 0` and `QWEN3_TTS_VOCODER_F32 0` set the same things
+from the command line.) `00_Windows\_Engine_Check_8bit.bat` and `_Engine_Check_Vocoder.bat`
 record the same sentences each way, to listen to side by side.
 
 If it does not start:
@@ -646,6 +661,7 @@ Open `5_Command_Prompt.bat`; these work from any folder.
 | `realme voice speed` | saved voice speeds |
 | `realme lecture deck.pdf -o .\out` | slides → narrated video |
 | `realme import-script notes.md` | use narration you wrote |
+| `realme export-script out\lecture` | a lecture's narration as a notes file |
 | `realme narrate notes.docx -o notes.wav` | read a document aloud |
 | `realme dialogue "a topic"` | podcast or debate |
 | `realme preview "one sentence"` | hear one line |

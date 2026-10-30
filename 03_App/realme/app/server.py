@@ -441,11 +441,11 @@ def _local_clone_state() -> dict:
         batch_measured, library_path, quant_setting, vocoder_setting)
     from realme.core.env import from_shell
     from realme.engines import cpp as C
-    from realme.pipeline.prerecord import BATCH_ENV
+    from realme.pipeline.prerecord import BATCH_ENV, MAX_BATCH
     home = Path(C.cpp_home())
     raw = os.environ.get(BATCH_ENV, "").strip()
     try:
-        batch = max(1, min(8, int(raw))) if raw else "auto"
+        batch = max(1, min(MAX_BATCH, int(raw))) if raw else "auto"
     except ValueError:
         batch = "auto"
     return {
@@ -502,12 +502,12 @@ async def local_clone_set(patch: dict):
             try:
                 n = int(b)
             except (TypeError, ValueError):
-                raise HTTPException(400, "Sentences per pass: auto, or 1 to 8.")
-            if not 1 <= n <= 8:
-                raise HTTPException(400, "Sentences per pass: auto, or 1 to 8.")
+                raise HTTPException(400, "Sentences per pass: auto, or 1 to 16.")
+            if not 1 <= n <= 16:
+                raise HTTPException(400, "Sentences per pass: auto, or 1 to 16.")
             set_key(BATCH_ENV, str(n))
     if "vocoder" in patch:
-        from realme.adapters.tts_qwen3_dll import DEFAULTED, VOCODER_DEFAULTS
+        from realme.adapters.tts_qwen3_dll import DEFAULTED, VOCODER_DEFAULTS, vocoder_defaults
         v = str(patch["vocoder"])
         if v not in ("fast", "original"):
             raise HTTPException(400, "The vocoder is fast or original.")
@@ -515,7 +515,7 @@ async def local_clone_set(patch: dict):
         if busy:
             raise HTTPException(409, f"{' and '.join(busy)} set outside RealMe; "
                                      f"unset it there to choose here.")
-        for k, on in VOCODER_DEFAULTS.items():
+        for k, on in vocoder_defaults().items():
             if v == "fast":
                 remove_key(k)
                 if not os.environ.get(k):
@@ -1268,17 +1268,24 @@ async def lecture_script_import(file: UploadFile = File(...),
     model rewriting them.
     """
     from realme.pipeline.script_import import (parse_slide_script, to_manifest,
-                                               ScriptImportError)
+                                               ScriptImportError, looks_like_json,
+                                               manifest_from_json)
     if not file.filename:
         raise HTTPException(400, "No deck uploaded")
     if notes is None or not notes.filename:
         raise HTTPException(400, "No notes file uploaded")
     _deck_readable(file.filename)
     # The notes first: a script that does not parse is refused before a
-    # project folder is made for it.
+    # project folder is made for it. A RealMe narration file (.json) keeps
+    # its cue words, pace and pauses too.
     raw = (await read_upload(notes, "text")).decode("utf-8", "replace")
+    as_json = looks_like_json(raw, notes.filename)
     try:
-        imported = parse_slide_script(raw)
+        if as_json:
+            from_json, n_json = manifest_from_json(raw, "imported")
+            imported = None
+        else:
+            imported = parse_slide_script(raw)
     except ScriptImportError as e:
         raise HTTPException(400, str(e))
 
@@ -1297,16 +1304,22 @@ async def lecture_script_import(file: UploadFile = File(...),
         pdf = slides_mod.deck_to_pdf(deck, work_dir)
         pages = slides_mod.rasterize(pdf, work_dir / "slides", width_px=width)
         job.say(f"{len(pages)} slides")
-        m = to_manifest(imported, pid)
-        job.say(f"{len(m.segments)} sections ({imported.marker_format} markers)")
-        if len(m.segments) != len(pages):
+        if as_json:
+            m = from_json.model_copy(update={"project_id": pid})
+            n_sections = n_json
+            job.say(f"{n_sections} slide{'s' if n_sections != 1 else ''} (a RealMe narration file)")
+        else:
+            m = to_manifest(imported, pid)
+            n_sections = len(m.segments)
+            job.say(f"{n_sections} sections ({imported.marker_format} markers)")
+        if n_sections != len(pages):
             # Refused rather than rendered: a script with more or fewer
             # sections than the deck has slides maps onto the wrong pictures,
             # which is easy to miss in the finished video.
             raise ValueError(
-                f"The notes have {len(m.segments)} slide sections but the deck "
-                f"has {len(pages)} slides. Fix the markers and import again.")
-        for w in imported.warnings:
+                f"The notes have {n_sections} slide sections but the deck "
+                f"has {len(pages)} slides. Fix the notes and import again.")
+        for w in (imported.warnings if imported else ()):
             job.say(f"  ! {w}")
         lec.save_script(pdir, m)
         return {"project_id": pid, "segments": len(m.segments),
@@ -2318,6 +2331,28 @@ def _inserts_view(pid: str, pdir: Path) -> dict:
                         for i in items],
             # What "apply" would rebuild without rendering: the last render.
             "last_render": last["name"] + ".mp4" if last else None}
+
+
+@app.get("/api/lecture/{pid}/notes.md")
+def lecture_notes_md(pid: str):
+    """The narration as a notes file (`[[slide N: Title]]` sections), the
+    format *New with my notes* and `realme import-script` read. The script
+    as last saved, or the proposed one while a revision waits."""
+    from fastapi.responses import Response
+    from realme.pipeline.script_import import to_script_text
+    pdir = project_dir(pid)
+    try:
+        m = lec.load_script(pdir, pending.script_path(pdir))
+    except FileNotFoundError:
+        raise HTTPException(404, "No narration for this lecture yet")
+    try:
+        titles = slide_titles(pid).get("titles", [])
+    except Exception:
+        titles = []
+    text, _ = to_script_text(m, titles)
+    name = re.sub(r"[^A-Za-z0-9._-]+", "_", pid) + "_notes.md"
+    return Response(text, media_type="text/markdown; charset=utf-8",
+                    headers={"Content-Disposition": f'attachment; filename="{name}"'})
 
 
 @app.get("/api/lecture/{pid}/slide-titles")

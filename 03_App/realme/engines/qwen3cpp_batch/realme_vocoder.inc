@@ -38,6 +38,7 @@
 #include "ggml-cpu.h"
 
 #include <algorithm>
+#include <climits>
 #include <cstdint>
 #include <cstdlib>
 #include <vector>
@@ -47,7 +48,7 @@ namespace qwen3_tts {
 static bool realme_vocoder_f32_wanted() {
     static const bool on = [] {
         const char * v = std::getenv("QWEN3_TTS_VOCODER_F32");
-        if (!(v && v[0] == '1')) return false;
+        if (!(v && (v[0] == '1' || v[0] == '2'))) return false;   // 2: realme_vocoder2.inc
         // Low-memory mode reloads the model for every sentence to keep the
         // peak down; the copies would add to it.
         const char * low = std::getenv("QWEN3_TTS_LOW_MEM");
@@ -56,17 +57,23 @@ static bool realme_vocoder_f32_wanted() {
     return on;
 }
 
-// The 32-bit copy of a weight, or nullptr when there is none (switched off,
-// a GPU backend, or no memory for it): callers then do what upstream does.
 // Whether a sentence of n_frames codes is decoded in 32 bits (see above).
+// With QWEN3_TTS_VOCODER_F32=2 (realme_vocoder2.inc) the decoder stage needs
+// less working memory than upstream's at any length, so there is no limit
+// unless one is set.
 static bool realme_vocoder_frames_ok(int32_t n_frames) {
     static const int32_t cap = [] {
         const char * v = std::getenv("QWEN3_TTS_VOCODER_F32_MAX_FRAMES");
         const long n = v ? std::strtol(v, nullptr, 10) : 0;
-        return (int32_t) (n > 0 ? n : 250);
+        if (n > 0) return (int32_t) n;
+        const char * mode = std::getenv("QWEN3_TTS_VOCODER_F32");
+        return (mode && mode[0] == '2') ? INT32_MAX : (int32_t) 250;
     }();
     return n_frames <= cap;
 }
+
+// The 32-bit copy of a weight, or nullptr when there is none (switched off,
+// a GPU backend, or no memory for it): callers then do what upstream does.
 
 static struct ggml_tensor * realme_voc_f32(const audio_decoder_model & m,
                                            const struct ggml_tensor * w) {
@@ -188,14 +195,22 @@ static void realme_col2im(struct ggml_tensor * dst, int ith, int nth, void * ud)
     for (int64_t co = c0; co < c1; ++co) {
         float * y = (float *) ((char *) dst->data + co * dst->nb[1]);
         for (int64_t t = 0; t < out; ++t) y[t] = 0.0f;
-        for (int64_t l = 0; l < L; ++l) {
-            const float * r = (const float *) ((const char *) R->data + l * R->nb[1]) + K * co;
-            const int64_t t0 = l * s - crop;
-            for (int64_t k = 0; k < K; ++k) {
-                const int64_t t = t0 + k;
-                if (t >= 0 && t < out) y[t] += r[k];
-            }
+    }
+    // Input step by input step, so R is read in order; each output sample
+    // still receives its terms in order of l.
+    for (int64_t l = 0; l < L; ++l) {
+        const float * rl = (const float *) ((const char *) R->data + l * R->nb[1]);
+        const int64_t t0 = l * s - crop;
+        const int64_t k0 = std::max<int64_t>(0, -t0), k1 = std::min<int64_t>(K, out - t0);
+        if (k0 >= k1) continue;
+        for (int64_t co = c0; co < c1; ++co) {
+            float * y = (float *) ((char *) dst->data + co * dst->nb[1]);
+            const float * r = rl + K * co;
+            for (int64_t k = k0; k < k1; ++k) y[t0 + k] += r[k];
         }
+    }
+    for (int64_t co = c0; co < c1; ++co) {
+        float * y = (float *) ((char *) dst->data + co * dst->nb[1]);
         if (b) {
             const float bias = ((const float *) b->data)[co];
             for (int64_t t = 0; t < out; ++t) y[t] += bias;

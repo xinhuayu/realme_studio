@@ -774,6 +774,80 @@ def apply_vocoder_patch(tree: Path) -> bool:
     return True
 
 
+#: The vocoder's decoder stage without unrolled copies
+#: (`qwen3cpp_batch/realme_vocoder2.inc`); QWEN3_TTS_VOCODER_F32=2 switches it
+#: on. Applied after the 32-bit vocoder, whose copies and overlap-add it
+#: uses; its anchors are that patch's text and upstream's.
+VOC2_MARK = "realme_vocoder2.inc"
+VOC2_HEADER_ANCHOR = """    bool realme_on = false;   // this sentence is short enough for them
+};"""
+VOC2_HEADER = """    bool realme_on = false;   // this sentence is short enough for them
+
+    // RealMe (QWEN3_TTS_VOCODER_F32=2): the decoder stage's convolution
+    // weights in 32 bits, laid out for the channel-by-channel signal
+    struct ggml_context * realme2_ctx = nullptr;
+    ggml_backend_buffer_t realme2_buffer = nullptr;
+    std::map<const struct ggml_tensor *, struct ggml_tensor *> realme2_f32;
+};"""
+VOC2_EDITS = (
+    ('#include "realme_snake.inc"\n',
+     '#include "realme_snake.inc"\n#include "realme_vocoder2.inc"\n'),
+    ("    realme_vocoder_prepare(model_, state_.backend);\n",
+     "    realme_vocoder_prepare(model_, state_.backend);\n"
+     "    realme_voc2_prepare(model_, state_.backend);\n"),
+    ("    model.realme_f32.clear();\n",
+     """    model.realme_f32.clear();
+    model.realme2_f32.clear();
+    if (model.realme2_buffer) {
+        ggml_backend_buffer_free(model.realme2_buffer);
+        model.realme2_buffer = nullptr;
+    }
+    if (model.realme2_ctx) {
+        ggml_free(model.realme2_ctx);
+        model.realme2_ctx = nullptr;
+    }
+"""),
+    ("     // Causal padding: left pad with 6 (kernel_size - 1 = 7 - 1 = 6)\n"
+     "     cur = ggml_pad_ext(ctx0, cur, 6, 0, 0, 0, 0, 0, 0, 0);\n"
+     "     cur = realme_conv_1d(ctx0, model_, model_.dec0_conv_w, cur, 1);\n",
+     "     // RealMe (QWEN3_TTS_VOCODER_F32=2): the decoder stage without unrolled copies\n"
+     "     struct ggml_tensor * realme_audio = realme_voc2_back(ctx0, model_, cur);\n"
+     "     if (realme_audio) {\n"
+     "         cur = realme_audio;\n"
+     "     } else {\n"
+     "     // Causal padding: left pad with 6 (kernel_size - 1 = 7 - 1 = 6)\n"
+     "     cur = ggml_pad_ext(ctx0, cur, 6, 0, 0, 0, 0, 0, 0, 0);\n"
+     "     cur = realme_conv_1d(ctx0, model_, model_.dec0_conv_w, cur, 1);\n"),
+    ("    cur = ggml_tanh(ctx0, cur);\n",
+     "    cur = ggml_tanh(ctx0, cur);\n     }\n"),
+)
+
+
+def vocoder2_source() -> Path:
+    return Path(__file__).resolve().parent / "qwen3cpp_batch" / VOC2_MARK
+
+
+def apply_vocoder2_patch(tree: Path) -> bool:
+    """Give the vocoder's decoder stage its copy-free path (off unless
+    QWEN3_TTS_VOCODER_F32=2). Needs the 32-bit vocoder patch first.
+    Idempotent; raises, changing nothing, when an anchor is not found
+    exactly once."""
+    src = Path(tree) / "src"
+    shutil.copy2(vocoder2_source(), src / VOC2_MARK)
+    cf, hf = src / "audio_tokenizer_decoder.cpp", src / "audio_tokenizer_decoder.h"
+    ct, ht = cf.read_text(encoding="utf-8"), hf.read_text(encoding="utf-8")
+    if VOC2_MARK in ct and "realme2_f32;" in ht:
+        return False
+    if ht.count(VOC2_HEADER_ANCHOR) != 1 or any(ct.count(a) != 1 for a, _ in VOC2_EDITS):
+        raise RuntimeError("audio_tokenizer_decoder has changed upstream; the "
+                           "copy-free vocoder patch does not fit. Nothing was built.")
+    for a, b in VOC2_EDITS:
+        ct = ct.replace(a, b)
+    cf.write_text(ct, encoding="utf-8")
+    hf.write_text(ht.replace(VOC2_HEADER_ANCHOR, VOC2_HEADER), encoding="utf-8")
+    return True
+
+
 #: GGML's tinyBLAS matrix multiply (built with GGML_LLAMAFILE) for the
 #: products RealMe names "realme_sgemm" -- the vocoder's convolutions --
 #: and for nothing else, so the two transformers compute as upstream does.
@@ -834,7 +908,7 @@ def apply_sgemm_patch(ggml_dir: Path) -> bool:
 #: stopwatch (cpp_timing.apply_profile_patch) on top.
 PATCHES = ("apply_thread_patch", "apply_ffn_patch", "apply_broadcast_patch",
            "apply_batch_patch", "apply_snake_patch", "apply_quant_patch",
-           "apply_path_patch", "apply_vocoder_patch")
+           "apply_path_patch", "apply_vocoder_patch", "apply_vocoder2_patch")
 CHANGES_FILE = "REALME_CHANGES.md"
 EXPORT_SKIP = {".git", ".sisyphus", "build", "models", "models_q8", "__pycache__"}
 
@@ -885,7 +959,7 @@ def export_source(out: Path, log=print) -> Path:
 
 #: realme-qwen3-tts.cpp, the revised engine on its own (`export_release`).
 RELEASE_NAME = "realme-qwen3-tts.cpp"
-RELEASE_VERSION = "1.1.0"
+RELEASE_VERSION = "1.2.0"
 RELEASE_LICENSE_LINE = "Copyright (c) 2026 Xinhua Yu (RealMe's changes)"
 
 
@@ -1557,7 +1631,8 @@ def build(home: Path | None = None, log=print, force: bool = False,
                      "threads_applied": True, "ffn_f32": True,
                      "broadcast": True, "batch": True,
                      "fast_snake": True, "quant": True,
-                     "vocoder_f32": True, "sgemm": sgemm == [SGEMM_FLAG]},
+                     "vocoder_f32": True, "vocoder2": True,
+                     "sgemm": sgemm == [SGEMM_FLAG]},
                     indent=2), encoding="utf-8")
 
     ok, detail = library_exports_ok(home)
@@ -1658,6 +1733,16 @@ def rebuild(home: Path | None = None, log=print) -> Path:
         raise
     shutil.rmtree(keep, ignore_errors=True)
     return cli
+
+
+def vocoder2_built(home: Path | None = None) -> bool:
+    """Was this engine built with the copy-free vocoder (QWEN3_TTS_VOCODER_F32=2)?"""
+    import json as _json
+    try:
+        return bool(_json.loads((Path(home or cpp_home()) / "build_info.json")
+                                .read_text(encoding="utf-8")).get("vocoder2"))
+    except (OSError, ValueError):
+        return False
 
 
 def threads_applied(home: Path | None = None) -> bool:
