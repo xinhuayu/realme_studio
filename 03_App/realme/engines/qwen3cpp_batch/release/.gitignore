@@ -1,0 +1,8 @@
+build/
+ggml/build/
+models/
+models_q8/
+*.gguf
+*.wav
+.venv/
+__pycache__/

@@ -1,0 +1,75 @@
+[[slide 1: RealMe Studio]]
+
+Welcome. This is RealMe Studio, a tool that turns your slides into a narrated lecture video, in your own voice. You record yourself once, for about a minute. After that, any slide deck you give it comes back as a finished video: your slides, your narration, spoken in a voice cloned from that recording, with captions and chapter marks. [[pause]] And yes, the voice you are hearing right now was made exactly that way. In the next few minutes I will show you what it does, how to set it up, and the workflow that keeps it cheap and keeps you in control of every word.
+
+[[slide 2: What it makes]]
+
+RealMe does three things with that one recording. The first, and the main one, is lectures. A slide deck becomes a narrated video, and when you revise the deck later, only the slides that changed are spoken again. The second is reading text aloud. Paste a paragraph or give it a document, and it comes back as audio with captions. The third is conversations. A topic or a paper becomes a two-voice podcast or debate between you and a second speaker. [[pause]] And there are tools around the edges: you can play a video between two slides, such as an animated explainer, and you can split a long lecture into parts or join sections from different lectures.
+
+[[slide 3: What you need]]
+
+Here is what you need before you start. A Windows computer, and Miniconda or Anaconda, because the one thing a zip file cannot carry is Python itself. A Gemini API key from Google AI Studio, on a project that is linked to a billing account. That key drafts the narration, and it also speaks it in your cloned voice. Your slides as a PDF. In PowerPoint, that is File, Save As, PDF. And a quiet room with a decent microphone. [[pause]] What you do not need is just as important. No graphics card, no compiler, and no audio software. About two gigabytes of disk is plenty.
+
+[[slide 4: Install in three double-clicks]]
+
+Installing takes three double-clicks, all in the folder called Windows, at the top of the RealMe folder. First, the file numbered one, Install. It creates the Python environment and installs RealMe, the media tools and three free draft voices. It takes a few minutes, and if you run it again later it keeps what already works. At the end it asks you one question: do you want RealMe to speak in your own cloned voice? Choose Gemini, choose the free local clone, or choose no clone at all, and the free draft voices will read your lectures. You can change your mind any time. Second, the file numbered two, Set Key. Paste your Gemini key. It is stored in your own data folder, not in the program folder, so an update never touches it. Third, the file numbered four, Start Studio. The Studio opens in your web browser. [[pause]] It looks like a website, but nothing is online. The page is served by a small program on your own computer. From now on, this third step is the only one you need. [[pause]] A word about the free local clone, called Qwen 3 CPP. It costs nothing to record with, nothing leaves your computer, and on a modern desktop it records about as fast as you speak: an hour of lecture in about an hour. It runs on RealMe's own revised version of an open-source voice engine. A RealMe package usually carries it, ready to run. If yours does not, the file numbered three, Get Voice Engine, builds it, once Microsoft's free Build Tools are installed.
+
+[[slide 5: The Studio at a glance]]
+
+This is the Studio. Across the top are six tabs: Lecture, Narrate Text, Podcast and Debate, Twin Setup, Tools and Help. On the right are status pills. Green means ready. If something is missing, the pill says what to do, for example, no Gemini key, run Set Key. And if a step goes wrong, the message beside the button says what happened in plain words. Underneath it, a fold called Technical details holds the part to send me if you need help. [[pause]] Long jobs run in the background, and the Activity corner at the top right says what is happening right now: drafting the narration, recording slide three of twelve, creating the video, and when it is done. You can close the browser while a lecture renders. The job keeps going, and the log is still there when you come back.
+
+[[slide 6: Record your voice once]]
+
+If you chose a cloned voice, this is the step everything else depends on. Go to Twin Setup, and find Your voice. Choose a recording of thirty to sixty seconds of yourself reading something you have the text of. Then paste the words you read into the box called What you read, and press Save the text. Read the way you actually lecture. Not slowly, and not in a careful performance voice, because the clone reproduces exactly what you give it. One sitting, one room, one microphone. [[pause]] When you upload the recording, the page checks it: the length, the level, and the background noise. If it says record again, record again. It is far cheaper now than after a full lecture. When it is right, press Save this voice.
+
+[[slide 7: Create your cloned voice]]
+
+If you chose Gemini, then on the same tab, create the Gemini cloned voice. The local clone needs only the recording you just made. Tick the box that says your key bills to a paid project. This matters. On the free tier, Google's terms allow people to review what you send, and a recording of your voice is personal information. Next, record the consent sentence Google requires, in the same room and on the same microphone as before. Then press Create the cloned voice. Until everything it needs is there, the button stays grey, and the line under it says what is still missing. [[pause]] The clone lives in your Google project. Every lecture after this speaks in it, and the status pill at the top changes to your voice.
+
+[[slide 8: Cheap first, expensive last]]
+
+This is the one idea I would most like you to keep. The work goes cheap first and expensive last, and every step exists to catch a mistake before the expensive one. Drafting the narration is one model call and a few seconds. Reading and editing it costs nothing, and it is the step that decides whether the video is any good. Hearing one line takes seconds. A draft render in a free voice checks the timing. Only the final render, in your own voice, costs money, and even then, about a dollar for an hour of lecture. [[pause]] So, iterate with the draft, and record once in your own voice.
+
+[[slide 9: Start a lecture]]
+
+On the Lecture tab you start from one of four cards. Open a lecture, to read, edit or re-record one you already made. New from a deck, where a model drafts the narration for you. New with my notes, when you have already written what you want to say. And Revise a lecture, when you have a new version of a deck that was already recorded. [[pause]] The slides always go in as a PDF. If you upload a PowerPoint file on a computer without LibreOffice, RealMe tells you straight away that the PowerPoint file cannot be used here, and asks for the PDF version instead.
+
+[[slide 10: Draft from a deck]]
+
+To draft from a deck, choose the PDF, then fill in two boxes. Course context: who the students are and where they are in the term. For example, second-year master's students, week four of fourteen, they know regression but not causal diagrams. And your teaching voice: how you talk. For example, dry and precise, worked examples over abstraction, I never read a bullet aloud. [[pause]] Those two sentences change the result more than any model setting. Pick how long the narration should be per slide, and press Draft narration. A first version arrives for every slide in seconds.
+
+[[slide 11: Read it. Fix it. Then render.]]
+
+This is the editor, and it is where your time is best spent. The slide list on the left takes you to any slide. Each slide shows its picture, its narration, its word count and an estimate of how long it will take to say. Cue words, separated by semicolons, are highlighted on the slide at the moment you say them, so students can see what you are talking about. And Hear first line plays the start of that slide in your voice, so you can check a pronunciation in seconds. [[pause]] Every edit here is free. Every word below this point costs money and minutes. So fix things here.
+
+[[slide 12: Making it read well]]
+
+A few habits make the narration read well. Write numbers the way you would say them. Acronyms are spelled out letter by letter by default, which is right most of the time. A term that is said as a word rather than spelled, such as the name of a survey, gets one entry in the pronunciation list on the Tools tab, and it is right in every lecture after that. Equations written in LaTeX are read aloud as mathematics, so x bar is x bar. [[pause]] And delivery markers, like pause, emphasis or slow, written in double square brackets, are instructions to the voice. They are never spoken and never appear in the captions.
+
+[[slide 13: Voice, timing and recording options]]
+
+Below the slides are the voice, timing and recording options. Speed of this voice is saved for each voice separately. You might make one draft voice fifteen percent faster and your own voice three percent slower, and that setting follows the voice everywhere. Between sentences sets the pauses. Before and after each slide set the silence at each slide change, three seconds by default. [[pause]] None of these records anything again. They re-time what is already recorded, so changing them is free. At the bottom is the render bar. Its Recording menu says in plain words which voice will speak: your voice, or a draft voice such as Amy or Ryan. If your own voice is not ready yet, it starts on a draft voice and says why. Beside it is what the render will cost, and the Render video button.
+
+[[slide 14: What a render gives you]]
+
+When you press Render, you get a video file, captions in two formats, and a chapter list with one chapter per slide, ready for a video platform. Render with a draft voice first if the words are not settled yet. A draft is saved separately and can never overwrite the real one. [[pause]] And renders are incremental. Every sentence that has already been spoken, with the same words and the same voice, is reused. So when you fix one slide and render again, only that slide is recorded, and you only pay for that slide. If a render stops partway, start it again, and it continues from where it stopped.
+
+[[slide 15: Revise a lecture]]
+
+Next term, the slides change. Choose Revise a lecture, pick the lecture, and give it the new PDF. RealMe compares the new deck with the old one, slide by slide. Narration follows its slide, and every slide is marked as new, edited, moved or unchanged. You write narration only for what is new, check what was edited, and render. [[pause]] Because recorded sentences are reused, a revised lecture usually costs a few cents, not a whole new recording.
+
+[[slide 16: Tools: insert, split, join]]
+
+The Tools tab holds the rest. Insert a video plays a clip between two slides. It might be an animated explainer, a screen recording or a short demonstration. The lecture remembers it, so every later render puts it back in its place, and its captions and chapters follow it. Split a video cuts a long lecture into parts at exact slide boundaries. Join videos does the reverse, and puts sections from different lectures together. [[pause]] Pronunciations, the lexicon I mentioned, is here too.
+
+[[slide 17: Read aloud, and podcasts]]
+
+Two more tabs use the same voice. Narrate Text reads anything aloud. Paste a paragraph or choose a text, Markdown or Word file, and it comes back as audio with captions. It is also the quickest way to test a pronunciation. Podcast and Debate turns a topic or a paper into a conversation between your voice and a second speaker. Choose an academic debate, a Socratic dialogue or an expert interview, and how many turns. [[pause]] As with lectures, you read the script before anything is spoken.
+
+[[slide 18: Cost, privacy and consent]]
+
+A word on cost and privacy. The text of your slides goes to Google once, to draft the narration. When you render in your cloned voice, the narration goes to Google to be spoken, at about a dollar for an hour of lecture. Use a paid project, for the reason I gave earlier. If you would rather pay nothing, the free local clone, Qwen 3 CPP, records at no cost, at about the speed of speech on a desktop computer, and then even the narration stays on your computer. And the draft voices cost nothing at all. Everything else, your recordings, projects and videos, stays in your own data folder. [[pause]] And be open with your students. Twin Setup holds a short disclosure sentence, saying that the lecture was narrated with a synthetic voice of the instructor, from a script the instructor wrote and approved. Say it at the start of every lecture.
+
+[[slide 19: Where to go from here]]
+
+That is the whole tour. To recap: install with three double-clicks, record your voice once, draft, read and fix, hear a line, and then render. The Help tab inside the Studio covers every screen, and the file called Start Here, in the RealMe folder, is the full guide. Your own material lives in the RealMe Studio folder in your user folder, and updates never touch it. If you get stuck, just ask me. [[pause]] Start with a short deck, five or six slides, and see how it sounds. Thank you for watching.

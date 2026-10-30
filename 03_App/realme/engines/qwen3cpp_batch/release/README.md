@@ -1,0 +1,171 @@
+# realme-qwen3-tts.cpp
+
+A revised [qwen3-tts.cpp](https://github.com/predict-woo/qwen3-tts.cpp) — C++
+inference for [Qwen3-TTS](https://huggingface.co/Qwen/Qwen3-TTS-12Hz-0.6B-Base)
+voice cloning on the [GGML](https://github.com/ggml-org/ggml) tensor library —
+made **3.5 to 3.7 times as fast on an ordinary CPU**, with the same sound.
+
+It is the local voice engine of [RealMe Studio](#about-realme-studio), which
+turns slide decks into narrated lecture videos in the lecturer's own cloned
+voice, and is released here on its own so anyone can use it.
+
+**All credit for the engine itself goes to predict-woo**, who wrote
+qwen3-tts.cpp, to the **ggml authors**, and to the **Qwen team** at Alibaba for
+the model. This repository adds a set of changes on top of upstream commit
+`b3ba14077cf1` (GGML `3af5f5760e19`); every one is listed in
+[CHANGES.md](CHANGES.md) with how it was checked and the switch that turns it
+off. Upstream's own README is kept as [README_UPSTREAM.md](README_UPSTREAM.md).
+
+## What changed, and what it bought
+
+Measured on a small PC with a 6-core, 12-thread laptop processor (Intel i7-10710U, 15 W; 64 GB DDR4-2667; AVX2 build, no GPU),
+cloning a real voice, as **seconds of work per second of speech** (lower is faster; 1.0 is
+real time):
+
+| | 1 sentence at a time | 4 per pass | 8 per pass |
+|---|---|---|---|
+| upstream | 3.79 | — | — |
+| + exact fixes (threads, `ffn_down`, broadcast) | 2.82 | — | — |
+| + one-pass snake | 2.59 | — | — |
+| + several sentences per pass | 2.54 | 1.66 | 1.51 |
+| + 8-bit model | 1.77 | 1.35 | 1.30 |
+| + 32-bit vocoder (everything) | **1.49** | **1.07** | **1.02** |
+
+An hour of speech now takes about an hour of work on that 15-watt laptop
+processor, against almost four. In RealMe Studio, a 51-slide, 52-minute
+lecture (564 sentences) recorded in 56 minutes on it, with the 8-bit model,
+4 sentences per pass and the 32-bit vocoder.
+
+**Other hardware.** The transformers' steps mostly wait on memory, so faster
+memory (DDR5, more channels) speeds them up; the vocoder is arithmetic, so
+more and faster cores speed that up. A desktop processor that holds a high
+clock under load should do better than this 15-watt chip, a smaller laptop
+worse. GPU builds have not been measured; the batch and vocoder changes are
+CPU-only and switch themselves off there, so whether a GPU is faster for this
+model on a given machine is for measuring.
+
+| Change | Sound | Default |
+|---|---|---|
+| **Thread count applied.** Upstream stores `n_threads` and never passes it to the CPU backend, so everything ran on 4 threads. | identical | on (`QWEN3_TTS_THREADS=N` sets it) |
+| **`ffn_down` converted to F32 once at load**, not in every step's graph (about 1,240 conversions per second of speech). | identical | on (`QWEN3_TTS_FFN_F32=0` off) |
+| **No per-channel copies in the vocoder**: multiplies broadcast instead of first copying a value out to the signal's length. | identical | on (`QWEN3_TTS_BROADCAST=0` off) |
+| **Several sentences per pass**: each keeps its own caches, sampling and stopping; the weights are read once for all of them. New C entry point. | identical with sampling off | API: `qwen3_tts_synthesize_batch_with_embedding` |
+| **8-bit (Q8_0) copy of the model**, written by the engine's own library from the 16-bit GGUF, no PyTorch. | a different model; not told apart in listening | API: `qwen3_tts_realme_quantize_q8`; `tools/quantize_q8.py` |
+| **One-pass snake activation** in the vocoder, with an AVX2 sine. | `exact`: identical; `1`: about 70 dB below the speech | `QWEN3_TTS_FAST_SNAKE=1` (or `exact`) |
+| **32-bit vocoder**: convolutions unrolled and multiplied in F32 instead of rounding the signal to F16 at every layer; transposed convolutions as one matrix multiply plus an overlap-add; these products only through GGML's tinyBLAS. | about 50–60 dB below the speech; not told apart in listening | `QWEN3_TTS_VOCODER_F32=1` |
+| **Unicode paths on Windows**: model and audio files opened with `ggml_fopen`. | identical | on |
+
+Every change that gives identical sound was checked sample for sample against
+an unmodified build; the batch path against one sentence at a time; all of it
+under AddressSanitizer and UndefinedBehaviorSanitizer. GPU builds (CUDA,
+Vulkan, Metal) have not been tested: there the batch, broadcast, snake and
+vocoder changes switch themselves off.
+
+### The one change to GGML
+
+GGML's tinyBLAS matrix multiply (`GGML_LLAMAFILE`) is used **only** for the
+products this engine names `realme_sgemm` — the vocoder's convolutions — by a
+gate added to `ggml/src/ggml-cpu/ggml-cpu.c`. Every other product in the
+engine is computed exactly as upstream GGML computes it, so the two
+transformers' output does not change. Build GGML with `-DGGML_LLAMAFILE=ON`
+only with this gated file; `QWEN3_TTS_SGEMM=0` turns tinyBLAS off at run time.
+
+## Build
+
+Needs CMake 3.14+, Ninja (or make) and a C++17 compiler. On Windows: Visual
+Studio 2022 Build Tools with **Desktop development with C++** (it brings
+CMake and Ninja); run the build from an **x64 Native Tools Command Prompt**.
+
+```bat
+build.bat                 :: Windows: GGML, then the engine, for AVX2 CPUs
+```
+
+```bash
+./build.sh                # Linux / macOS
+```
+
+Both do the same two steps, which you can also run by hand:
+
+```bash
+cmake -S ggml -B ggml/build -G Ninja -DCMAKE_BUILD_TYPE=Release \
+      -DGGML_NATIVE=OFF -DGGML_AVX=ON -DGGML_AVX2=ON -DGGML_FMA=ON -DGGML_F16C=ON \
+      -DGGML_LLAMAFILE=ON -DGGML_BUILD_TESTS=OFF -DGGML_BUILD_EXAMPLES=OFF
+cmake --build ggml/build
+cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release \
+      -DCMAKE_WINDOWS_EXPORT_ALL_SYMBOLS=ON
+cmake --build build
+```
+
+`-DGGML_NATIVE=ON` instead of the five CPU flags builds for the machine you
+are on (faster there, may not run elsewhere). On Windows, copy the GGML DLLs
+from `ggml\build\bin` next to `build\qwen3-tts-cli.exe` and `qwen3tts.dll`
+(`build.bat` does). For a GPU, add `-DGGML_CUDA=ON` or `-DGGML_VULKAN=ON` to
+the GGML step, as upstream describes.
+
+## Models
+
+As upstream: `scripts/setup_pipeline_models.py` downloads Qwen3-TTS and
+writes `models/qwen3-tts-0.6b-f16.gguf` and
+`models/qwen3-tts-tokenizer-f16.gguf` (see README_UPSTREAM.md, *Model
+Setup*). Then, for the faster 8-bit model:
+
+```bash
+python tools/quantize_q8.py build/libqwen3tts.so models models_q8     # Linux
+python tools\quantize_q8.py build\qwen3tts.dll models models_q8       # Windows
+```
+
+It writes `models_q8/` with the 8-bit transformer and the vocoder file beside
+it. Point `-m` at `models_q8` to use it. (The engine also picks up an 8-bit
+file placed in `models/` by itself.)
+
+## Use
+
+The CLI is upstream's. The fast settings are switches, read when the engine
+starts:
+
+```bat
+set QWEN3_TTS_THREADS=6
+set QWEN3_TTS_FAST_SNAKE=1
+set QWEN3_TTS_VOCODER_F32=1
+build\qwen3-tts-cli -m models_q8 -r me.wav -t "Hello." -o hello.wav
+```
+
+| Switch | Effect |
+|---|---|
+| `QWEN3_TTS_THREADS=N` | CPU threads (one per physical core, up to about 6, is best for this model) |
+| `QWEN3_TTS_FAST_SNAKE=1` / `exact` | one-pass snake with RealMe's sine / with the C library's (identical) |
+| `QWEN3_TTS_VOCODER_F32=1` | the 32-bit vocoder |
+| `QWEN3_TTS_VOCODER_F32_MAX_FRAMES=N` | longest sentence for it, in codes at 12.5 a second (default 250, 20 s); longer ones use the original vocoder. It needs about 1.8 times the original's working memory (20 s: 4.6 GB against 2.5) |
+| `QWEN3_TTS_SGEMM=0` | GGML's own multiply for the vocoder too |
+| `QWEN3_TTS_FFN_F32=0`, `QWEN3_TTS_BROADCAST=0` | the exact fixes off, for comparison |
+| `QWEN3_TTS_LOW_MEM=1` | upstream's low-memory mode; the copies and batches stay off in it |
+
+Several sentences per pass are a C API call (`src/realme_batch.inc`):
+
+```c
+int32_t qwen3_tts_synthesize_batch_with_embedding(
+    Qwen3Tts * tts, const char ** texts, int32_t n,
+    const float * embedding, int32_t embedding_size,
+    const Qwen3TtsParams * params, Qwen3TtsAudio ** out);
+/* n on success (free each out[i] with qwen3_tts_free_audio), -1 on failure */
+```
+
+Four to eight per pass is the useful range on such a PC; each sentence in a
+pass needs about 0.5 GB more for its caches.
+
+## Licence and credit
+
+MIT, as upstream: see [LICENSE](LICENSE), which keeps predict-woo's copyright
+and adds one for the changes. GGML is MIT (`ggml/LICENSE`, the ggml authors).
+The Qwen3-TTS weights are not included and carry their own licence. See
+[NOTICE.md](NOTICE.md).
+
+The changes that give identical sound (threads, `ffn_down`, broadcast) are
+general fixes that could equally be offered upstream.
+
+## About RealMe Studio
+
+RealMe Studio, by Xinhua Yu, turns a slide deck into a narrated lecture video
+in the lecturer's own voice: it drafts the narration, records it in a cloned
+voice — hosted (Gemini) or entirely on the lecturer's own computer with this
+engine — and assembles the video, captions and chapters.

@@ -1,0 +1,11 @@
+# Secrets. Never commit these.
+.env
+*.env
+!example.env
+
+__pycache__/
+*.pyc
+*.egg-info/
+_templates/
+math_cache.json
+preview.wav

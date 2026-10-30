@@ -1,0 +1,640 @@
+#!/usr/bin/env python3
+"""
+Several sentences in one pass of the local clone: the source patch, the
+adapter's batch call, and the measurement's verdict.
+
+The C++ itself is checked where it is built (`realme bench-batch` compares a
+pass against one-at-a-time, sample for sample, on the real model). Here a
+stand-in library plays the engine, so what is checked is everything around
+it: the arguments, where each sentence lands, every buffer freed, sentences
+in different languages kept to separate passes, and a failed pass reported
+rather than half-written.
+"""
+from __future__ import annotations
+import ctypes, math, os, struct, sys, tempfile, wave
+from pathlib import Path
+
+HERE = Path(__file__).resolve().parent
+sys.path.insert(0, str(HERE))
+
+_ISO = tempfile.mkdtemp(prefix="t_engine_batch_")
+os.environ["REALME_HOME"] = str(Path(_ISO) / "home")
+os.environ["HOME"] = _ISO
+os.environ["USERPROFILE"] = _ISO
+
+from t_util import check, summary          # noqa: E402
+
+
+def tone(path: Path, seconds: float, rate=24000):
+    n = int(rate * seconds)
+    with wave.open(str(path), "wb") as w:
+        w.setnchannels(1); w.setsampwidth(2); w.setframerate(rate)
+        w.writeframes(b"".join(struct.pack("<h", int(3000 * math.sin(
+            2 * math.pi * 180 * i / rate))) for i in range(n)))
+
+
+class FakeLib:
+    """The engine's C API, as far as a batch needs it."""
+    def __init__(self, fail=False):
+        from realme.adapters.tts_qwen3_dll import BATCH_FN
+        self.fail, self.calls, self.freed, self.keep = fail, [], 0, []
+        setattr(self, BATCH_FN, self._batch)
+
+    def qwen3_tts_is_loaded(self, h):
+        return 1
+
+    def qwen3_tts_default_params(self, p):
+        pass
+
+    def qwen3_tts_get_error(self, h):
+        return b"stand-in failure"
+
+    def qwen3_tts_free_audio(self, a):
+        self.freed += 1
+
+    def _batch(self, handle, texts, k, buf, n, params, out):
+        from realme.adapters.tts_qwen3_dll import Audio
+        p = getattr(params, "_obj", None)
+        said = [texts[i].decode() for i in range(k)]
+        self.calls.append({"texts": said, "n": n,
+                           "lang": getattr(p, "language_id", None)})
+        if self.fail:
+            return -1
+        for i, t in enumerate(said):
+            m = 2400 * (1 + len(t.split()))
+            arr = (ctypes.c_float * m)(*[0.1 * math.sin(j / 7) for j in range(m)])
+            a = Audio(ctypes.cast(arr, ctypes.POINTER(ctypes.c_float)), m, 24000)
+            self.keep += [arr, a]
+            out[i] = ctypes.pointer(a)
+        return k
+
+
+def engine(lib):
+    from realme.adapters.tts_qwen3_dll import Qwen3DllTTS
+    ref = Path(_ISO) / "ref.wav"
+    if not ref.is_file():
+        tone(ref, 1.0)
+    q = Qwen3DllTTS(home=Path(_ISO) / "cpp", reference_wav=ref)
+    q._lib, q._handle = lib, 1
+    q.preflight = lambda: None          # the models are not here; the library is
+    emb = (ctypes.c_float * 4096)()
+    from realme.core.media import ensure_reference_wav
+    q._embeddings[str(ensure_reference_wav(ref).resolve())] = (emb, 1024)
+    return q
+
+
+def main() -> int:
+    out = Path(_ISO) / "out"
+    out.mkdir()
+
+    print("the adapter's batch call")
+    lib = FakeLib()
+    q = engine(lib)
+    items = [(f"Sentence number {i} has some words.", out / f"s{i}.wav", 1.0, None)
+             for i in range(3)]
+    got = q.synthesize_batch(items)
+    check(len(lib.calls) == 1 and len(lib.calls[0]["texts"]) == 3
+          and lib.calls[0]["n"] == 1024, "three sentences go in one pass",
+          lib.calls)
+    from realme.core.media import duration_of
+    check(got == [o for _, o, _, _ in items]
+          and all(o.is_file() and duration_of(o) > 0.2 for o in got),
+          "each lands where it was asked to")
+    with wave.open(str(got[0])) as w:
+        n0 = w.getnframes()
+    check(n0 == 2400 * 7, "with its own samples", n0)
+    check(lib.freed == 3, "and every buffer the engine made is freed", lib.freed)
+
+    print("\nlanguages")
+    lib = FakeLib()
+    q = engine(lib)
+    mixed = [("One in English.", out / "e1.wav", 1.0, None),
+             ("Une en français.", out / "f1.wav", 1.0, "fr"),
+             ("Two in English.", out / "e2.wav", 1.0, None),
+             ("Deux en français.", out / "f2.wav", 1.0, "fr")]
+    got = q.synthesize_batch(mixed)
+    check(len(lib.calls) == 2 and sorted(len(c["texts"]) for c in lib.calls) == [2, 2]
+          and all(len({t.startswith(("One", "Two")) for t in c["texts"]}) == 1
+                  for c in lib.calls),
+          "different languages go in separate passes", lib.calls)
+    check(got == [o for _, o, _, _ in mixed], "and come back in the order asked")
+
+    print("\na failed pass")
+    lib = FakeLib(fail=True)
+    q = engine(lib)
+    try:
+        q.synthesize_batch(items)
+        said = ""
+    except Exception as e:
+        said = str(e)
+    check("stand-in failure" in said and lib.freed == 0,
+          "is reported with the engine's reason, nothing to free", said)
+
+    print("\nan engine without batches")
+    lib = FakeLib()
+    from realme.adapters.tts_qwen3_dll import BATCH_FN
+    delattr(lib, BATCH_FN)
+    q = engine(lib)
+    one = []
+    q.synthesize = lambda t, o, voice=None, pace=1.0, language=None: (
+        one.append(t), tone(Path(o), 0.3), Path(o))[-1]
+    got = q.synthesize_batch(items)
+    check(len(one) == 3 and got == [o for _, o, _, _ in items],
+          "records them one at a time instead")
+    (q.home).mkdir(parents=True, exist_ok=True)
+    check(not q.batch_built(), "and says it was not built with batches")
+    (q.home / "build_info.json").write_text('{"batch": true}', encoding="utf-8")
+    check(q.batch_built(), "one that was, says so, without loading the model")
+    (q.home / "build_info.json").write_text('{"batch": true, "gpu": "cuda"}',
+                                            encoding="utf-8")
+    check(not q.batch_built(), "a GPU build records one at a time (batches "
+          "were checked on the CPU)")
+
+    print("\nthe 8-bit model")
+    from realme.adapters.base import AdapterUnavailable
+    from realme.engines import cpp as C
+    q = engine(FakeLib())
+    f16_fp = q.voice_fingerprint()
+    os.environ["REALME_QWEN3CPP_QUANT"] = "q8_0"
+    check(q.voice_fingerprint() == f16_fp,
+          "an engine keeps the model it was made with, whatever is chosen later")
+    q = engine(FakeLib())
+    try:
+        q._models_dir()
+        said = ""
+    except AdapterUnavailable as e:
+        said = str(e)
+    check("cpp-action quantize" in said and "REALME_QWEN3CPP_QUANT f16" in said,
+          "asked for before it is made, it says how to make it or go back", said)
+    d = q.home / C.Q8_DIR
+    d.mkdir(parents=True, exist_ok=True)
+    (d / C.Q8_FILE).write_bytes(b"x")
+    (d / C.TOKENIZER_FILE).write_bytes(b"x")
+    check(q._models_dir() == d, "once made, it is the folder the engine opens")
+    check(q.voice_fingerprint() == f16_fp + ":q8_0",
+          "its takes are kept apart from the 16-bit model's")
+    os.environ.pop("REALME_QWEN3CPP_QUANT")
+    q = engine(FakeLib())
+    check(q.voice_fingerprint() == f16_fp + ":q8_0",
+          "with no setting and the 8-bit model made, a new engine uses it")
+    os.environ["REALME_QWEN3CPP_QUANT"] = "f16"
+    q = engine(FakeLib())
+    check(q.voice_fingerprint() == f16_fp, "and choosing 16-bit finds its takes again")
+    os.environ.pop("REALME_QWEN3CPP_QUANT")
+
+    print("\nthe 8-bit model is made without a separate step")
+    import shutil as _sh
+    import time as _t
+    q = engine(FakeLib())
+    m = q.home / "models"
+    m.mkdir(parents=True, exist_ok=True)
+    (m / C.F16_FILE).write_bytes(b"f16")
+    (m / C.TOKENIZER_FILE).write_bytes(b"tok")
+    d = q.home / C.Q8_DIR
+    _sh.rmtree(d, ignore_errors=True)          # the copy made above
+    calls = []
+    real_make = C.make_q8
+
+    def fake_make(home=None, library=None, log=print, force=False):
+        calls.append(Path(home))
+        out = Path(home) / C.Q8_DIR
+        out.mkdir(parents=True, exist_ok=True)
+        (out / C.Q8_FILE).write_bytes(b"q8")
+        (out / C.TOKENIZER_FILE).write_bytes(b"tok")
+        return out
+
+    C.make_q8 = fake_make
+    os.environ["REALME_QWEN3CPP_QUANT"] = "q8_0"
+    try:
+        try:
+            q._models_dir()
+        except AdapterUnavailable:
+            pass
+        check(not calls, "a status check never makes it (a minute of work)")
+        q.quant = "q8_0"
+        try:
+            q.check()
+            ok = True
+        except AdapterUnavailable as e:
+            ok = str(e)
+        check(ok is True and not calls,
+              "and says the engine is ready: the 8-bit model is made at the "
+              "first recording", ok)
+        got = q._models_dir(make=True)
+        check(got == d and calls == [q.home],
+              "recording that asks for it makes it, once, then uses it", (got, d, calls))
+        _sh.rmtree(d)
+
+        def broken(*a, **k):
+            raise RuntimeError("This engine was built before the 8-bit copier.")
+        C.make_q8 = broken
+        try:
+            q._models_dir(make=True)
+            said = ""
+        except AdapterUnavailable as e:
+            said = str(e)
+        check("Making it failed: This engine was built before" in said
+              and "REALME_QWEN3CPP_QUANT f16" in said,
+              "and if it cannot, says why and how to go back", said)
+    finally:
+        os.environ.pop("REALME_QWEN3CPP_QUANT", None)
+
+    logs = []
+    C.make_q8 = fake_make
+    calls.clear()
+    try:
+        bare = Path(_ISO) / "bare"
+        bare.mkdir()
+        check(C.ensure_q8(bare, log=logs.append) is None and not calls,
+              "after a build: no 16-bit model, nothing to make")
+        check(C.ensure_q8(q.home, log=logs.append) == d and len(calls) == 1,
+              "a build or rebuild makes it beside the 16-bit model")
+        check(C.ensure_q8(q.home, log=logs.append) == d and len(calls) == 1,
+              "and leaves one that is there alone")
+        old = _t.time() - 3600
+        os.utime(d / C.Q8_FILE, (old, old))
+        C.ensure_q8(q.home, log=logs.append)
+        check(len(calls) == 2, "but makes it again from a newer 16-bit model")
+        real_du = _sh.disk_usage
+        _sh.disk_usage = lambda p: type("U", (), {"free": 1e9})()
+        try:
+            _sh.rmtree(d)
+            check(C.ensure_q8(q.home, log=logs.append) is None and len(calls) == 2
+                  and "cpp-action quantize" in logs[-1],
+                  "a short disk skips it and says how to make it later", logs[-1])
+        finally:
+            _sh.disk_usage = real_du
+        C.make_q8 = broken
+        check(C.ensure_q8(q.home, log=logs.append) is None
+              and "16-bit model works as before" in logs[-1],
+              "an engine without the copier does not fail the build", logs[-1])
+    finally:
+        C.make_q8 = real_make
+
+    print("\nrebuilding everything")
+    rh = Path(_ISO) / "rall"
+    (rh / "ggml" / "src").mkdir(parents=True)
+    (rh / "ggml" / "src" / "old.c").write_text("old", encoding="utf-8")
+    real_rebuild, real_tb = C.rebuild, None
+    from realme.engines import cpp_timing as CT
+    real_tb = CT.build
+    seen = {}
+    def fail_rebuild(home, log=print):
+        seen["ggml_aside"] = not (Path(home) / "ggml").exists()
+        raise RuntimeError("compiler said no")
+    C.rebuild = fail_rebuild
+    try:
+        try:
+            C.rebuild_all(rh, log=lambda *_: None)
+            raised = False
+        except RuntimeError:
+            raised = True
+        check(raised and seen.get("ggml_aside")
+              and (rh / "ggml" / "src" / "old.c").is_file()
+              and not (rh / "ggml.previous").exists(),
+              "GGML is staged afresh, and put back as it was when the build fails")
+        built = []
+        C.rebuild = lambda home, log=print: built.append("engine") or Path(home) / "cli"
+        CT.build = lambda home=None, log=print, force=False: built.append(("timing", force))
+        C.rebuild_all(rh, log=lambda *_: None)
+        check(built == ["engine", ("timing", True)] and not (rh / "ggml").exists()
+              and not (rh / "ggml.previous").exists(),
+              "then the engine and the checks' stopwatch copy are both built")
+    finally:
+        C.rebuild, CT.build = real_rebuild, real_tb
+    bat = (HERE.parent / "00_Windows" / "_Rebuild_Voice_Engine.bat").read_text(encoding="utf-8")
+    check("--cpp-action !MODE!" in bat and 'set "MODE=rebuild-all"' in bat,
+          "the rebuild launcher offers rebuilding everything")
+
+    print("\nthe settings in Twin Setup")
+    from fastapi.testclient import TestClient
+    import realme.app.server as S
+    from realme.core import env as E
+    from realme.adapters.tts_qwen3_dll import QUANT_ENV, quant_setting
+    from realme.pipeline.prerecord import BATCH_ENV
+    os.environ["REALME_QWEN3_CPP"] = str(q.home)
+    (q.home / "build").mkdir(parents=True, exist_ok=True)
+    from realme.adapters.tts_qwen3_dll import library_path
+    library_path(q.home).write_bytes(b"lib")
+    (q.home / "build_info.json").write_text('{"batch": true, "gpu": "off"}',
+                                            encoding="utf-8")
+    for k in (QUANT_ENV, BATCH_ENV):
+        os.environ.pop(k, None)
+    c = TestClient(S.app, base_url="http://127.0.0.1")
+    r = c.get("/api/local-clone").json()
+    check(r["installed"] and r["quant"] == "f16" and r["batch"] == "auto"
+          and r["batches_built"] and r["defaults"] == {"f16": 8, "q8_0": 4},
+          "an installed clone: 16-bit, automatic passes, the defaults shown", r)
+    forgot = []
+    real_forget = S.forget_tts
+    S.forget_tts = lambda: forgot.append(1)
+    try:
+        r = c.post("/api/local-clone", json={"quant": "q8_0"}).json()
+        envf = (E.data_home() / ".env").read_text(encoding="utf-8")
+        check(r["quant"] == "q8_0" and quant_setting() == "q8_0"
+              and f"{QUANT_ENV}=q8_0" in envf and forgot,
+              "choosing 8-bit saves it where `realme key` does, in force at once, "
+              "and drops the loaded engine", envf)
+        r = c.post("/api/local-clone", json={"batch": "2"}).json()
+        check(r["batch"] == 2 and os.environ.get(BATCH_ENV) == "2",
+              "a pass size is saved and in force")
+        r = c.post("/api/local-clone", json={"batch": "auto", "quant": "f16"}).json()
+        envf = (E.data_home() / ".env").read_text(encoding="utf-8")
+        check(r["batch"] == "auto" and r["quant"] == "f16"
+              and f"{QUANT_ENV}=f16" in envf and BATCH_ENV not in envf
+              and BATCH_ENV not in os.environ,
+              "automatic takes the pass size out; 16-bit is saved, since the "
+              "8-bit model is the default where it is made", envf)
+        E.remove_key(QUANT_ENV)
+        check(quant_setting() == "f16", "with no setting and no 8-bit model: 16-bit")
+        from realme.engines import cpp as C2
+        qd = q.home / C2.Q8_DIR
+        qd.mkdir(parents=True, exist_ok=True)
+        (qd / C2.Q8_FILE).write_bytes(b"q8")
+        (qd / C2.TOKENIZER_FILE).write_bytes(b"tok")
+        r = c.get("/api/local-clone").json()
+        check(quant_setting() == "q8_0" and r["quant"] == "q8_0" and r["q8_ready"],
+              "with no setting and the 8-bit model made: 8-bit, the default", r)
+        import shutil as _sh2
+        _sh2.rmtree(qd)
+        check(c.post("/api/local-clone", json={"batch": 16}).status_code == 400
+              and c.post("/api/local-clone", json={"quant": "q4"}).status_code == 400,
+              "nonsense is refused")
+        import realme.adapters.tts_qwen3_dll as QD
+        for k in QD.VOCODER_DEFAULTS:
+            os.environ.pop(k, None)
+        QD.DEFAULTED.clear()
+        os.environ["QWEN3_TTS_FAST_SNAKE"] = "exact"    # the user's own choice
+        QD.apply_vocoder_defaults()
+        check(os.environ["QWEN3_TTS_FAST_SNAKE"] == "exact"
+              and os.environ["QWEN3_TTS_VOCODER_F32"] == "1"
+              and QD.DEFAULTED - {QD.FRAMES_ENV} == {"QWEN3_TTS_VOCODER_F32"}
+              and "QWEN3_TTS_VOCODER_F32" in E._OURS,
+              "the faster vocoder is on by default, as RealMe's own value (a "
+              "later read of the settings file wins); a value already set wins")
+        import realme.parbench as PB
+        real_total = PB.total_memory_gb
+        try:
+            for gb, want in ((63.9, "375"), (31.8, "375"), (15.8, "250"),
+                             (8.0, "125"), (None, "125")):
+                os.environ.pop(QD.FRAMES_ENV, None)
+                QD.DEFAULTED.discard(QD.FRAMES_ENV)
+                PB.total_memory_gb = lambda gb=gb: gb
+                QD.apply_vocoder_defaults()
+                check(os.environ.get(QD.FRAMES_ENV) == want,
+                      f"{gb} GB of memory: sentences up to "
+                      f"{int(want) / 12.5:.0f} seconds in the 32-bit vocoder",
+                      os.environ.get(QD.FRAMES_ENV))
+            os.environ[QD.FRAMES_ENV] = "100"
+            PB.total_memory_gb = lambda: 64.0
+            QD.apply_vocoder_defaults()
+            check(os.environ[QD.FRAMES_ENV] == "100", "a limit set by hand wins")
+        finally:
+            PB.total_memory_gb = real_total
+            os.environ.pop(QD.FRAMES_ENV, None)
+        os.environ.pop("QWEN3_TTS_FAST_SNAKE")
+        QD.apply_vocoder_defaults()
+        r = c.get("/api/local-clone").json()
+        check(r["vocoder"] == "fast" and not r["shell"],
+              "Twin Setup shows it as the default, not as set outside RealMe", r)
+        r = c.post("/api/local-clone", json={"vocoder": "original"}).json()
+        envf = (E.data_home() / ".env").read_text(encoding="utf-8")
+        check(r["vocoder"] == "original" and "QWEN3_TTS_FAST_SNAKE=0" in envf
+              and "QWEN3_TTS_VOCODER_F32=0" in envf
+              and os.environ["QWEN3_TTS_VOCODER_F32"] == "0",
+              "the original vocoder is saved where `realme key` saves", envf)
+        r = c.post("/api/local-clone", json={"vocoder": "fast"}).json()
+        envf = (E.data_home() / ".env").read_text(encoding="utf-8")
+        check(r["vocoder"] == "fast" and "QWEN3_TTS" not in envf
+              and os.environ["QWEN3_TTS_VOCODER_F32"] == "1",
+              "and back to the default takes the settings out again", envf)
+        check(c.post("/api/local-clone", json={"vocoder": "turbo"}).status_code == 400,
+              "an unknown vocoder is refused")
+        os.environ[BATCH_ENV] = "1"          # set in the shell, not by RealMe
+        r = c.get("/api/local-clone").json()
+        check(BATCH_ENV in r["shell"]
+              and c.post("/api/local-clone", json={"batch": "4"}).status_code == 409,
+              "a shell variable is reported and not silently overridden")
+        os.environ.pop(BATCH_ENV)
+    finally:
+        S.forget_tts = real_forget
+        os.environ.pop("REALME_QWEN3_CPP", None)
+    ui = (HERE / "realme/app/ui.html").read_text(encoding="utf-8")
+    check('id="lc-voc"' in ui and "vocoder: $('lc-voc').value" in ui,
+          "the vocoder choice is in Twin Setup")
+    check('id="lc-quant"' in ui and 'id="lc-batch"' in ui
+          and "loadLocalClone();" in ui and "/api/local-clone" in ui,
+          "Twin Setup shows both, and loads them with the page")
+
+    print("\nthe source patch")
+    from realme.engines import cpp
+    tree = Path(_ISO) / "eng"
+    (tree / "src").mkdir(parents=True)
+    real = cpp.source_dir() / "src"
+    names = ("tts_transformer.h", "qwen3_tts.h", "qwen3tts_c_api.cpp")
+    if all((real / n).is_file() for n in names):
+        for n in names:
+            (tree / "src" / n).write_text((real / n).read_text(encoding="utf-8"),
+                                          encoding="utf-8")
+    else:
+        (tree / "src" / names[0]).write_text("class T {\n" + cpp.BATCH_TT_ANCHOR + "};\n",
+                                             encoding="utf-8")
+        (tree / "src" / names[1]).write_text("class Q {\n" + cpp.BATCH_QT_ANCHOR + "x);\n};\n",
+                                             encoding="utf-8")
+        (tree / "src" / names[2]).write_text('extern "C" {\n' + cpp.BATCH_API_ANCHOR,
+                                             encoding="utf-8")
+    check(cpp.apply_batch_patch(tree), "the batch entry point is added")
+    th = (tree / "src" / names[0]).read_text(encoding="utf-8")
+    qh = (tree / "src" / names[1]).read_text(encoding="utf-8")
+    ca = (tree / "src" / names[2]).read_text(encoding="utf-8")
+    check("friend struct realme_batch;" in th and "friend struct realme_batch;" in qh
+          and ca.rstrip().endswith('#include "realme_batch.inc"')
+          and (tree / "src" / cpp.BATCH_FILE).is_file(),
+          "the classes befriend it and the C API includes it")
+    check(not cpp.apply_batch_patch(tree), "patching twice changes nothing")
+    check(cpp.apply_quant_patch(tree) and not cpp.apply_quant_patch(tree)
+          and '#include "realme_quant.inc"' in
+          (tree / "src" / names[2]).read_text(encoding="utf-8")
+          and "qwen3_tts_realme_quantize_q8" in
+          (tree / "src" / cpp.QUANT_MARK).read_text(encoding="utf-8"),
+          "the 8-bit copier is added to the C API, once")
+    inc = (tree / "src" / cpp.BATCH_FILE).read_text(encoding="utf-8")
+    check(cpp.BATCH_FILE in inc and "qwen3_tts_synthesize_batch_with_embedding" in inc
+          and BATCH_FN in inc, "and exports the function the adapter calls")
+    bad = Path(_ISO) / "bad"
+    (bad / "src").mkdir(parents=True)
+    for n in names:
+        (bad / "src" / n).write_text("changed upstream\n", encoding="utf-8")
+    try:
+        cpp.apply_batch_patch(bad)
+        refused = False
+    except RuntimeError:
+        refused = True
+    check(refused, "changed sources are refused, not half-patched")
+
+    print("\nthe 32-bit vocoder and GGML's tinyBLAS, for it alone")
+    check("apply_vocoder_patch" in cpp.PATCHES
+          and cpp.PATCHES.index("apply_vocoder_patch") > cpp.PATCHES.index("apply_snake_patch"),
+          "every build applies the vocoder patch, after the snake's")
+    vinc = cpp.vocoder_source().read_text(encoding="utf-8")
+    check("v && v[0] == '1'" in vinc and "QWEN3_TTS_LOW_MEM" in vinc
+          and vinc.count('ggml_set_name(r, "realme_sgemm")') == 1
+          and vinc.count('ggml_set_name(R, "realme_sgemm")') == 1
+          and "ggml_backend_is_cpu(backend)" in vinc,
+          "it is off unless switched on, off in low-memory mode, CPU only, and "
+          "names exactly its two multiplies for tinyBLAS")
+    g = Path(_ISO) / "ggml"
+    (g / "src" / "ggml-cpu").mkdir(parents=True)
+    gc = g / "src" / "ggml-cpu" / "ggml-cpu.c"
+    body = ("#include <string.h>\n" + cpp.SGEMM_INCLUDE_ANCHOR + "void mm() {\n"
+            + "\n".join(a for a, _ in cpp.SGEMM_EDITS[1:]) + "\n}\n"
+            + "    if (src1->type != vec_dot_type) {\n        char * wdata;\n")
+    gc.write_text(body, encoding="utf-8")
+    check(cpp.apply_sgemm_patch(g), "GGML's tinyBLAS is gated")
+    t = gc.read_text(encoding="utf-8")
+    check(t.count("realme_sgemm(dst)") == 2 and "static bool realme_sgemm" in t
+          and 'strncmp(dst->name, "realme_sgemm", 12)' in t and "QWEN3_TTS_SGEMM" in t
+          and "    if (src1->type != vec_dot_type) {\n        char * wdata" in t,
+          "both of its calls ask the name first; the ordinary conversion is untouched")
+    check(not cpp.apply_sgemm_patch(g), "gating twice changes nothing")
+    gc.write_text("changed upstream\n", encoding="utf-8")
+    try:
+        cpp.apply_sgemm_patch(g)
+        refused = False
+    except RuntimeError:
+        refused = True
+    check(refused and gc.read_text(encoding="utf-8") == "changed upstream\n",
+          "a GGML the gate does not fit is refused and left as it was")
+    bsrc = (HERE / "realme" / "engines" / "cpp.py").read_text(encoding="utf-8")
+    check("*sgemm, \"-DGGML_BUILD_TESTS=OFF\"" in bsrc
+          and 'sgemm = ["-DGGML_LLAMAFILE=OFF"]' in bsrc
+          and '"sgemm": sgemm == [SGEMM_FLAG]' in bsrc,
+          "the build turns tinyBLAS on only when the gate is in, and records it")
+
+    print("\nfiles opened by a Unicode-safe name")
+    pt = Path(_ISO) / "paths"
+    (pt / "src").mkdir(parents=True)
+    for name, lines in cpp.PATH_EDITS.items():
+        (pt / "src" / name).write_text("int x;\n" + "\n".join(lines) + "\n",
+                                       encoding="utf-8")
+    check(cpp.apply_path_patch(pt) and not cpp.apply_path_patch(pt),
+          "model and audio files open through ggml_fopen, once")
+    body = (pt / "src" / "qwen3_tts.cpp").read_text(encoding="utf-8")
+    check(body.count("ggml_fopen(") == 3 and " fopen(" not in body,
+          "every one of them", body)
+    (pt / "src" / "gguf_loader.cpp").write_text("int x;\n", encoding="utf-8")
+    try:
+        cpp.apply_path_patch(pt)
+        refused = False
+    except RuntimeError:
+        refused = True
+    check(refused, "a file that no longer has the line is refused")
+    check("apply_path_patch" in cpp.PATCHES, "and every build applies it")
+
+    print("\nthe revised source, exported")
+    if (cpp.source_dir() / "CMakeLists.txt").is_file() and \
+            (cpp.source_dir() / "LICENSE").is_file():
+        exp = cpp.export_source(Path(_ISO) / "export", log=lambda *_: None)
+        tt = (exp / "src" / "tts_transformer.cpp").read_text(encoding="utf-8")
+        check((exp / "LICENSE").read_text(encoding="utf-8").startswith("MIT License")
+              and (exp / cpp.CHANGES_FILE).is_file()
+              and cpp.FFN_MARK in tt and (exp / "src" / cpp.BATCH_FILE).is_file()
+              and (exp / "src" / cpp.SNAKE_MARK).is_file()
+              and (exp / "src" / cpp.QUANT_MARK).is_file(),
+              "it carries every change, upstream's licence and the change list")
+        try:
+            cpp.export_source(exp, log=lambda *_: None)
+            refused = False
+        except RuntimeError:
+            refused = True
+        check(refused, "and is never written over an existing folder")
+    else:
+        check(True, "(no vendored source here to export; checked where it is)")
+    changes = (Path(cpp.__file__).parent / "qwen3cpp_batch" / cpp.CHANGES_FILE
+               ).read_text(encoding="utf-8")
+    check("predict-woo" in changes and "MIT" in changes
+          and all(m in changes for m in ("QWEN3_TTS_FFN_F32", "QWEN3_TTS_BROADCAST",
+                                         "QWEN3_TTS_FAST_SNAKE", "realme_batch.inc",
+                                         "realme_quant.inc")),
+          "the change list credits upstream and names every switch")
+    check(all(m in changes for m in ("QWEN3_TTS_VOCODER_F32", "QWEN3_TTS_SGEMM",
+                                     "QWEN3_TTS_VOCODER_F32_MAX_FRAMES",
+                                     "realme_vocoder.inc", "ggml_fopen")),
+          "including the vocoder, the GGML gate and the Unicode paths")
+
+    print("\nrealme-qwen3-tts.cpp, the release")
+    rel = cpp.release_source()
+    rme = (rel / "README.md").read_text(encoding="utf-8")
+    check(all((rel / n).is_file() for n in ("README.md", "NOTICE.md", "RELEASE_NOTES.md",
+                                           "build.bat", "build.sh", ".gitignore",
+                                           ".gitattributes",
+                                           "quantize_q8.py"))
+          and "predict-woo" in rme and "ggml" in rme.lower() and "Qwen" in rme
+          and b"\r\n" in (rel / "build.bat").read_bytes()
+          and "-DGGML_LLAMAFILE=ON" in (rel / "build.sh").read_text(encoding="utf-8")
+          and "@" not in rme,
+          "its README credits upstream, GGML and the model; build scripts for "
+          "Windows and Linux; no e-mail address anywhere in it")
+    if (cpp.source_dir() / "ggml" / "src" / "ggml-cpu" / "ggml-cpu.c").is_file():
+        out = cpp.export_release(Path(_ISO) / "release", log=lambda *_: None,
+                                 zip_it=False)
+        lic = (out / "LICENSE").read_text(encoding="utf-8")
+        check((out / "README_UPSTREAM.md").is_file() and (out / "CHANGES.md").is_file()
+              and not (out / ".gitmodules").exists()
+              and not (out / "PROVENANCE.md").exists()
+              and "predict-woo" in lic and cpp.RELEASE_LICENSE_LINE in lic
+              and cpp.SGEMM_MARK in (out / "ggml/src/ggml-cpu/ggml-cpu.c")
+              .read_text(encoding="utf-8")
+              and (out / "src" / cpp.VOC_MARK).is_file()
+              and (out / "tools" / "quantize_q8.py").is_file(),
+              "the export carries upstream's README and licence, the gate and "
+              "every change")
+        (out / ".git").mkdir()
+        (out / ".git" / "HEAD").write_text("ref: refs/heads/main\n", encoding="utf-8")
+        (out / "old.txt").write_text("from the last release", encoding="utf-8")
+        cpp.export_release(out, log=lambda *_: None, zip_it=False)
+        check((out / ".git" / "HEAD").is_file() and not (out / "old.txt").exists()
+              and (out / "README.md").is_file()
+              and not out.with_name(out.name + ".new").exists(),
+              "a release folder that is a git repository is brought up to date "
+              "in place, its history kept")
+    else:
+        check(True, "(no vendored GGML here to export a release; checked where it is)")
+
+    print("\nthe measurement's verdict")
+    from realme import batchbench as BB
+    rows = [{"batch": 1, "work_per_speech_s": 3.0},
+            {"batch": 2, "work_per_speech_s": 2.0},
+            {"batch": 4, "work_per_speech_s": 1.5}]
+    v = BB.verdict(rows)
+    check(v["batch"] == 4 and v["speedup"] == 2.0, "the largest clearly faster size", v)
+    rows[2]["work_per_speech_s"] = 1.9
+    check(BB.verdict(rows)["batch"] == 2, "not one that is barely faster")
+    check(BB.verdict([{"batch": 1, "work_per_speech_s": 3.0},
+                      {"batch": 2, "work_per_speech_s": 2.9}])["batch"] == 1,
+          "and one at a time when batches do not help")
+    q8 = [{"batch": 1, "work_per_speech_s": 1.77},     # measured, 6 cores
+          {"batch": 2, "work_per_speech_s": 1.46},
+          {"batch": 4, "work_per_speech_s": 1.35}]
+    check(BB.verdict(q8)["batch"] == 4,
+          "the 8-bit model's measurement picks 4 (8% faster than 2), not 2", BB.verdict(q8))
+    f16 = [{"batch": 1, "work_per_speech_s": 2.54},
+           {"batch": 4, "work_per_speech_s": 1.66},
+           {"batch": 8, "work_per_speech_s": 1.51}]
+    check(BB.verdict(f16)["batch"] == 8, "the 16-bit model's picks 8", BB.verdict(f16))
+    f16[2]["work_per_speech_s"] = 1.60
+    check(BB.verdict(f16)["batch"] == 4, "a larger pass within 6% is not worth its memory")
+    slow = [{"batch": 1, "work_per_speech_s": 2.0}, {"batch": 2, "work_per_speech_s": 1.9},
+            {"batch": 4, "work_per_speech_s": 1.8}, {"batch": 8, "work_per_speech_s": 1.7}]
+    check(BB.verdict(slow)["batch"] == 8,
+          "a size near the fastest but not itself clearly faster than one at "
+          "a time does not hide the one that is", BB.verdict(slow))
+    return summary()
+
+
+if __name__ == "__main__":
+    try:
+        sys.exit(main())
+    finally:
+        import shutil
+        shutil.rmtree(_ISO, ignore_errors=True)

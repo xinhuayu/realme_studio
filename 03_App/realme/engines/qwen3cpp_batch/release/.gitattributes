@@ -1,0 +1,5 @@
+# Line endings that work for every user: batch files need CRLF on Windows,
+# shell scripts need LF everywhere.
+* text=auto
+*.bat text eol=crlf
+*.sh text eol=lf
