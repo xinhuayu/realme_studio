@@ -892,7 +892,7 @@ def export_source(out: Path, log=print) -> Path:
 
 #: realme-qwen3-tts.cpp, the revised engine on its own (`export_release`).
 RELEASE_NAME = "realme-qwen3-tts.cpp"
-RELEASE_VERSION = "1.0.0"
+RELEASE_VERSION = "1.1.0"
 RELEASE_LICENSE_LINE = "Copyright (c) 2026 Xinhua Yu (RealMe's changes)"
 
 
@@ -982,6 +982,143 @@ def _write_release(out: Path, log=print, zip_it: bool = True) -> Path:
     log(f"  {RELEASE_NAME} {RELEASE_VERSION} is in {out}")
     if zip_it:
         _zip_release(out, log)
+    return out
+
+
+#: The voice server, ready to run: the engine as built here, the 8-bit model,
+#: the server and its launcher, in one folder of its own (`export_server_bundle`).
+SERVER_BUNDLE = "realme-qwen3-tts-server"
+_BUNDLE_MARK = ".realme-voice-server"
+SERVER_CONFIG = "voice_server.json"
+
+BUNDLE_README = """# realme-qwen3-tts voice server
+
+Your cloned voice for any tool that can use OpenAI's text-to-speech or "an
+OpenAI-compatible voice server": nothing uploaded, nothing to pay. This folder
+is self-contained -- the voice engine (realme-qwen3-tts.cpp, built for
+{cpu} processors), its 8-bit model, and the server. It needs only Python 3.9
+or newer (https://www.python.org/downloads/), with no packages.
+
+1. Put a recording of each voice in `voices\\` as a WAV file:
+   `voices\\realme.wav` is the voice "realme", the default (10-60 seconds of
+   ordinary speech; `anna.wav` would be the voice "anna").{voice_note}
+2. Set the port the tool expects in `voice_server.json` (8800 unless you
+   change it), or give it when starting: `server\\start_server.bat --port 5050`.
+3. Double-click `server\\start_server.bat`. When it says *Ready*, it is
+   listening at `http://127.0.0.1:<port>/v1/audio/speech`, on this computer
+   only.
+4. In the tool, add a voice server (OpenAI-compatible): address
+   `http://127.0.0.1:<port>` (some tools want `http://127.0.0.1:<port>/v1`),
+   model `realme-qwen3-tts`, voice `realme`, no key.
+   *Anim Studio*: Setup -> Other voices -> A voice server.
+
+A request is ordinary OpenAI speech JSON:
+
+    POST /v1/audio/speech  {{"model": "realme-qwen3-tts", "input": "Hello.", "voice": "realme"}}
+
+It answers in MP3 (OpenAI's default; needs ffmpeg on the PATH, otherwise
+WAV), or `"response_format": "wav"`, `"pcm"`, `"flac"`, `"opus"`, `"aac"`.
+`"language"` (en, zh, ja, de, fr, es, it, pt, ko, ru) and `"speed"` work too.
+Long text is split into sentences and recorded several at a time; requests
+that arrive together are recorded together. `GET /v1/voices` lists the voices.
+
+`voice_server.json` holds the settings: `host`, `port`, `voice` (the default
+voice), `api_key` (then tools must send it), `batch` (sentences per pass),
+`pause` (seconds between sentences) and `model_aliases`. The server answers
+only to the model `realme-qwen3-tts`; a tool that can send only another name
+(say `tts-1`) can be let in by adding it there: `"model_aliases": ["tts-1"]`.
+Options on the command line override the file: `server\\start_server.bat
+--help`.
+
+The engine is realme-qwen3-tts.cpp: qwen3-tts.cpp by predict-woo and GGML by
+the ggml authors (both MIT), with RealMe's changes (CHANGES.md); see LICENSE
+and NOTICE.md. The model files in `models_q8\\` were converted from the Qwen
+team's Qwen3-TTS weights, which carry their own licence: read it before
+passing this folder on. Clone only your own voice, or one you have permission
+to use.
+"""
+
+
+def export_server_bundle(out: Path, home: Path | None = None,
+                         voice_wav: Path | None = None, log=print) -> Path:
+    """The voice server as one folder that runs on its own: the engine built
+    here (bin/), the 8-bit model (models_q8/), the server and its launchers
+    (server/), voices/, and the release's README, LICENSE, NOTICE and
+    CHANGES, and the settings file (voice_server.json). With `voice_wav`, that
+    recording becomes the voice "realme", the server's default.
+
+    A folder made by an earlier export is brought up to date, its voices/ and
+    voice_server.json kept; any other folder that is not empty is refused."""
+    from realme.adapters.tts_qwen3_dll import library_path
+    home = Path(home or cpp_home())
+    out = Path(out)
+    lib = library_path(home)
+    if not lib.is_file():
+        raise RuntimeError("The voice engine is not built here: run "
+                           "3_Get_Voice_Engine.bat (or _Rebuild_Voice_Engine.bat) first.")
+    q8 = home / Q8_DIR
+    if not ((q8 / Q8_FILE).is_file() and (q8 / TOKENIZER_FILE).is_file()):
+        make_q8(home, log=log)
+    if out.exists() and any(out.iterdir()):
+        if not (out / _BUNDLE_MARK).is_file():
+            raise RuntimeError(f"{out} is not empty and is not a voice server "
+                               f"folder made here; choose a new folder.")
+        for p in out.iterdir():
+            if p.name not in ("voices", ".git", SERVER_CONFIG):
+                (shutil.rmtree if p.is_dir() else Path.unlink)(p)
+    out.mkdir(parents=True, exist_ok=True)
+    (out / _BUNDLE_MARK).write_text(RELEASE_VERSION, encoding="utf-8")
+    # The engine and the GGML libraries it loads.
+    (out / "bin").mkdir()
+    libs = [lib] + [p for p in lib.parent.iterdir()
+                    if p.is_file() and p != lib and (p.suffix.lower() == ".dll"
+                                                    or ".so" in p.name
+                                                    or p.suffix == ".dylib")]
+    if os.name != "nt":
+        libs += [p for p in (home / "ggml" / "build" / "src").glob("libggml*.so*")
+                 if p.is_file()]
+    for p in libs:
+        shutil.copy2(p.resolve(), out / "bin" / p.name)
+    (out / "models_q8").mkdir()
+    for name in (Q8_FILE, TOKENIZER_FILE):
+        shutil.copy2(q8 / name, out / "models_q8" / name)
+        log(f"  copied {name}")
+    rel = release_source()
+    shutil.copytree(rel / "server", out / "server",
+                    ignore=shutil.ignore_patterns("__pycache__"))
+    if not (out / SERVER_CONFIG).is_file():
+        shutil.copy2(rel / SERVER_CONFIG, out / SERVER_CONFIG)
+    voices = out / "voices"
+    voices.mkdir(exist_ok=True)
+    shutil.copy2(rel / "voices" / "README.md", voices / "README.md")
+    # A folder from 1.1.0's first exports named the voice "me".
+    if (voices / "me.wav").is_file() and not (voices / "realme.wav").exists():
+        (voices / "me.wav").replace(voices / "realme.wav")
+    voice_note = ""
+    if voice_wav:
+        shutil.copy2(voice_wav, voices / "realme.wav")
+        voice_note = ("\n   Your RealMe voice recording is already there as "
+                      "`voices\\realme.wav`;\n   keep this folder private.")
+    cpu = "this computer's"
+    try:
+        import json as _json
+        cpu = _json.loads((home / "build_info.json").read_text(encoding="utf-8")
+                          ).get("cpu") or cpu
+    except (OSError, ValueError):
+        pass
+    (out / "README.md").write_text(
+        BUNDLE_README.format(cpu=cpu, voice_note=voice_note), encoding="utf-8")
+    lic = (source_dir() / "LICENSE")
+    if lic.is_file():
+        text = lic.read_text(encoding="utf-8")
+        first = next((ln for ln in text.splitlines() if ln.startswith("Copyright")), "")
+        (out / "LICENSE").write_text(
+            text.replace(first, first + "\n" + RELEASE_LICENSE_LINE, 1) if first else text,
+            encoding="utf-8")
+    shutil.copy2(rel / "NOTICE.md", out / "NOTICE.md")
+    shutil.copy2(Path(__file__).resolve().parent / "qwen3cpp_batch" / CHANGES_FILE,
+                 out / "CHANGES.md")
+    log(f"  the voice server is in {out}: start it with server\\start_server.bat")
     return out
 
 

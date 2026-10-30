@@ -88,6 +88,23 @@ if run under another one.
 and why it is fast: the revised engine, the recording pipeline around it,
 the defaults and the switches.
 
+### The voice server
+
+`00_Windows\_Make_Voice_Server.bat` (`realme engine cpp --cpp-action
+export-server --export-to <folder> [--with-my-voice]`, `cpp.export_server_bundle`)
+writes `..\realme-qwen3-tts-server`: the engine as built here (`bin/`), the
+8-bit model, and `server/qwen3_tts_server.py` from
+`engines/qwen3cpp_batch/release/server/` -- an OpenAI-compatible
+`/v1/audio/speech` in Python's standard library, voices as WAVs in
+`voices/` (`realme.wav` is the default voice "realme"), several sentences
+(and simultaneous requests) per pass. Settings in `voice_server.json`
+(`host`, `port` -- 8800 unless a tool needs another --, `voice`, `api_key`,
+`batch`, `pause`, `model_aliases`), overridden by command-line options. It
+answers only to the model `realme-qwen3-tts`; other names (`tts-1`) only
+when listed in `model_aliases`. It runs without RealMe; re-exporting keeps
+its `voices/` and `voice_server.json`. Tests:
+`t_voice_server.py`.
+
 ### realme-qwen3-tts.cpp, the engine on its own
 
 RealMe's revised qwen3-tts.cpp is also published as a standalone source

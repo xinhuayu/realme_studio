@@ -67,6 +67,8 @@ realme voice choose                  # asks: Gemini, the local clone, or none
   also published on its own as **realme-qwen3-tts.cpp**
   (`realme engine cpp --cpp-action export-release --export-to <folder>`
   writes it). `DESIGN.md` explains how it is built and why it is fast.
+  `00_Windows\_Make_Voice_Server.bat` packs it as a voice server for other
+  tools (an OpenAI-compatible `/v1/audio/speech` on this computer).
 
 - **Gemini** (`gemini-tts`) clones your voice in your Google project; your
   reference clip and every sentence are sent there, at about a dollar an

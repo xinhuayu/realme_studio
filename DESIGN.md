@@ -181,7 +181,28 @@ reduced to fit.
 - Independent reviews of the C++, the Python around it and the hosted-voice
   side, whose findings were fixed and re-tested.
 
-## 8. Limits and next steps
+## 8. The engine for other tools
+
+The voice server (`engines/qwen3cpp_batch/release/server/`) is part of the
+standalone release and has nothing to do with RealMe's code: Python's
+standard library, the engine through ctypes, OpenAI's `/v1/audio/speech`.
+It sets the same engine defaults (fast snake, 32-bit vocoder with the
+memory-based length limit, threads), splits long input into sentences, and
+gathers sentences -- of one request, or of requests that arrive together for
+the same voice and language -- into passes of the batch entry point.
+`_Make_Voice_Server.bat` packs it with the engine built here and the 8-bit
+model into a folder that runs on its own.
+
+It is one model, `realme-qwen3-tts`, with RealMe's engine and defaults: a
+request naming any other model is refused rather than quietly served by
+something else, and other names (OpenAI's `tts-1`, for a tool that cannot be
+told otherwise) are accepted only when listed in `model_aliases`. The default
+voice is `realme` (`voices/realme.wav`). The address belongs to the tool
+using it: `voice_server.json` holds the host and port (8800 unless set), the
+default voice, a key, the pass size, the pause and the aliases, and
+command-line options override it.
+
+## 9. Limits and next steps
 
 - **GPU builds are untested.** CUDA and Vulkan should work as upstream does,
   with RealMe's CPU changes switched off.

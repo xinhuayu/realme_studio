@@ -6,3 +6,5 @@ models_q8/
 *.wav
 .venv/
 __pycache__/
+voices/*
+!voices/README.md

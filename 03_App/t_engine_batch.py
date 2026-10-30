@@ -568,7 +568,9 @@ def main() -> int:
     check(all((rel / n).is_file() for n in ("README.md", "NOTICE.md", "RELEASE_NOTES.md",
                                            "build.bat", "build.sh", ".gitignore",
                                            ".gitattributes",
-                                           "quantize_q8.py"))
+                                           "quantize_q8.py", "server/qwen3_tts_server.py",
+                                           "server/start_server.bat",
+                                           "server/start_server.sh", "voices/README.md"))
           and "predict-woo" in rme and "ggml" in rme.lower() and "Qwen" in rme
           and b"\r\n" in (rel / "build.bat").read_bytes()
           and "-DGGML_LLAMAFILE=ON" in (rel / "build.sh").read_text(encoding="utf-8")
@@ -586,7 +588,9 @@ def main() -> int:
               and cpp.SGEMM_MARK in (out / "ggml/src/ggml-cpu/ggml-cpu.c")
               .read_text(encoding="utf-8")
               and (out / "src" / cpp.VOC_MARK).is_file()
-              and (out / "tools" / "quantize_q8.py").is_file(),
+              and (out / "tools" / "quantize_q8.py").is_file()
+              and (out / "server" / "qwen3_tts_server.py").is_file()
+              and (out / "voices" / "README.md").is_file(),
               "the export carries upstream's README and licence, the gate and "
               "every change")
         (out / ".git").mkdir()

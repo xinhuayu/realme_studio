@@ -531,6 +531,31 @@ does not start*), but RealMe's batch and vocoder speed-ups are written for
 the processor and switch themselves off on a graphics card, so whether it is
 faster on a given machine is something to measure, not assume.
 
+### Your cloned voice in other tools
+
+The same engine can speak for other programs -- Anim Studio, or anything
+that can use OpenAI's text-to-speech -- without RealMe running and without
+paying for Gemini. Double-click **`00_Windows\_Make_Voice_Server.bat`**. It
+writes a folder of its own beside the RealMe folder,
+`realme-qwen3-tts-server`, with the engine as built here, its 8-bit model
+(about 1 GB) and a small voice server, and offers to put your RealMe voice
+recording in it as the voice *realme* (that folder then holds your voice:
+keep it private). Start it with `server\start_server.bat` in that folder (it
+needs Python 3.9 or newer, nothing else); it listens on this computer only,
+at port 8800 unless you set another: use the port your tool expects, as
+`port` in `voice_server.json` in that folder (or `start_server.bat --port
+5050`). In **Anim Studio**: *Setup → Other voices → A voice server*, address
+`http://127.0.0.1:8800` (with your port), model `realme-qwen3-tts`, voice
+`realme`. Any other tool: an OpenAI-compatible speech address,
+`http://127.0.0.1:<port>/v1/audio/speech`, model `realme-qwen3-tts`. The
+server answers only to that model name; a tool that can send only another
+(OpenAI's `tts-1`, say) can be let in by listing it in `voice_server.json`,
+`"model_aliases": ["tts-1"]`. More voices: put *name*.wav recordings in its
+`voices` folder and start it again. After rebuilding the
+engine, run the launcher again; the folder is brought up to date, its
+voices and `voice_server.json` kept. The server is part of realme-qwen3-tts.cpp, so anyone can build
+it from that source too.
+
 ### Settings
 
 Three choices are in **Twin Setup** (shown once the local clone is

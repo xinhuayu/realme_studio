@@ -7,7 +7,7 @@ REM
 REM  Writes the folder BESIDE the RealMe folder (not inside it, so the two
 REM  repositories never nest):
 REM      ..\realme-qwen3-tts.cpp\                 the release, to publish
-REM      ..\realme-qwen3-tts.cpp-1.0.0-source.zip  to attach to the release
+REM      ..\realme-qwen3-tts.cpp-<version>-source.zip  to attach to the release
 REM  or to the folder you give:  _Make_qwen3cpp_Release.bat D:\code\realme-qwen3-tts.cpp
 REM
 REM  Run it again after a RealMe update: a folder that is already a git
@@ -46,8 +46,8 @@ echo       realme-qwen3-tts.cpp; leave README, .gitignore and licence at None
 echo       ^(the folder has its own^). Create repository.
 echo    2. Publish repository. Untick "Keep this code private" for a public one.
 echo    3. On github.com, in the new repository: Releases - Draft a new
-echo       release - tag v1.0.0 - title "realme-qwen3-tts.cpp 1.0.0" - paste
-echo       RELEASE_NOTES.md - attach the source zip named above - Publish.
+echo       release - tag v^<version^> as at the top of RELEASE_NOTES.md - paste
+echo       that version's notes - attach the source zip named above - Publish.
 echo.
 echo  Later versions: run this again, then in GitHub Desktop commit the
 echo  changes, Push origin, and draft the next release on github.com.

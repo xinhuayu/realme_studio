@@ -80,7 +80,7 @@ if not "!RC!"=="0" (
 )
 
 set "FAILED="
-for %%T in (t_tau t_pace t_migrate t_setup t_locate t_encoding t_voices t_lexicon t_render t_engines t_gemini t_agent t_tuning t_text t_inserts t_lean t_parbench t_prerecord t_engine_timing t_gemparallel t_writers_more t_engine_batch) do (
+for %%T in (t_tau t_pace t_migrate t_setup t_locate t_encoding t_voices t_lexicon t_render t_engines t_gemini t_agent t_tuning t_text t_inserts t_lean t_parbench t_prerecord t_engine_timing t_gemparallel t_writers_more t_engine_batch t_voice_server) do (
   echo.
   echo  === %%T ===
   "!PY!" 03_App\%%T.py

@@ -583,7 +583,9 @@ for bat in win.glob("*.bat"):
     # prefix wins wherever it is present.
     for ref in re.findall(r'(?:%~dp0)?([0-9A-Za-z_]+\.bat)',
                           bat.read_text(encoding="utf-8", errors="ignore")):
-        if ref not in present and ref not in {"conda.bat"}:
+        # start_server.bat is the voice server's own launcher, in the folder
+        # _Make_Voice_Server.bat writes, not in 00_Windows.
+        if ref not in present and ref not in {"conda.bat", "start_server.bat"}:
             # 0_Update deliberately names superseded files in order to delete them
             if bat.name == "0_Update.bat": continue
             missing.add(f"{bat.name} -> {ref}")

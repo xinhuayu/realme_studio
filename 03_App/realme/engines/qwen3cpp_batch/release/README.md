@@ -127,7 +127,7 @@ starts:
 set QWEN3_TTS_THREADS=6
 set QWEN3_TTS_FAST_SNAKE=1
 set QWEN3_TTS_VOCODER_F32=1
-build\qwen3-tts-cli -m models_q8 -r me.wav -t "Hello." -o hello.wav
+build\qwen3-tts-cli -m models_q8 -r voices\realme.wav -t "Hello." -o hello.wav
 ```
 
 | Switch | Effect |
@@ -152,6 +152,56 @@ int32_t qwen3_tts_synthesize_batch_with_embedding(
 
 Four to eight per pass is the useful range on such a PC; each sentence in a
 pass needs about 0.5 GB more for its caches.
+
+## Voice server
+
+`server/qwen3_tts_server.py` puts the engine behind **OpenAI's speech API**,
+on your own computer, so any tool that can use OpenAI's text-to-speech -- or
+"an OpenAI-compatible voice server" -- speaks in a voice cloned here instead:
+nothing uploaded, nothing to pay. It needs only Python 3.9 or newer (no
+packages) and the engine built above.
+
+1. Put a recording of each voice in `voices/` as a WAV file:
+   `voices/realme.wav` is the voice `realme`, the default (10–60 seconds of
+   ordinary speech; `voices/anna.wav` would be the voice `anna`). Each is
+   made into a speaker embedding once and kept.
+2. Set the port your tool expects in `voice_server.json` (8800 unless you
+   change it), or pass `--port`.
+3. Start it: `server\start_server.bat` (Windows) or `server/start_server.sh`.
+   It listens on this computer only.
+4. Point the tool at it: base address `http://127.0.0.1:<port>/v1`, model
+   `realme-qwen3-tts`, voice `realme`.
+
+```bash
+curl http://127.0.0.1:8800/v1/audio/speech -H "Content-Type: application/json" \
+     -d '{"model": "realme-qwen3-tts", "input": "Hello from my own voice.", "voice": "realme"}' \
+     -o hello.mp3
+```
+
+`voice_server.json`, read at start; command-line options override it:
+
+```json
+{"host": "127.0.0.1", "port": 8800, "voice": "realme", "api_key": "",
+ "batch": 4, "pause": 0.25, "model_aliases": []}
+```
+
+The server is one model, `realme-qwen3-tts`: this engine with these
+defaults. A request that names another model is refused, so a tool set up
+for a different engine finds out rather than getting this one by surprise.
+If a tool can send only another name (OpenAI's `tts-1`, say), list it:
+`"model_aliases": ["tts-1"]`.
+
+| | |
+|---|---|
+| `POST /v1/audio/speech` | `input`, `voice`, `response_format` (`mp3` by default, as OpenAI; `wav`, `pcm`, `flac`, `opus`, `aac` -- all but `wav` and `pcm` need ffmpeg on the PATH, and come back as WAV without it), `speed` (0.25–4, with ffmpeg), and two extras: `language` (`en`, `zh`, `ja`, `de`, `fr`, `es`, `it`, `pt`, `ko`, `ru`) and `temperature` |
+| `GET /v1/models`, `GET /v1/voices`, `GET /health` | the model, the voices, what is loaded |
+| options | as in `voice_server.json`: `--port`, `--voice` (the default voice), `--api-key` (then ask for `Authorization: Bearer …`), `--batch` (sentences per pass, default 4), `--pause`, `--host` (beyond this computer only with a key); and `--config` (another settings file), `--threads`, `--exact` (the original engine's numbers) |
+
+Long input is split into sentences and recorded several to a pass; requests
+that arrive together for the same voice are recorded in the same pass. The
+fast settings (`QWEN3_TTS_FAST_SNAKE`, `QWEN3_TTS_VOCODER_F32` with its length
+limit by the machine's memory, `QWEN3_TTS_THREADS`) are turned on unless set
+already. Clone only your own voice, or one you have permission to use.
 
 ## Licence and credit
 

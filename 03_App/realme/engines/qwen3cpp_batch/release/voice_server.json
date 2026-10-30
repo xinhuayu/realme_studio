@@ -1,0 +1,9 @@
+{
+  "host": "127.0.0.1",
+  "port": 8800,
+  "voice": "realme",
+  "api_key": "",
+  "batch": 4,
+  "pause": 0.25,
+  "model_aliases": []
+}

@@ -1,3 +1,16 @@
+# realme-qwen3-tts.cpp 1.1.0
+
+- **A voice server** (`server/`): the engine behind OpenAI's speech API on
+  your own computer, so any tool that can use OpenAI's text-to-speech speaks
+  in a voice cloned here. Python 3.9+ only, no packages; voices are WAV files
+  in `voices/` (`realme.wav` is the default voice, "realme"); long text and
+  simultaneous requests are recorded several sentences to a pass. The port
+  and other settings are in `voice_server.json`, set to suit the tool. It
+  answers to one model, `realme-qwen3-tts`; other names only when listed as
+  `model_aliases`. See the README, *Voice server*.
+- Measured on a real lecture: 52 minutes of speech (564 sentences) recorded
+  in 56 minutes on a 15-watt, 6-core laptop processor.
+
 # realme-qwen3-tts.cpp 1.0.0
 
 The first standalone release of the local voice engine used by RealMe

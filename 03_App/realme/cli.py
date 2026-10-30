@@ -865,7 +865,8 @@ def _main(argv=None):
     en.add_argument("--cpp-action", dest="cpp_action",
                     choices=["status", "build", "convert", "all", "selftest",
                              "rebuild", "rebuild-all", "quantize",
-                             "export-source", "export-release"],
+                             "export-source", "export-release",
+                             "export-server"],
                     default="all",
                     help="For `cpp`: which step (default: all)")
     #: Engines by name. `--all` said what it did only in its help text; a name
@@ -892,6 +893,9 @@ def _main(argv=None):
                     help="Copy from an existing real_voice_qwen3 folder "
                          "instead of downloading")
     en.add_argument("--model", default="Qwen3-TTS-12Hz-0.6B-Base")
+    en.add_argument("--with-my-voice", dest="with_my_voice", action="store_true",
+                    help="For `cpp --cpp-action export-server`: put your RealMe "
+                         "voice recording in the bundle as the voice 'me'")
     en.add_argument("--export-to", dest="export_to", type=Path, default=None,
                     help="For `cpp --cpp-action export-source`: a new folder "
                          "for RealMe's revised qwen3-tts.cpp source")
@@ -2295,6 +2299,23 @@ def _main(argv=None):
                 return 0 if st["ready"] else 1
             if a.cpp_action == "selftest":
                 return 0 if C.selftest() else 1
+            if a.cpp_action == "export-server":
+                if not a.export_to:
+                    sys.exit("Say where:  --export-to C:\\path\\to\\new-folder")
+                voice = None
+                if a.with_my_voice:
+                    from realme.app.profile import Profile
+                    from realme.core.env import data_home
+                    ref = Profile(data_home() / "profile").data.get("voice_reference")
+                    if not ref or not Path(ref).is_file():
+                        sys.exit("No voice recording in your profile yet "
+                                 "(Twin Setup -> Your voice).")
+                    voice = Path(ref)
+                try:
+                    C.export_server_bundle(a.export_to, voice_wav=voice)
+                except Exception as e:
+                    sys.exit(f"\n{e}")
+                return 0
             if a.cpp_action == "export-release":
                 if not a.export_to:
                     sys.exit("Say where:  --export-to C:\\path\\to\\new-folder")
