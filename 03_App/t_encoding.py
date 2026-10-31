@@ -22,7 +22,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 HERE = Path(__file__).resolve().parent
 
 FAILED = []
-SKIP = ("qwen3cpp", "ov", "knnvc", "__pycache__")
+SKIP = ("qwen3cpp", "qwen3cpp_realme", "ov", "knnvc", "__pycache__")
 
 
 def check(name, cond, detail=""):

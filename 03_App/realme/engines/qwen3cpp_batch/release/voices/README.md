@@ -11,4 +11,5 @@ quick. A ready-made embedding (1024 raw float32 values) can be given as
 Clone only your own voice, or a voice you have permission to use, and say
 so where the audio is published.
 
-Recordings and embeddings are not committed (see `.gitignore`).
+In a source checkout, recordings and embeddings are not committed (see
+`.gitignore`); in a voice server folder, keep them private.

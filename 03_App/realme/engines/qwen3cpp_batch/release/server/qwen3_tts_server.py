@@ -16,8 +16,8 @@ computer instead: nothing uploaded, nothing to pay.
     GET  /v1/voices         the voices it can speak in
     GET  /health            "ok", and what is loaded
 
-Needs only Python 3.9+ (no packages) and the engine built from this
-repository (build.bat / build.sh). Voices are WAV recordings of a speaker,
+Needs only Python 3.9+ (no packages) and the engine, built from this
+repository (build.bat / build.sh) or in a server folder's bin/. Voices are WAV recordings of a speaker,
 10-60 seconds of ordinary speech, in a folder (`voices/` by default): the file
 `voices/realme.wav` is the voice "realme", the default. Each is turned into a
 speaker embedding once and kept beside it (`voices/.embeddings/`), so later
@@ -38,14 +38,15 @@ refused. A tool that can only send another name (say "tts-1") can be let in by
 listing that name in model_aliases; none is accepted by default.
 
 Long input is split into sentences, which are recorded several at a time in
-one pass of the engine (--batch, default 4) -- the same sound as one at a
-time, faster -- and joined with a short pause. Requests that arrive together
-for the same voice and language are recorded in the same pass.
+one pass of the engine (--batch, default 4) -- the same voice as one at a
+time (sample for sample with sampling off), faster -- and joined with a short
+pause. Requests that arrive together for the same voice, language and
+temperature are recorded in the same pass.
 
 The engine's speed switches are turned on unless set in the environment
-already: QWEN3_TTS_FAST_SNAKE=1, QWEN3_TTS_VOCODER_F32=2 (the copy-free
-32-bit vocoder), and QWEN3_TTS_THREADS. --exact
-leaves them off, for upstream's numbers.
+already: QWEN3_TTS_FAST_SNAKE=1, QWEN3_TTS_VOCODER_F32=3 (RealMe's
+vocoder kernel; 2, the copy-free 32-bit vocoder, with an engine built before
+it), and QWEN3_TTS_THREADS. --exact leaves them off, for upstream's numbers.
 """
 from __future__ import annotations
 
@@ -101,8 +102,8 @@ def find_library(given: str | None) -> Path:
         for n in names:
             if (d / n).is_file():
                 return (d / n).resolve()
-    raise SystemExit("The engine library was not found in build/. Build it "
-                     "first (build.bat or build.sh), or say where: --library")
+    raise SystemExit("The engine library was not found in build/ or bin/. Build "
+                     "it first (build.bat or build.sh), or say where: --library")
 
 
 def find_models(given: str | None) -> Path:
@@ -149,15 +150,27 @@ def total_memory_gb() -> float | None:
     return None
 
 
-def set_engine_defaults(exact: bool, threads: int | None) -> dict:
+def has_vocoder_kernel(library: Path | None) -> bool:
+    """Was this engine library built with RealMe's vocoder kernel
+    (QWEN3_TTS_VOCODER_F32=3)? Its start-up message is in the file; an
+    engine built before it would read "3" as off."""
+    try:
+        return library is not None and b"vocoder 3: on" in Path(library).read_bytes()
+    except OSError:
+        return False
+
+
+def set_engine_defaults(exact: bool, threads: int | None, library: Path | None = None) -> dict:
     """The engine reads its switches once, when it loads. A value already in
     the environment wins."""
     want = {"QWEN3_TTS_THREADS": str(threads or min(6, physical_cores()))}
     if not exact:
         gb = total_memory_gb() or 0.0
-        # The copy-free 32-bit vocoder ("2"): no length limit, as it needs
-        # less memory than the original at any length.
-        want.update({"QWEN3_TTS_FAST_SNAKE": "1", "QWEN3_TTS_VOCODER_F32": "2"})
+        # RealMe's vocoder kernel ("3"), or the copy-free 32-bit vocoder
+        # ("2") in an engine without it: no length limit, as both need less
+        # memory than the original at any length.
+        want.update({"QWEN3_TTS_FAST_SNAKE": "1",
+                     "QWEN3_TTS_VOCODER_F32": "3" if has_vocoder_kernel(library) else "2"})
         if os.environ.get("QWEN3_TTS_VOCODER_F32") == "1":
             # The older 32-bit vocoder, if asked for: its longest sentence
             # (codes, 12.5 a second) 30 s with 32 GB, 20 s with 16, 10 s below.
@@ -467,7 +480,7 @@ def make_handler(recorder: Recorder, voices: Voices, info: dict,
     accepted = {MODEL_ID, *(aliases or [])}
 
     class Handler(BaseHTTPRequestHandler):
-        server_version = "realme-qwen3-tts/1.2"
+        server_version = "realme-qwen3-tts/1.3"
 
         def log_message(self, fmt, *args):
             sys.stderr.write(f"  {self.address_string()} {fmt % args}\n")
@@ -627,8 +640,8 @@ def main(argv=None) -> int:
         if getattr(a, key) is not None:
             cfg[key] = getattr(a, key)
 
-    switches = set_engine_defaults(a.exact, a.threads)
     library, models = find_library(a.library), find_models(a.models)
+    switches = set_engine_defaults(a.exact, a.threads, library)
     voices_dir = Path(a.voices).resolve()
     voices_dir.mkdir(parents=True, exist_ok=True)
     print(f"  engine:  {library}")

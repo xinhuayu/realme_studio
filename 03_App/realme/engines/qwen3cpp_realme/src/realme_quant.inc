@@ -1,8 +1,8 @@
 // realme_quant.inc -- RealMe: an 8-bit (Q8_0) copy of the voice model, made
 // from the 16-bit GGUF already on disk.
 //
-// Included at the end of qwen3tts_c_api.cpp in RealMe's staged copy of the
-// engine (never the vendored source), so the copy is made by the engine's
+// Included at the end of qwen3tts_c_api.cpp in RealMe's revised engine
+// (not in upstream's source), so the copy is made by the engine's
 // own library: no PyTorch, no download, no second tool.
 //
 // What is quantized: the matrices every step multiplies by -- each layer's

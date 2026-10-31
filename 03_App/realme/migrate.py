@@ -14,7 +14,7 @@ between a 2.5 GB package and an 8 GB one.
 **CPU target.** ggml compiles for the CPU it is built on. A binary built on a
 newer processor can fail on an older one with an illegal-instruction error,
 which looks like a corrupt download and is not. Build with `--portable` before
-packaging, or rebuild on the target; both are in the README this writes.
+packaging, or rebuild on the target; the README this writes gives the rebuild.
 """
 from __future__ import annotations
 import shutil
@@ -198,7 +198,12 @@ README = """# RealMe on this machine
 
 Everything is here: the code, ffmpeg, the three draft voices, the C++ engine with its
 binaries and weights, the test scripts, and the enrolled voice. Nothing to
-download and nothing to compile.
+download and nothing to compile (the local engine travels unless the package was
+made with `--no-qwen`; its 8-bit model does not, and the first recording makes
+it again in a minute or two). The engine's source travels too
+(`03_App\\realme\\engines\\qwen3cpp_realme`, RealMe's revised engine, which
+every rebuild compiles; `qwen3cpp` beside it is the original, kept as the
+record), so `_Rebuild_Voice_Engine.bat` works on the new machine.
 
 The only thing this package cannot bring is Python itself.
 
@@ -219,9 +224,9 @@ installs the package. It finds ffmpeg and the voices already sitting in
 
 It ends by running `realme setup`, which prints what this machine needs:
 
-    CPU        : Intel(R) Core(TM) Ultra 7 268V  [AMD64]
+    CPU        : Intel(R) Core(TM) i7 (your processor's name)  [AMD64]
     engine     : runs here (built for CPU target 'avx2')
-    GPU        : Intel(R) Arc(TM) Graphics
+    GPU        : Intel(R) Arc(TM) Graphics (or your graphics)
       -> a VULKAN build is worth it here: --cpp-action build --force --gpu vulkan
 
 Read those three lines. They are measured on this machine, not assumed: the
@@ -236,8 +241,9 @@ give it the path if it cannot. Your reference recording, its transcript and your
 profile land in `%USERPROFILE%\\RealMeStudio`, and the profile's stored path is
 rewritten to this machine. You do not record again.
 
-**5. Put the API key back**, if you want script writing here. It was left out of
-the package on purpose -- a key in a zip travels further than you intend.
+**5. Put the API key back**, if you want script writing here. It is left out of
+the package unless it was made with `--include-key` -- a key in a zip travels
+further than you intend.
 
     realme key GEMINI_API_KEY <your key>
 
@@ -252,8 +258,7 @@ the package on purpose -- a key in a zip travels further than you intend.
 
 ## Prove it works before you trust it
 
-    realme bench --engines piper,qwen3cpp --lines 3 --mode sentence ^
-      --script RealMe\\scripts\\VR_Themes_test_script.txt --yes
+    realme bench --engines piper,qwen3cpp --lines 3 --mode sentence --yes
 
 Three utterances on each engine: piper in seconds, qwen3cpp in a few minutes.
 Listen to the joined file it names. If that sounds like you, everything that
@@ -269,7 +274,8 @@ matters survived the move.
 
 That is not a corrupt download. ggml compiles for a chosen instruction set, and
 this processor does not have it. Rebuilding needs a C++ compiler -- Visual
-Studio Build Tools or w64devkit; `--cpp-action status` says which it found.
+Studio Build Tools (*Desktop development with C++*); `--cpp-action status` says
+whether it was found.
 
 
 ## When a GPU arrives
@@ -278,7 +284,8 @@ Studio Build Tools or w64devkit; `--cpp-action status` says which it found.
     realme engine cpp --cpp-action build --force --gpu vulkan    (any vendor)
 
 `realme setup` says which is worth it here, and integrated graphics that share
-system memory are named as such rather than recommended.
+system memory are named as such rather than recommended. A graphics card has
+not been measured with RealMe; its CPU speed-ups switch themselves off on one.
 
 """
 
@@ -303,10 +310,9 @@ def readme_fresh(include_qwen: bool = False) -> str:
 
 _ENGINE_ROW = {
     False: ("| **Not included in this package: the free local voice clone** | "
-            "`qwen3cpp`, about 3 GB -- see *The free local voice clone* below. |"),
+            "`qwen3cpp`, about 2.2 GB -- see *The free local voice clone* below. |"),
     True: ("| **The free local voice clone** | `qwen3cpp`, ready to run: your "
-           "cloned voice made on this computer, nothing uploaded, nothing to pay. "
-           "Gemini is the default. |"),
+           "cloned voice made on this computer, nothing uploaded, nothing to pay. |"),
 }
 _ENGINE_STEP = {
     False: """## The free local voice clone
@@ -314,8 +320,8 @@ _ENGINE_STEP = {
 Gemini clones your voice at Google: the clip it is cloned from, and every
 sentence it speaks, go to Google, at about a dollar an hour of lecture. The
 free local voice clone, `qwen3cpp`, records at no cost and nothing leaves your
-computer, at about real time on a 6-core PC (an hour of lecture in about
-an hour; longer on a laptop). This package does not carry it: build it with
+computer, faster than real time on a 6-core PC (an hour of lecture in about
+three quarters of an hour; longer on a smaller laptop). This package does not carry it: build it with
 `00_Windows\\3_Get_Voice_Engine.bat` (it needs Visual Studio Build Tools,
 *Desktop development with C++*, and about 6 GB of disk; START_HERE.md section
 12 has the steps), or ask Xinhua Yu, the RealMe developer, for a package that
@@ -327,8 +333,9 @@ for lectures**, or for one render in the Lecture tab's **Recording** menu.
 
 This package also carries `qwen3cpp`, the free local voice clone, ready to
 run. It clones your voice on this computer, with the network unplugged,
-nothing uploaded and nothing to pay, at about real time on a 6-core PC
-(an hour of lecture in about an hour; longer on a laptop). The faster 8-bit
+nothing uploaded and nothing to pay, faster than real time on a 6-core PC
+(an hour of lecture in about three quarters of an hour; longer on a smaller
+laptop). The faster 8-bit
 copy of its model is made from the one included the first time it records
 (a minute or two). Choose
 `qwen3cpp` under **Twin Setup -> Voice for lectures** to make it the default,
@@ -344,7 +351,7 @@ Slide decks become narrated lecture videos in your own voice.
 
 | | |
 |---|---|
-| **Your voice** | cloned by Google's Gemini from 30-60 seconds of you reading. This is the voice a lecture uses by default. |
+| **Your voice** | cloned from 30-60 seconds of you reading -- by Google's Gemini, or by the free local clone on your own computer. The installer asks which, or none. |
 | **Three draft voices** | Amy (US, female), Ryan (US, male), Cori (UK, female). Free and local, for checking a script before recording it in your voice -- and the second speaker in a podcast. |
 {ENGINE_ROW}
 | **ffmpeg and ffprobe** | every audio and video operation, and every duration measurement |
@@ -419,7 +426,7 @@ had not read.
    PowerPoint's *File -> Save As -> PDF* makes one; a `.pptx` works directly
    only if LibreOffice is installed. Fill in
    **Course context** and **Your teaching voice**, press **Draft narration**.
-   One model call, no audio, seconds.
+   No audio; a minute or two for a long deck.
 2. **Read it and edit it.** Free, and it is the step that decides whether the
    video is any good.
 3. **Hear one line.** The button under each slide. Checks a pronunciation in
@@ -470,7 +477,7 @@ RealMe runs from. Do not fight it: `realme setup` installs into its own
 interpreter, and it will name both Pythons and tell you which one has the
 package. By hand, name the interpreter instead of trusting PATH:
 
-    realme setup
+    "C:\\path\\to\\anaconda3\\envs\\realme\\python.exe" -m pip install <package>
 
 
 **The app says there is no Gemini key.** Run step 3 again from the RealMe
@@ -482,14 +489,14 @@ The next two only concern the optional local voice clone.
 **The local engine crashes immediately.** `realme setup` will say
 `built for 'avx2', and it CRASHES on this processor`. That is not a corrupt
 download -- the engine is compiled for a chosen instruction set. Rebuilding
-lower needs a C++ compiler (Visual Studio Build Tools or w64devkit):
+lower needs a C++ compiler (Visual Studio Build Tools):
 
     realme engine cpp --cpp-action build --force --target-cpu baseline
 
 **Windows blocks the local engine.** A freshly compiled unsigned binary trips
 Defender's reputation check, and the symptom is misleading -- the file is there
 at the right size but access is denied. `realme engine cpp --cpp-action status`
-reports `BLOCKED by Windows`. Do not rebuild: allow it in Windows Security ->
+reports `BLOCKED by Defender`. Do not rebuild: allow it in Windows Security ->
 Virus & threat protection -> Protection history. If it recurs on every rebuild,
 add a folder exclusion for `tools\\qwen3cpp\\build` only.
 
@@ -827,6 +834,25 @@ def preflight(root: Path, data: Path, groups: dict,
                     f"{len(binaries)} binar{'y' if len(binaries) == 1 else 'ies'}"
                     + ("" if gguf and binaries
                        else " -- INCOMPLETE, it will not speak")))
+
+    # RealMe's engine source -- what every build compiles -- and the original
+    # beside it, which is the record and GGML's source. A package without
+    # either would leave the new machine unable to rebuild the engine.
+    arcs = [arc for _, arc in groups.get("code", [])]
+    realme_src = [a for a in arcs if "/engines/qwen3cpp_realme/" in a]
+    original = [a for a in arcs if "/engines/qwen3cpp/" in a]
+    from realme.engines.cpp import INTEGRATED_MANIFEST
+    whole = (any(a.endswith("/qwen3cpp_realme/CMakeLists.txt") for a in realme_src)
+             and any(a.endswith("/qwen3cpp_realme/" + INTEGRATED_MANIFEST) for a in realme_src)
+             and any(a.endswith("/qwen3cpp/ggml/CMakeLists.txt") for a in original))
+    eng = Path(root) / "03_App" / "realme" / "engines"
+    if (eng / "qwen3cpp_realme").is_dir() or (eng / "qwen3cpp").is_dir():
+        out.append((whole,
+                    f"RealMe's engine source travels (engines/qwen3cpp_realme, "
+                    f"{len(realme_src)} files), with the original as the record "
+                    f"and GGML's source (engines/qwen3cpp, {len(original)} files)"
+                    + ("" if whole else " -- MISSING: the new machine could not "
+                       "rebuild the engine")))
 
     # The guide's slides and narration travel in every package; its video
     # only once it has been rendered.

@@ -833,7 +833,7 @@ def _main(argv=None):
                     choices=["status", "build", "convert", "all", "selftest",
                              "rebuild", "rebuild-all", "quantize",
                              "export-source", "export-release",
-                             "export-server"],
+                             "export-server", "integrate"],
                     default="all",
                     help="For `cpp`: which step (default: all)")
     #: Engines by name, so the command line shows which engines were asked
@@ -860,7 +860,13 @@ def _main(argv=None):
     en.add_argument("--model", default="Qwen3-TTS-12Hz-0.6B-Base")
     en.add_argument("--with-my-voice", dest="with_my_voice", action="store_true",
                     help="For `cpp --cpp-action export-server`: put your RealMe "
-                         "voice recording in the bundle as the voice 'me'")
+                         "voice recording in the bundle as the voice 'realme'")
+    en.add_argument("--source", dest="engine_source", default="realme",
+                    choices=["realme", "original"],
+                    help="For `cpp --cpp-action build`: realme (the default) "
+                         "builds RealMe's engine source; original builds the "
+                         "original upstream source, unchanged, into a folder "
+                         "of its own for comparison (RealMe never uses it)")
     en.add_argument("--export-to", dest="export_to", type=Path, default=None,
                     help="For `cpp --cpp-action export-source`: a new folder "
                          "for RealMe's revised qwen3-tts.cpp source")
@@ -927,7 +933,12 @@ def _main(argv=None):
                     help="Runs per layout (default 2). The engine samples "
                          "without a seed, so one run is one draw.")
     pb.add_argument("--lines", type=int, default=12,
-                    help="Sentences per run (default 12).")
+                    help="Sentences per run (default 12; with --batch, at "
+                         "least two passes for every engine).")
+    pb.add_argument("--batch", type=int, default=1,
+                    help="Sentences per pass in each engine (default 1, one "
+                         "at a time). E.g. --layouts 1x6,2x3 --batch 8: one "
+                         "engine at 6 threads against two at 3, all in passes.")
     pb.add_argument("--script", type=Path, default=None,
                     help="A text file to read instead of the built-in "
                          "sentences.")
@@ -1001,6 +1012,10 @@ def _main(argv=None):
     bb.add_argument("--quant", default=None, choices=["f16", "q8_0"],
                     help="Which model to measure (default: the one lectures "
                          "use, REALME_QWEN3CPP_QUANT)")
+    bb.add_argument("--no-save", dest="no_save", action="store_true",
+                    help="Measure and keep the results and audio, but leave "
+                         "the pass size lectures use as it was (for "
+                         "comparisons)")
 
     na = sub.add_parser("narrate", help="Read a text file aloud in your voice "
                                         "- no deck, no script writer")
@@ -2190,9 +2205,12 @@ def _main(argv=None):
             if a.cpp_action == "status":
                 st = C.status()
                 print(f"home       : {st['home']}")
-                print(f"source     : {'ok' if st['source_present'] else 'MISSING'}"
-                      f"  {st['source']}")
-                print(f"ggml       : {'ok (vendored)' if st['ggml_present'] else 'MISSING'}")
+                print(f"built from : {'ok' if st['built_from_present'] else 'MISSING'}"
+                      f"  {st['built_from']}  (RealMe's engine source)")
+                print(f"original   : {'ok' if st['source_present'] else 'MISSING'}"
+                      f"  {st['source']}  (kept as the record; built only "
+                      f"with --source original)")
+                print(f"ggml       : {'ok (vendored, with the original)' if st['ggml_present'] else 'MISSING'}")
                 print(f"compiler   : {st['compiler']}  {st['compiler_detail']}")
                 print(f"cmake      : {st['cmake'] or 'not found (installed on demand)'}")
                 print(f"ninja      : {st['ninja'] or 'not found (installed on demand)'}")
@@ -2273,6 +2291,20 @@ def _main(argv=None):
                     voice = Path(ref)
                 try:
                     C.export_server_bundle(a.export_to, voice_wav=voice)
+                except Exception as e:
+                    sys.exit(f"\n{e}")
+                return 0
+            if a.cpp_action == "integrate":
+                try:
+                    C.integrate()
+                except Exception as e:
+                    sys.exit(f"\n{e}")
+                print("Rebuild the voice engine to use it (_Rebuild_Voice_Engine.bat).")
+                return 0
+            if a.cpp_action == "build" and a.engine_source == "original":
+                try:
+                    C.build(force=True, gpu="off", portable=a.portable,
+                            target_cpu=a.target_cpu, source="original")
                 except Exception as e:
                     sys.exit(f"\n{e}")
                 return 0
@@ -2508,7 +2540,7 @@ def _main(argv=None):
         try:
             return BB.main_cli(sizes, max(2, a.sentences),
                                a.out or (data_home() / "bench" / "batch"), ref,
-                               quant=a.quant)
+                               quant=a.quant, save=not a.no_save)
         except (AdapterUnavailable, RuntimeError) as e:
             print(f"\n  {e}", file=sys.stderr)
             return 1
@@ -2525,9 +2557,13 @@ def _main(argv=None):
         except (ValueError, OSError) as e:
             sys.exit(str(e))
         lines = list(zip(units, speeds or [1.0] * len(units)))
-        while len(lines) < a.lines:            # the built-in four, repeated
-            lines += lines[:a.lines - len(lines)]
-        lines = lines[:max(1, a.lines)]
+        batch = max(1, min(16, a.batch))
+        want = a.lines
+        if batch > 1:
+            want = max(want, 2 * batch * max(w for w, _ in layouts))
+        while len(lines) < want:               # the built-in four, repeated
+            lines += lines[:want - len(lines)]
+        lines = lines[:max(1, want)]
         ref = None
         if a.engine != "selftest":
             ref, label = B.resolve_reference(a.reference)
@@ -2553,7 +2589,7 @@ def _main(argv=None):
                 return 0
         out = a.out or (data_home() / "bench" / "parallel")
         r = PB.main(a.engine, lines, layouts, repeat=max(1, a.repeat),
-                    outdir=out, reference=ref)
+                    outdir=out, reference=ref, batch=batch)
         return 0 if any(l["runs"] for l in r["layouts"]) else 1
 
     if a.cmd == "bench":

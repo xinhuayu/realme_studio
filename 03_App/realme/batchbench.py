@@ -38,6 +38,10 @@ GAIN = 1.15
 #: larger pass that is still clearly faster is not missed.
 NEAR = 0.06
 DEFAULT_SIZES = (1, 2, 4, 8, 12, 16)
+#: Opt-in: GGML's tinyBLAS for every product it takes. A pass and one
+#: sentence still match while the engine's own 8-bit kernel takes a pass's
+#: products; without it they differ, and the identity check turns passes off.
+ALL_ENV = "QWEN3_TTS_SGEMM_ALL"
 
 
 def _same(a: Path, b: Path) -> bool:
@@ -114,7 +118,7 @@ def verdict(rows: list[dict]) -> dict:
 
 
 def main_cli(sizes, sentences: int, outdir: Path, reference: Path | None,
-             log=print, quant: str | None = None) -> int:
+             log=print, quant: str | None = None, save: bool = True) -> int:
     import os
     from realme.adapters.factory import build
     from realme.adapters.tts_qwen3_dll import (BATCH_FILE, BATCH_FN, QUANT_ENV,
@@ -124,6 +128,10 @@ def main_cli(sizes, sentences: int, outdir: Path, reference: Path | None,
         # less, so a pass may pay off differently.
         os.environ[QUANT_ENV] = quant
     log(f"  model: {quant_setting()}")
+    all_on = os.environ.get(ALL_ENV, "").strip() == "1"
+    if all_on:
+        log(f"  {ALL_ENV}=1: tinyBLAS for every product. The sound differs "
+            f"slightly from the default; listen before keeping it.")
     from realme.bench import DEFAULT_SCRIPT
     from realme.core.env import data_home
     outdir.mkdir(parents=True, exist_ok=True)
@@ -163,17 +171,25 @@ def main_cli(sizes, sentences: int, outdir: Path, reference: Path | None,
         log(f"  The engine would not record a batch ({e}); batches stay off.")
         return 1
     log("    identical, sample for sample" if same else
+        f"    DIFFERENT -- batches stay off. Remove {ALL_ENV} and measure "
+        f"again." if all_on else
         "    DIFFERENT -- batches stay off; send the results file")
     rows = measure(tts, sizes, texts, outdir, log=log) if same else []
     v = verdict(rows) if same else {"batch": 1, "say": "Not identical; off."}
     log("\n  " + v["say"])
     stamp = time.strftime("%Y%m%d_%H%M%S")
     record = {"when": stamp, "identical": same, "sizes": list(sizes),
-              "quant": quant_setting(),
+              "quant": quant_setting(), "sgemm_all": all_on,
               "rows": rows, "verdict": v,
               "threads": getattr(tts, "threads", None)}
     rf = outdir / f"batch_{stamp}.json"
     rf.write_text(json.dumps(record, indent=2), encoding="utf-8")
+    if not save:
+        # A comparison (two models side by side, say): the results file and
+        # the audio, and the pass size lectures use left as it was.
+        log("  Not saved as this computer's pass size (--no-save).")
+        log(f"\n  results: {rf}")
+        return 0
     data_home().mkdir(parents=True, exist_ok=True)
     # One entry per model, so measuring the 8-bit model does not replace
     # the 16-bit model's answer.

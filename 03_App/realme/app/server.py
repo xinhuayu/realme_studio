@@ -438,7 +438,7 @@ def _local_clone_state() -> dict:
     and how many sentences per pass -- each with where its value came from."""
     from realme.adapters.tts_qwen3_dll import (
         DEFAULT_BATCH, DEFAULTED, QUANT_ENV, VOCODER_DEFAULTS, batch_built_at,
-        batch_measured, library_path, quant_setting, vocoder_setting)
+        batch_measured, batch_stale, library_path, quant_setting, vocoder_setting)
     from realme.core.env import from_shell
     from realme.engines import cpp as C
     from realme.pipeline.prerecord import BATCH_ENV, MAX_BATCH
@@ -456,6 +456,7 @@ def _local_clone_state() -> dict:
         "batch": batch,
         "batches_built": batch_built_at(home),
         "measured": batch_measured(),
+        "stale": batch_stale(),
         "defaults": dict(DEFAULT_BATCH),
         "vocoder": vocoder_setting(),
         "shell": [k for k in (QUANT_ENV, BATCH_ENV, *VOCODER_DEFAULTS)
@@ -531,6 +532,132 @@ async def local_clone_set(patch: dict):
     return _local_clone_state()
 
 
+#: The voice-engine settings "Automatic defaults" takes back to RealMe's own
+#: choices for this computer: the model, passes and how they are filled,
+#: threads and engine copies, and the engine's switches. Nothing else in the
+#: settings file (keys, voices, the Studio's own settings) is touched.
+ENGINE_KEYS = ("REALME_QWEN3CPP_QUANT", "REALME_RECORD_BATCH", "REALME_RECORD_STREAM",
+               "REALME_RECORD_LOOKAHEAD", "REALME_RECORD_WORKERS", "REALME_ENGINE_THREADS",
+               "QWEN3_TTS_THREADS", "QWEN3_TTS_FAST_SNAKE", "QWEN3_TTS_VOCODER_F32",
+               "QWEN3_TTS_VOCODER_F32_MAX_FRAMES", "QWEN3_TTS_Q8_BATCH", "QWEN3_TTS_SGEMM",
+               "QWEN3_TTS_SGEMM_ALL", "QWEN3_TTS_FFN_F32", "QWEN3_TTS_BROADCAST",
+               "QWEN3_TTS_LOW_MEM")
+#: The measurement started from Twin Setup, while it runs: its job id.
+MEASURING: dict = {"job": None}
+
+
+def _refuse_while_measuring() -> None:
+    """Nothing records while the voice engine is being measured: it would
+    slow both and spoil the measurement."""
+    jid = MEASURING.get("job")
+    job = runner.get(jid) if jid else None
+    if job is not None and job.status in ("queued", "running"):
+        raise HTTPException(409, "The voice engine is being measured (Twin Setup, "
+                                 "Measure this computer); try again when it has finished.")
+
+
+def reset_engine_settings() -> tuple[list[str], list[str]]:
+    """Take ENGINE_KEYS out of the settings file and this process, then set
+    RealMe's defaults for the engine as built now. Returns (cleared, kept):
+    kept are set outside RealMe (in the shell), which only the user can
+    unset."""
+    from realme.adapters.tts_qwen3_dll import DEFAULTED, apply_vocoder_defaults
+    from realme.core.env import data_home, from_shell, parse, remove_key
+    envf = data_home() / ".env"
+    saved = parse(envf) if envf.is_file() else {}
+    cleared, kept = [], []
+    for k in ENGINE_KEYS:
+        if from_shell(k) and k not in DEFAULTED:
+            kept.append(k)
+            continue
+        if k in saved:
+            cleared.append(k)
+        remove_key(k)
+        if k in DEFAULTED:
+            os.environ.pop(k, None)
+            DEFAULTED.discard(k)
+    # The defaults of the engine built now (a rebuild may have added a
+    # faster vocoder), for this process and the measurement it starts.
+    apply_vocoder_defaults()
+    forget_tts()
+    return cleared, kept
+
+
+@app.post("/api/local-clone/automatic")
+def local_clone_automatic():
+    """Automatic defaults, at once: every voice-engine setting back to
+    RealMe's own for this computer -- the model, the sentences per pass
+    (measured on this engine if it has been, else the default, lowered where
+    memory is short), the newest vocoder the engine was built with, threads
+    and engine copies by the cores. Measuring is a separate, optional step
+    (/api/local-clone/measure)."""
+    if any(j["status"] in ("queued", "running") for j in runner.recent(200)):
+        raise HTTPException(409, "Something is running; change this when it has finished.")
+    from realme.engines import cpp as C
+    if not (C.cpp_home() / "build_info.json").is_file():
+        raise HTTPException(409, "The free local clone is not installed here.")
+    cleared, kept = reset_engine_settings()
+    return {**_local_clone_state(), "cleared": cleared, "kept": kept}
+
+
+@app.post("/api/local-clone/measure")
+def local_clone_measure():
+    """Measure how many sentences per pass suit this computer and its engine
+    as built (`realme bench-batch`, in its own process, as a job). Optional:
+    the defaults are used until it has been done. About 15 minutes."""
+    import subprocess
+    import sys
+    if any(j["status"] in ("queued", "running") for j in runner.recent(200)):
+        raise HTTPException(409, "Something is running; start this when it has finished, "
+                                 "as it measures how fast this computer records.")
+    from realme.adapters.tts_qwen3_dll import batch_built_at
+    from realme.engines import cpp as C
+    if not (C.cpp_home() / "build_info.json").is_file():
+        raise HTTPException(409, "The free local clone is not installed here.")
+    if not batch_built_at(C.cpp_home()):
+        raise HTTPException(409, "This engine records one sentence at a time; there is "
+                                 "nothing to measure. Run _Rebuild_Voice_Engine.bat to "
+                                 "record several per pass.")
+    forget_tts()
+
+    def work(job):
+        job.say("Measuring how many sentences per pass suit this computer "
+                "(about 15 minutes; leave the computer alone) ...")
+        root = Path(__file__).resolve().parents[2]
+        env = dict(os.environ)
+        env["PYTHONPATH"] = str(root) + (os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else "")
+        env["PYTHONIOENCODING"] = "utf-8"
+        # No console window of its own on Windows: its lines come here.
+        quiet = {"creationflags": getattr(subprocess, "CREATE_NO_WINDOW", 0)} if os.name == "nt" else {}
+        proc = subprocess.Popen([sys.executable, "-m", "realme", "bench-batch"], cwd=str(root),
+                                env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                text=True, encoding="utf-8", errors="replace", **quiet)
+        sizes = 6
+        done = 0
+        for line in proc.stdout:
+            line = line.rstrip()
+            if not line.strip():
+                continue
+            job.say(line.strip())
+            if " per pass:" in line:
+                done += 1
+                job.progress = min(0.95, 0.1 + 0.85 * (done - 1) / sizes)
+            elif "identical" in line or "warming up" in line:
+                job.progress = max(job.progress, 0.05)
+        rc = proc.wait()
+        if rc != 0:
+            raise RuntimeError("The measurement did not finish (see the lines above); "
+                               "the defaults stay in use.")
+        forget_tts()
+        st = _local_clone_state()
+        return {"measured": st.get("measured"),
+                "batch_auto": (st.get("measured") or {}).get(st.get("quant"))}
+
+    job = runner.submit("engine", "Measure this computer — voice engine", work)
+    MEASURING["job"] = job.id
+    return {"job_id": job.id}
+
+
 #: What the background warm-up is doing. Read by /api/doctor so the page can
 #: say "loading" instead of looking idle while 2 GB comes off disk.
 WARM: dict = {"engine": "", "state": "idle", "detail": "", "seconds": 0.0}
@@ -551,6 +678,10 @@ def warm_engine(name: str = "", *, block: bool = False) -> None:
     import time
     from realme.adapters.tts import DEVELOPED as _DEV
     name = name or profile.data.get("adapters", {}).get("tts") or _DEV[0]
+    try:
+        _refuse_while_measuring()
+    except HTTPException:
+        return                  # the measurement has the processor; load later
 
     def run() -> None:
         WARM.update(engine=name, state="loading", detail="", seconds=0.0)
@@ -1985,6 +2116,7 @@ class PreviewRequest(BaseModel):
 @app.post("/api/preview")
 def preview_utterance(req: PreviewRequest):
     """Hear one utterance. Cheap loop for catching a mangled term early."""
+    _refuse_while_measuring()
     from realme.pipeline.speak import preview as _preview
     body = req.model_dump()
     if not (body.get("text") or "").strip():
@@ -2064,6 +2196,7 @@ def preview_audio():
 
 @app.post("/api/lecture/{pid}/render")
 def render_lecture(pid: str, body: dict | None = None):
+    _refuse_while_measuring()
     body = body or {}
     pdir = project_dir(pid)
     if pending.exists(pdir):
@@ -2765,6 +2898,7 @@ async def make_narration(text: str = Form(""), tts: str = Form(""),
     The cheapest thing the system does: a quick loop for checking a
     pronunciation, a reference clip, or how a paragraph sounds.
     """
+    _refuse_while_measuring()
     from realme.pipeline import narrate as N
 
     pid = "narr_" + (Path(file.filename).stem if file and file.filename
@@ -2850,6 +2984,7 @@ async def make_dialogue(topic: str = Form(...), mode: str = Form("debate"),
                         speed: float = Form(0.0), turn_gap: float = Form(0.0),
                         bookends: bool = Form(True),
                         file: UploadFile | None = File(None)):
+    _refuse_while_measuring()
     pid = "dlg_" + "".join(c if c.isalnum() else "_" for c in topic)[:50]
     pdir = project_dir(pid)
     pdir.mkdir(parents=True, exist_ok=True)

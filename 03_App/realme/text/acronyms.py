@@ -30,7 +30,7 @@ WORDLIKE = {
     "PNG", "PDF", "SQL", "JSON", "YAML", "HTML", "CSS", "API", "USB",
     # Health, epidemiology, statistics
     "ANOVA", "MANOVA", "LASSO", "MICE", "SMART", "CONSORT", "PRISMA",
-    "STROBE", "MOOSE", "GRADE", "NHANES", "BRFSS", "SEER", "MESA",
+    "STROBE", "MOOSE", "GRADE", "NHANES", "SEER", "MESA",
     "REGARDS", "CHARGE", "PROMIS", "SLEEP",
 }
 
@@ -142,8 +142,9 @@ def find(text: str, lexicon=None) -> list[str]:
 #:   "off"    spell nothing.
 #:
 #: The default is "all" because WORDLIKE is a curated list of guesses about
-#: how people speak, and can be silently wrong (BRFSS, for instance, is said
-#: "B R F S S" by those who use it). A lexicon entry is a recorded decision.
+#: how people speak, and can be silently wrong (BRFSS, for instance, was on
+#: it once, but is said "B R F S S" by those who use it). A lexicon entry is a
+#: recorded decision.
 DEFAULT_MODE = "all"
 
 

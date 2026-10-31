@@ -206,6 +206,128 @@ THREADS_ADD = """    // RealMe: apply the thread count, which upstream stores in
 THREADS_MARK = "QWEN3_TTS_THREADS"
 
 
+#: One pool of worker threads for the engine's shared CPU backend, kept as
+#: long as the backend. GGML built without OpenMP otherwise starts and stops
+#: its worker threads for every graph -- about 16 graphs per step of speech;
+#: with OpenMP the pool holds only GGML's per-graph state. Applied after the
+#: thread patch, on its text. QWEN3_TTS_POOL=0 turns it off at run time.
+#: Thread scheduling never changes the arithmetic: every output is computed
+#: whole by one thread, whichever it is.
+POOL_MARK = "realme_pool_attach"
+POOL_HELPER_ANCHOR = """shared_backend_state & get_shared_backend_state() {
+    static shared_backend_state state;
+    return state;
+}
+"""
+POOL_HELPER = POOL_HELPER_ANCHOR + """
+// RealMe: one pool of worker threads for the shared CPU backend, kept for as
+// long as the backend (see CHANGES.md). QWEN3_TTS_POOL=0: none.
+ggml_threadpool * realme_pool = nullptr;
+
+void realme_pool_attach(ggml_backend_t backend, int n) {
+    const char * v = std::getenv("QWEN3_TTS_POOL");
+    if ((v && v[0] == '0') || realme_pool || n < 1) return;
+    struct ggml_threadpool_params p = ggml_threadpool_params_default(n);
+    realme_pool = ggml_threadpool_new(&p);
+    if (realme_pool) ggml_backend_cpu_set_threadpool(backend, realme_pool);
+}
+
+void realme_pool_release() {
+    if (realme_pool) {
+        ggml_threadpool_free(realme_pool);
+        realme_pool = nullptr;
+    }
+}
+"""
+POOL_EDITS = (
+    (POOL_HELPER_ANCHOR, POOL_HELPER),
+    ("""            fprintf(stderr, "  [backend] CPU threads: %d\\n", n);
+        }
+    }
+""", """            fprintf(stderr, "  [backend] CPU threads: %d\\n", n);
+        }
+        realme_pool_attach(backend, n > 0 ? n : GGML_DEFAULT_N_THREADS);
+    }
+"""),
+    ("""            ggml_backend_free(shared.backend);
+            shared.backend = nullptr;
+""", """            ggml_backend_free(shared.backend);
+            realme_pool_release();
+            shared.backend = nullptr;
+"""),
+)
+
+
+def apply_pool_patch(tree: Path) -> bool:
+    """Give the shared CPU backend one persistent thread pool. Needs the
+    thread patch first. Idempotent; raises, changing nothing, when an anchor
+    is not found exactly once."""
+    f = Path(tree) / "src" / "gguf_loader.cpp"
+    text = f.read_text(encoding="utf-8")
+    if POOL_MARK in text:
+        return False
+    if any(text.count(a) != 1 for a, _ in POOL_EDITS):
+        raise RuntimeError("gguf_loader.cpp has changed upstream; the thread pool "
+                           "patch does not fit. Nothing was built.")
+    for a, b in POOL_EDITS:
+        text = text.replace(a, b)
+    f.write_text(text, encoding="utf-8")
+    return True
+
+
+#: The engine's own compiler flags follow the processor target chosen for
+#: GGML. Upstream's CMakeLists adds -march=native for GCC and Clang
+#: whatever is asked for, so a "portable" or "avx2" build on Linux or a Mac
+#: still had its engine code tuned for (and only runnable on) the building
+#: computer, and older Apple compilers refuse -march=native on 64-bit ARM.
+#: The patched CMakeLists keeps the tuning under REALME_NATIVE (on by
+#: default, as upstream; -mcpu=native on 64-bit ARM, as GGML uses there),
+#: and the build switches it off for any other target. RealMe's processor-specific kernels do not need it: they check
+#: the processor at run time (x86) or are part of the architecture (NEON).
+NATIVE_MARK = "REALME_NATIVE"
+NATIVE_OLD = '    set(CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE} -O3 -march=native")\n'
+NATIVE_NEW = (
+    '    # RealMe: tuned for the building computer only when built for it; on\n'
+    '    # 64-bit ARM with -mcpu=native, as GGML does there.\n'
+    '    option(REALME_NATIVE "Tune the engine for the building computer" ON)\n'
+    '    if(NOT REALME_NATIVE)\n'
+    '        set(CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE} -O3")\n'
+    '    elseif(CMAKE_SYSTEM_PROCESSOR MATCHES "^(aarch64|arm64|ARM64)$")\n'
+    '        set(CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE} -O3 -mcpu=native")\n'
+    '    else()\n'
+    '        set(CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE} -O3 -march=native")\n'
+    '    endif()\n')
+
+
+def apply_native_patch(tree: Path) -> bool:
+    """Put upstream's -march=native under the REALME_NATIVE option.
+    Idempotent; raises, changing nothing, when the line is not found
+    exactly once."""
+    f = Path(tree) / "CMakeLists.txt"
+    text = f.read_text(encoding="utf-8")
+    if NATIVE_MARK in text:
+        return False
+    if text.count(NATIVE_OLD) != 1:
+        raise RuntimeError("CMakeLists.txt has changed upstream; the processor-target "
+                           "patch does not fit. Nothing was built.")
+    f.write_text(text.replace(NATIVE_OLD, NATIVE_NEW), encoding="utf-8")
+    return True
+
+
+def engine_native(portable: bool, target_cpu: str) -> bool:
+    """-march=native for the engine only when the build is for this computer."""
+    return target_cpu == "native" and not portable
+
+
+#: GGML's own worker threads instead of OpenMP's, when REALME_GGML_OPENMP=0
+#: at build time (recorded as "openmp" in build_info.json). OpenMP's barrier
+#: between operations is whatever the compiler's runtime provides -- on
+#: Windows, MSVC's OpenMP 2.0 runtime; GGML's own spins on an atomic counter.
+#: Which is faster depends on the machine, so it is measured, not assumed.
+def ggml_openmp_wanted() -> bool:
+    return os.environ.get("REALME_GGML_OPENMP", "").strip() != "0"
+
+
 #: ffn_down kept as F32 once, instead of converted on every step.
 #:
 #: Upstream's step graphs contain `ggml_cast(ctx0, layer.ffn_down, F32)`, in
@@ -411,7 +533,7 @@ def apply_broadcast_patch(tree: Path) -> bool:
     return True
 
 
-#: Several sentences in one pass (`qwen3cpp_batch/realme_batch.inc`).
+#: Several sentences in one pass (`qwen3cpp_realme/src/realme_batch.inc`).
 #: The engine's two transformers spend their time reading their weights,
 #: once per step; recording B sentences together reads them once for all B.
 #: The batch code is RealMe's own file, included at the end of the C API
@@ -425,8 +547,16 @@ BATCH_QT_ANCHOR = "private:\n    tts_result synthesize_internal("
 BATCH_API_ANCHOR = '} // extern "C"\n'
 
 
+def own_source(name: str) -> Path:
+    """One of RealMe's own files (`realme_*.inc`): kept in the integrated
+    source's `src/`, where it is edited and built. Before that folder exists
+    (a RealMe from before it), the copy in `qwen3cpp_batch/`."""
+    p = Path(__file__).resolve().parent / "qwen3cpp_realme" / "src" / name
+    return p if p.is_file() else Path(__file__).resolve().parent / "qwen3cpp_batch" / name
+
+
 def batch_source() -> Path:
-    return Path(__file__).resolve().parent / "qwen3cpp_batch" / BATCH_FILE
+    return own_source(BATCH_FILE)
 
 
 def apply_batch_patch(tree: Path) -> bool:
@@ -455,7 +585,7 @@ def apply_batch_patch(tree: Path) -> bool:
 
 
 #: The vocoder's snake activation in one pass with RealMe's own sine
-#: (`qwen3cpp_batch/realme_snake.inc`). Not bit-identical -- the sine is a
+#: (`qwen3cpp_realme/src/realme_snake.inc`). Not bit-identical -- the sine is a
 #: polynomial accurate to about a float's precision, not the C library's --
 #: so it is OFF unless QWEN3_TTS_FAST_SNAKE=1, which `realme engine-timing
 #: --compare` measures and reports the difference of.
@@ -476,7 +606,7 @@ SNAKE_FAST = SNAKE_ANCHOR + """
 
 
 def snake_source() -> Path:
-    return Path(__file__).resolve().parent / "qwen3cpp_batch" / SNAKE_MARK
+    return own_source(SNAKE_MARK)
 
 
 def apply_snake_patch(tree: Path) -> bool:
@@ -499,7 +629,7 @@ def apply_snake_patch(tree: Path) -> bool:
 
 
 #: An 8-bit copy of the voice model, made by the engine's own library from
-#: the 16-bit file (`qwen3cpp_batch/realme_quant.inc`). It lives in its own
+#: the 16-bit file (`qwen3cpp_realme/src/realme_quant.inc`). It lives in its own
 #: folder, `models_q8`, because the engine prefers an 8-bit file it finds
 #: beside the 16-bit one -- putting it there would switch every lecture.
 #: REALME_QWEN3CPP_QUANT=q8_0 makes the adapter use it.
@@ -511,7 +641,7 @@ TOKENIZER_FILE = "qwen3-tts-tokenizer-f16.gguf"
 
 
 def quant_source() -> Path:
-    return Path(__file__).resolve().parent / "qwen3cpp_batch" / QUANT_MARK
+    return own_source(QUANT_MARK)
 
 
 def apply_quant_patch(tree: Path) -> bool:
@@ -662,7 +792,7 @@ def apply_path_patch(tree: Path) -> bool:
 
 
 #: The vocoder's convolutions in 32-bit floats through a matrix multiply
-#: (`qwen3cpp_batch/realme_vocoder.inc`); QWEN3_TTS_VOCODER_F32=1 switches
+#: (`qwen3cpp_realme/src/realme_vocoder.inc`); QWEN3_TTS_VOCODER_F32=1 switches
 #: it on. Each edit is (anchor, replacement), and every anchor is upstream
 #: text the other patches leave alone.
 VOC_MARK = "realme_vocoder.inc"
@@ -751,7 +881,7 @@ VOC_EDITS = (
 
 
 def vocoder_source() -> Path:
-    return Path(__file__).resolve().parent / "qwen3cpp_batch" / VOC_MARK
+    return own_source(VOC_MARK)
 
 
 def apply_vocoder_patch(tree: Path) -> bool:
@@ -775,7 +905,7 @@ def apply_vocoder_patch(tree: Path) -> bool:
 
 
 #: The vocoder's decoder stage without unrolled copies
-#: (`qwen3cpp_batch/realme_vocoder2.inc`); QWEN3_TTS_VOCODER_F32=2 switches it
+#: (`qwen3cpp_realme/src/realme_vocoder2.inc`); QWEN3_TTS_VOCODER_F32=2 switches it
 #: on. Applied after the 32-bit vocoder, whose copies and overlap-add it
 #: uses; its anchors are that patch's text and upstream's.
 VOC2_MARK = "realme_vocoder2.inc"
@@ -824,7 +954,7 @@ VOC2_EDITS = (
 
 
 def vocoder2_source() -> Path:
-    return Path(__file__).resolve().parent / "qwen3cpp_batch" / VOC2_MARK
+    return own_source(VOC2_MARK)
 
 
 def apply_vocoder2_patch(tree: Path) -> bool:
@@ -848,17 +978,89 @@ def apply_vocoder2_patch(tree: Path) -> bool:
     return True
 
 
+#: The vocoder's decoder stage with RealMe's own convolution kernel
+#: (`qwen3cpp_realme/src/realme_vocoder3.inc`, QWEN3_TTS_VOCODER_F32=3): the
+#: signal kept channel by channel throughout, weights packed at load, and
+#: bias, snake and residual add done as rows leave the kernel. Falls back to
+#: the copy-free path (2) where it cannot run. Applied after
+#: apply_vocoder2_patch, on its text.
+VOC3_MARK = "realme_vocoder3.inc"
+VOC3_HEADER_ANCHOR = """    std::map<const struct ggml_tensor *, struct ggml_tensor *> realme2_f32;
+};"""
+VOC3_HEADER = """    std::map<const struct ggml_tensor *, struct ggml_tensor *> realme2_f32;
+
+    // RealMe (QWEN3_TTS_VOCODER_F32=3): the decoder stage's weights packed
+    // for RealMe's convolution kernel
+    struct ggml_context * realme3_ctx = nullptr;
+    ggml_backend_buffer_t realme3_buffer = nullptr;
+    std::map<const struct ggml_tensor *, struct ggml_tensor *> realme3_w;
+};"""
+VOC3_EDITS = (
+    ('#include "realme_vocoder2.inc"\n',
+     '#include "realme_vocoder2.inc"\n#include "realme_vocoder3.inc"\n'),
+    ("    realme_voc2_prepare(model_, state_.backend);\n",
+     "    realme_voc3_prepare(model_, state_.backend);\n"
+     "    realme_voc2_prepare(model_, state_.backend);\n"),
+    ("    model.realme2_f32.clear();\n",
+     """    model.realme2_f32.clear();
+    model.realme3_w.clear();
+    if (model.realme3_buffer) {
+        ggml_backend_buffer_free(model.realme3_buffer);
+        model.realme3_buffer = nullptr;
+    }
+    if (model.realme3_ctx) {
+        ggml_free(model.realme3_ctx);
+        model.realme3_ctx = nullptr;
+    }
+"""),
+    ("     struct ggml_tensor * realme_audio = realme_voc2_back(ctx0, model_, cur);\n",
+     "     struct ggml_tensor * realme_audio = realme_voc3_back(ctx0, model_, cur);\n"
+     "     if (!realme_audio) realme_audio = realme_voc2_back(ctx0, model_, cur);\n"),
+)
+
+
+def vocoder3_source() -> Path:
+    return own_source(VOC3_MARK)
+
+
+def apply_vocoder3_patch(tree: Path) -> bool:
+    """Give the decoder stage RealMe's own convolution kernel (off unless
+    QWEN3_TTS_VOCODER_F32=3). Needs the copy-free vocoder patch first.
+    Idempotent; raises, changing nothing, when an anchor is not found
+    exactly once."""
+    src = Path(tree) / "src"
+    shutil.copy2(vocoder3_source(), src / VOC3_MARK)
+    cf, hf = src / "audio_tokenizer_decoder.cpp", src / "audio_tokenizer_decoder.h"
+    ct, ht = cf.read_text(encoding="utf-8"), hf.read_text(encoding="utf-8")
+    if VOC3_MARK in ct and "realme3_w;" in ht:
+        return False
+    if ht.count(VOC3_HEADER_ANCHOR) != 1 or any(ct.count(a) != 1 for a, _ in VOC3_EDITS):
+        raise RuntimeError("audio_tokenizer_decoder has changed upstream; the "
+                           "vocoder kernel patch does not fit. Nothing was built.")
+    for a, b in VOC3_EDITS:
+        ct = ct.replace(a, b)
+    cf.write_text(ct, encoding="utf-8")
+    hf.write_text(ht.replace(VOC3_HEADER_ANCHOR, VOC3_HEADER), encoding="utf-8")
+    return True
+
+
 #: GGML's tinyBLAS matrix multiply (built with GGML_LLAMAFILE) for the
 #: products RealMe names "realme_sgemm" -- the vocoder's convolutions --
 #: and for nothing else, so the two transformers compute as upstream does.
 #: Applied to the staged GGML (never the vendored copy). QWEN3_TTS_SGEMM=0
-#: turns it off at run time.
+#: turns it off at run time. QWEN3_TTS_SGEMM_ALL=1 (opt-in) gives it every
+#: product it takes: faster passes, but one sentence and a pass no longer
+#: give the same samples (tinyBLAS takes products of two or more columns
+#: only), and the transformers' results move slightly, so listen first.
 SGEMM_MARK = "realme_sgemm"
+SGEMM_ALL_MARK = "QWEN3_TTS_SGEMM_ALL"
 SGEMM_INCLUDE_ANCHOR = """#ifdef GGML_USE_LLAMAFILE
 #include "llamafile/sgemm.h"
 #endif
 """
-SGEMM_INCLUDE = """#ifdef GGML_USE_LLAMAFILE
+#: The gate as it was before QWEN3_TTS_SGEMM_ALL: replaced in place on the
+#: next build (`apply_sgemm_patch`), so a GGML staged earlier picks it up.
+SGEMM_INCLUDE_V1 = """#ifdef GGML_USE_LLAMAFILE
 #include "llamafile/sgemm.h"
 
 // RealMe: GGML's tinyBLAS matrix multiply only for the products RealMe names
@@ -869,6 +1071,31 @@ static bool realme_sgemm(const struct ggml_tensor * dst) {
     // state between the compute threads.
     const char * v;
     if (strncmp(dst->name, "realme_sgemm", 12) != 0) return false;
+    v = getenv("QWEN3_TTS_SGEMM");
+    return !(v && v[0] == '0');
+}
+#endif
+"""
+SGEMM_INCLUDE = """#ifdef GGML_USE_LLAMAFILE
+#include "llamafile/sgemm.h"
+
+// RealMe: GGML's tinyBLAS matrix multiply only for the products RealMe names
+// "realme_sgemm" (the vocoder's convolutions); every other product is
+// computed as upstream computes it. QWEN3_TTS_SGEMM=0 turns it off.
+// QWEN3_TTS_SGEMM_ALL=1 gives tinyBLAS every product it takes (opt-in: one
+// sentence and a pass then differ slightly).
+static int realme_sgemm_all = -1;
+static bool realme_sgemm(const struct ggml_tensor * dst) {
+    const char * v;
+    if (strncmp(dst->name, "realme_sgemm", 12) != 0) {
+        // Read once per process. Every thread that reads it first stores the
+        // same value, so the unsynchronised store is harmless.
+        if (realme_sgemm_all < 0) {
+            v = getenv("QWEN3_TTS_SGEMM_ALL");
+            realme_sgemm_all = (v && v[0] == '1') ? 1 : 0;
+        }
+        return realme_sgemm_all == 1;
+    }
     v = getenv("QWEN3_TTS_SGEMM");
     return !(v && v[0] == '0');
 }
@@ -890,11 +1117,19 @@ SGEMM_FLAG = "-DGGML_LLAMAFILE=ON"
 
 def apply_sgemm_patch(ggml_dir: Path) -> bool:
     """Name-gate GGML's tinyBLAS in the staged GGML. Idempotent; raises,
-    changing nothing, when an anchor is not found exactly once."""
+    changing nothing, when an anchor is not found exactly once. A gate
+    without QWEN3_TTS_SGEMM_ALL is replaced by the current one. True when
+    the file changed (GGML must then be rebuilt)."""
     f = Path(ggml_dir) / "src" / "ggml-cpu" / "ggml-cpu.c"
     text = f.read_text(encoding="utf-8")
     if SGEMM_MARK in text:
-        return False
+        if SGEMM_ALL_MARK in text:
+            return False
+        if text.count(SGEMM_INCLUDE_V1) != 1:
+            raise RuntimeError("GGML's ggml-cpu.c carries a tinyBLAS gate this "
+                               "version does not recognise.")
+        f.write_text(text.replace(SGEMM_INCLUDE_V1, SGEMM_INCLUDE), encoding="utf-8")
+        return True
     if any(text.count(a) != 1 for a, _ in SGEMM_EDITS):
         raise RuntimeError("GGML's ggml-cpu.c has changed; the tinyBLAS gate "
                            "does not fit.")
@@ -904,13 +1139,231 @@ def apply_sgemm_patch(ggml_dir: Path) -> bool:
     return True
 
 
-#: Applied to every built copy, in this order. The timing copy adds its
-#: stopwatch (cpp_timing.apply_profile_patch) on top.
-PATCHES = ("apply_thread_patch", "apply_ffn_patch", "apply_broadcast_patch",
-           "apply_batch_patch", "apply_snake_patch", "apply_quant_patch",
-           "apply_path_patch", "apply_vocoder_patch", "apply_vocoder2_patch")
+#: Made, in this order, by integrate() when it writes qwen3cpp_realme;
+#: nothing is patched while building. The timing copy adds its stopwatch
+#: (cpp_timing.apply_profile_patch) on top.
+PATCHES = ("apply_native_patch", "apply_thread_patch", "apply_pool_patch", "apply_ffn_patch",
+           "apply_broadcast_patch", "apply_batch_patch", "apply_snake_patch",
+           "apply_quant_patch", "apply_path_patch", "apply_vocoder_patch",
+           "apply_vocoder2_patch", "apply_vocoder3_patch")
 CHANGES_FILE = "REALME_CHANGES.md"
 EXPORT_SKIP = {".git", ".sisyphus", "build", "models", "models_q8", "__pycache__"}
+
+#: RealMe's engine source: the original qwen3-tts.cpp with every change in
+#: PATCHES already made, in one folder (`engines/qwen3cpp_realme`). This is
+#: what is built, exported and read; nothing is patched while building.
+#:
+#: The original (`engines/qwen3cpp`, with its GGML) is kept unchanged as the
+#: record of what upstream wrote and as GGML's source. It is never built
+#: unless asked for by name (`build(source="original")`, into a folder of its
+#: own), and RealMe never loads that build.
+#:
+#: `integrate()` writes the folder again from the original and PATCHES -- after
+#: a change to an upstream file (made as a patch in this module, so it can be
+#: made again on a new upstream) or on a new upstream version. RealMe's own
+#: files (`src/realme_*.inc`) are edited where they are, in this folder.
+#: The tests check that the folder is exactly what `integrate()` writes.
+#:
+#: GGML stays upstream's except one file, the tinyBLAS gate's
+#: `ggml-cpu.c`, kept whole under `ggml_overlay/`: a build copies it over
+#: GGML's own only when GGML's is the file it was made from.
+INTEGRATED_DIR = "qwen3cpp_realme"
+INTEGRATED_MANIFEST = "REALME_INTEGRATED.json"
+GGML_OVERLAY = "ggml_overlay"
+GGML_CPU_REL = "src/ggml-cpu/ggml-cpu.c"
+ORIGINAL_HOME_SUFFIX = "_original"
+INTEGRATED_README = "REALME_SOURCE.md"
+INTEGRATED_README_TEXT = """# RealMe's qwen3-tts.cpp source
+
+This folder is the voice engine's source as RealMe builds it: the original
+qwen3-tts.cpp (predict-woo, MIT; `LICENSE` kept) with every RealMe change
+already made. Nothing is patched while building.
+
+- `src/realme_*.inc` -- RealMe's own code (passes, the 8-bit copier and
+  kernel, the vocoders, the snake). Edited here.
+- The upstream files (`src/*.cpp`, `src/*.h`, `CMakeLists.txt`) carry
+  RealMe's changes made by `engines/cpp.py`. A change to one of them is made
+  there, as a patch, and this folder written again
+  (`realme engine cpp --cpp-action integrate`), so the same change can be
+  made again on a new upstream version.
+- `ggml_overlay/src/ggml-cpu/ggml-cpu.c` -- GGML's file with the tinyBLAS
+  gate. A build copies it over GGML's own only when GGML's own is the file
+  it was made from (`REALME_INTEGRATED.json` keeps both fingerprints).
+- `REALME_CHANGES.md` -- every change, its switch, and how it was checked.
+
+The original source, unchanged, is in `engines/qwen3cpp` with its GGML: the
+record of what upstream wrote. It is never built unless asked for by name
+(`realme engine cpp --cpp-action build --source original`), into a folder
+of its own beside the working engine; RealMe never uses that build.
+"""
+
+
+def integrated_dir() -> Path:
+    return Path(__file__).resolve().parent / INTEGRATED_DIR
+
+
+def integrated_ok(root: Path | None = None) -> bool:
+    root = Path(root or integrated_dir())
+    return (root / "CMakeLists.txt").is_file() and (root / INTEGRATED_MANIFEST).is_file()
+
+
+def original_home(home: Path | None = None) -> Path:
+    """Where the original source is built when asked for: beside the
+    working engine, never in it."""
+    home = Path(home or cpp_home())
+    return home.parent / (home.name + ORIGINAL_HOME_SUFFIX)
+
+
+def _text_bytes(p: Path) -> bytes:
+    """A file's bytes with Windows line endings read as Unix ones: the same
+    source checked out or written on Windows (CRLF) or elsewhere (LF) is the
+    same source."""
+    return Path(p).read_bytes().replace(b"\r\n", b"\n")
+
+
+def _sha256(p: Path) -> str:
+    import hashlib
+    return hashlib.sha256(_text_bytes(p)).hexdigest()
+
+
+def _manifest(root: Path) -> dict:
+    import json as _json
+    try:
+        return _json.loads((Path(root) / INTEGRATED_MANIFEST).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+
+
+def integrate(out: Path | None = None, log=print) -> Path:
+    """Write RealMe's engine source: the original with every change in
+    PATCHES made, RealMe's own files, REALME_CHANGES.md, and GGML's gated
+    file. The folder is written whole and then put in place of the old one,
+    so a failed patch leaves the old one as it was."""
+    import json as _json
+    import time as _time
+    src = source_dir()
+    if not (src / "CMakeLists.txt").is_file():
+        raise RuntimeError(f"The original source is missing from {src}.")
+    out = Path(out or integrated_dir())
+    tmp = out.with_name(out.name + ".new")
+    shutil.rmtree(tmp, ignore_errors=True)
+    tmp.mkdir(parents=True)
+    try:
+        ignore = shutil.ignore_patterns(*EXPORT_SKIP)
+        for item in src.iterdir():
+            # GGML is the original's (only its gated file is kept here);
+            # .gitmodules names it as a git submodule, which it is not here.
+            if item.name in EXPORT_SKIP or item.name in ("ggml", "PROVENANCE.md",
+                                                         ".gitmodules"):
+                continue
+            if item.is_dir():
+                shutil.copytree(item, tmp / item.name, ignore=ignore)
+            else:
+                shutil.copy2(item, tmp / item.name)
+        applied = apply_all(tmp)
+        shutil.copy2(changes_source(), tmp / CHANGES_FILE)
+        (tmp / INTEGRATED_README).write_text(INTEGRATED_README_TEXT, encoding="utf-8")
+        overlay = {}
+        base = ggml_source() / GGML_CPU_REL
+        if base.is_file():
+            g = tmp / GGML_OVERLAY
+            (g / GGML_CPU_REL).parent.mkdir(parents=True)
+            shutil.copy2(base, g / GGML_CPU_REL)
+            try:
+                apply_sgemm_patch(g)
+                overlay[GGML_CPU_REL] = {"base_sha256": _sha256(base),
+                                         "sha256": _sha256(g / GGML_CPU_REL)}
+            except RuntimeError as e:
+                log(f"  GGML: {e} No gate kept; built without tinyBLAS.")
+                shutil.rmtree(g, ignore_errors=True)
+        (tmp / INTEGRATED_MANIFEST).write_text(_json.dumps({
+            "made": _time.strftime("%Y-%m-%d"),
+            "from": "engines/qwen3cpp (the original, unchanged)",
+            "ggml_commit": GGML_COMMIT,
+            "changes": list(PATCHES),
+            "ggml_overlay": overlay,
+        }, indent=2), encoding="utf-8")
+    except BaseException:
+        shutil.rmtree(tmp, ignore_errors=True)
+        raise
+    if out.exists():
+        shutil.rmtree(out)
+    tmp.rename(out)
+    log(f"  RealMe's engine source written to {out} ({len(applied)} changes "
+        f"made on the original)")
+    return out
+
+
+def integrated_differs(root: Path | None = None) -> list[str]:
+    """Files in which the integrated source is not what integrate() writes
+    now (manifest dates aside). Empty when they agree, or when the original
+    is not here to compare with."""
+    import tempfile
+    root = Path(root or integrated_dir())
+    if not (source_dir() / "CMakeLists.txt").is_file():
+        return []
+    with tempfile.TemporaryDirectory() as td:
+        fresh = integrate(Path(td) / "fresh", log=lambda *_: None)
+        def files(r):
+            return {p.relative_to(r).as_posix() for p in r.rglob("*")
+                    if p.is_file() and "__pycache__" not in p.parts}
+        a, b = files(root), files(fresh)
+        diff = sorted((a ^ b) - {INTEGRATED_MANIFEST})
+        for rel in sorted(a & b):
+            if rel == INTEGRATED_MANIFEST:
+                continue
+            if _text_bytes(root / rel) != _text_bytes(fresh / rel):
+                diff.append(rel)
+        return diff
+
+
+def _sync_tree(src: Path, dst: Path, skip=()) -> int:
+    """Copy src into dst, writing only files whose contents differ (so they,
+    and only they, are newer than the last build). Returns how many."""
+    n = 0
+    for p in Path(src).rglob("*"):
+        r = p.relative_to(src)
+        if not p.is_file() or r.parts[0] in skip or "__pycache__" in r.parts:
+            continue
+        d = Path(dst) / r
+        if d.is_file() and d.read_bytes() == p.read_bytes():
+            continue
+        d.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(p, d)
+        n += 1
+    return n
+
+
+def gate_ggml(ggml: Path, root: Path | None = None, log=print) -> list[str]:
+    """GGML's tinyBLAS gate from the integrated source's overlay: GGML's
+    ggml-cpu.c replaced by the gated one, only when GGML's own (as staged,
+    or the original's) is the file the overlay was made from. Returns the
+    GGML_LLAMAFILE flag to configure with."""
+    root = Path(root or integrated_dir())
+    target = Path(ggml) / GGML_CPU_REL
+    overlay = root / GGML_OVERLAY / GGML_CPU_REL
+    want = _manifest(root).get("ggml_overlay", {}).get(GGML_CPU_REL, {})
+    if overlay.is_file() and target.is_file() and want:
+        if _sha256(target) == want.get("sha256"):
+            return [SGEMM_FLAG]
+        # GGML's own file, or one an earlier RealMe gated in place, in a GGML
+        # staged from the same original (its CMakeLists the same).
+        base = ggml_source() / GGML_CPU_REL
+        same_ggml = base.is_file() and _sha256(base) == want.get("base_sha256") and \
+            (Path(ggml) / "CMakeLists.txt").is_file() and \
+            (ggml_source() / "CMakeLists.txt").is_file() and \
+            _text_bytes(Path(ggml) / "CMakeLists.txt") == \
+            _text_bytes(ggml_source() / "CMakeLists.txt")
+        if _sha256(target) == want.get("base_sha256") or same_ggml:
+            shutil.copyfile(overlay, target)
+            shutil.rmtree(Path(ggml) / "build", ignore_errors=True)
+            log("  GGML: tinyBLAS for the vocoder's convolutions only")
+            return [SGEMM_FLAG]
+    log("  GGML: not the version RealMe's gate was made for; built without "
+        "tinyBLAS")
+    # Said, not left out: a cached ON from an earlier build would otherwise
+    # turn tinyBLAS on ungated.
+    return ["-DGGML_LLAMAFILE=OFF"]
 
 
 def apply_all(tree: Path, log=lambda *_: None) -> list[str]:
@@ -925,41 +1378,34 @@ def apply_all(tree: Path, log=lambda *_: None) -> list[str]:
 
 def export_source(out: Path, log=print) -> Path:
     """RealMe's revised qwen3-tts.cpp as a standalone source tree: the
-    vendored upstream with every change applied, upstream's licence kept,
-    and REALME_CHANGES.md saying what changed and how it was checked. It
-    builds on its own (GGML included)."""
+    integrated source (the original with every change made), GGML with its
+    gated file, upstream's licence kept, and REALME_CHANGES.md saying what
+    changed and how it was checked. It builds on its own."""
     out = Path(out)
-    src = source_dir()
-    if not (src / "CMakeLists.txt").is_file():
-        raise RuntimeError(f"Vendored source missing from {src}")
+    root = integrated_dir()
+    if not integrated_ok(root):
+        integrate(root, log)
     if out.exists() and any(out.iterdir()):
         raise RuntimeError(f"{out} is not empty; choose a new folder.")
     out.mkdir(parents=True, exist_ok=True)
-    ignore = shutil.ignore_patterns(*EXPORT_SKIP)
-    for item in src.iterdir():
-        if item.name in EXPORT_SKIP:
-            continue
-        if item.is_dir():
-            shutil.copytree(item, out / item.name, ignore=ignore)
-        else:
-            shutil.copy2(item, out / item.name)
-    applied = apply_all(out)
-    if (out / "ggml" / "src" / "ggml-cpu" / "ggml-cpu.c").is_file():
-        try:
-            if apply_sgemm_patch(out / "ggml"):
-                applied.append("apply_sgemm_patch")
-        except RuntimeError as e:
-            log(f"  {e} The exported GGML is upstream's.")
-    shutil.copy2(Path(__file__).resolve().parent / "qwen3cpp_batch" / CHANGES_FILE,
-                 out / CHANGES_FILE)
-    log(f"  exported to {out}: upstream qwen3-tts.cpp with {len(applied)} "
-        f"RealMe changes; LICENSE (MIT, predict-woo) kept; see {CHANGES_FILE}")
+    _sync_tree(root, out, skip=(GGML_OVERLAY, INTEGRATED_MANIFEST, INTEGRATED_README))
+    # Upstream's vendoring note for RealMe, not part of the source.
+    prov = source_dir() / "PROVENANCE.md"
+    if prov.is_file():
+        shutil.copy2(prov, out / "PROVENANCE.md")
+    if (ggml_source() / "CMakeLists.txt").is_file():
+        shutil.copytree(ggml_source(), out / "ggml",
+                        ignore=shutil.ignore_patterns(*EXPORT_SKIP))
+        if gate_ggml(out / "ggml", root, log=lambda *_: None) != [SGEMM_FLAG]:
+            log("  The exported GGML is upstream's (no gate).")
+    log(f"  exported to {out}: RealMe's engine source ({root.name}); LICENSE "
+        f"(MIT, predict-woo) kept; see {CHANGES_FILE}")
     return out
 
 
 #: realme-qwen3-tts.cpp, the revised engine on its own (`export_release`).
 RELEASE_NAME = "realme-qwen3-tts.cpp"
-RELEASE_VERSION = "1.2.0"
+RELEASE_VERSION = "1.3.0"
 RELEASE_LICENSE_LINE = "Copyright (c) 2026 Xinhua Yu (RealMe's changes)"
 
 
@@ -969,6 +1415,10 @@ RELEASE_PLACE = {"quantize_q8.py": "tools/quantize_q8.py"}
 
 def release_source() -> Path:
     return Path(__file__).resolve().parent / "qwen3cpp_batch" / "release"
+
+
+def changes_source() -> Path:
+    return Path(__file__).resolve().parent / "qwen3cpp_batch" / CHANGES_FILE
 
 
 def export_release(out: Path, log=print, zip_it: bool = True) -> Path:
@@ -1064,7 +1514,9 @@ Your cloned voice for any tool that can use OpenAI's text-to-speech or "an
 OpenAI-compatible voice server": nothing uploaded, nothing to pay. This folder
 is self-contained -- the voice engine (realme-qwen3-tts.cpp, built for
 {cpu} processors), its 8-bit model, and the server. It needs only Python 3.9
-or newer (https://www.python.org/downloads/), with no packages.
+or newer (https://www.python.org/downloads/), with no packages. On a Windows
+PC that has never had it, the engine also needs Microsoft's Visual C++
+Redistributable (x64): https://aka.ms/vs/17/release/vc_redist.x64.exe
 
 1. Put a recording of each voice in `voices\\` as a WAV file:
    `voices\\realme.wav` is the voice "realme", the default (10-60 seconds of
@@ -1075,7 +1527,7 @@ or newer (https://www.python.org/downloads/), with no packages.
    listening at `http://127.0.0.1:<port>/v1/audio/speech`, on this computer
    only.
 4. In the tool, add a voice server (OpenAI-compatible): address
-   `http://127.0.0.1:<port>` (some tools want `http://127.0.0.1:<port>/v1`),
+   `http://127.0.0.1:<port>/v1` (some tools want it without `/v1`),
    model `realme-qwen3-tts`, voice `realme`, no key.
 
 A request is ordinary OpenAI speech JSON:
@@ -1084,7 +1536,8 @@ A request is ordinary OpenAI speech JSON:
 
 It answers in MP3 (OpenAI's default; needs ffmpeg on the PATH, otherwise
 WAV), or `"response_format": "wav"`, `"pcm"`, `"flac"`, `"opus"`, `"aac"`.
-`"language"` (en, zh, ja, de, fr, es, it, pt, ko, ru) and `"speed"` work too.
+`"language"` (en, zh, ja, de, fr, es, it, pt, ko, ru) and `"speed"` (with
+ffmpeg) work too.
 Long text is split into sentences and recorded several at a time; requests
 that arrive together are recorded together. `GET /v1/voices` lists the voices.
 
@@ -1096,9 +1549,9 @@ only to the model `realme-qwen3-tts`; a tool that can send only another name
 Options on the command line override the file: `server\\start_server.bat
 --help`.
 
-The engine is realme-qwen3-tts.cpp: qwen3-tts.cpp by predict-woo and GGML by
-the ggml authors (both MIT), with RealMe's changes (CHANGES.md); see LICENSE
-and NOTICE.md. The model files in `models_q8\\` were converted from the Qwen
+The engine is realme-qwen3-tts.cpp: qwen3-tts.cpp by predict-woo (`LICENSE`)
+and GGML by the ggml authors (`LICENSE_GGML`), both MIT, with RealMe's
+changes (CHANGES.md); see NOTICE.md. The model files in `models_q8\\` were converted from the Qwen
 team's Qwen3-TTS weights, which carry their own licence: read it before
 passing this folder on. Clone only your own voice, or one you have permission
 to use.
@@ -1165,11 +1618,12 @@ def export_server_bundle(out: Path, home: Path | None = None,
         shutil.copy2(voice_wav, voices / "realme.wav")
         voice_note = ("\n   Your RealMe voice recording is already there as "
                       "`voices\\realme.wav`;\n   keep this folder private.")
-    cpu = "this computer's"
+    cpu = "this computer's (and similar)"
     try:
         import json as _json
-        cpu = _json.loads((home / "build_info.json").read_text(encoding="utf-8")
-                          ).get("cpu") or cpu
+        target = _json.loads((home / "build_info.json").read_text(encoding="utf-8")
+                             ).get("cpu")
+        cpu = {"avx2": "any AVX2", "baseline": "any 64-bit x86"}.get(target, cpu)
     except (OSError, ValueError):
         pass
     (out / "README.md").write_text(
@@ -1182,6 +1636,11 @@ def export_server_bundle(out: Path, home: Path | None = None,
             text.replace(first, first + "\n" + RELEASE_LICENSE_LINE, 1) if first else text,
             encoding="utf-8")
     shutil.copy2(rel / "NOTICE.md", out / "NOTICE.md")
+    # GGML's licence goes with GGML's compiled libraries in bin/ (MIT asks
+    # for the notice with every copy).
+    glic = ggml_source() / "LICENSE"
+    if glic.is_file():
+        shutil.copy2(glic, out / "LICENSE_GGML")
     shutil.copy2(Path(__file__).resolve().parent / "qwen3cpp_batch" / CHANGES_FILE,
                  out / "CHANGES.md")
     log(f"  the voice server is in {out}: start it with server\\start_server.bat")
@@ -1419,8 +1878,14 @@ CPU_TARGETS = {
 
 def build(home: Path | None = None, log=print, force: bool = False,
           portable: bool = False, target_cpu: str = "native",
-          jobs: int = 0, gpu: str = "auto") -> Path:
-    home = Path(home or cpp_home())
+          jobs: int = 0, gpu: str = "auto", source: str = "realme") -> Path:
+    """Build the engine from RealMe's integrated source (the default), or,
+    with source="original", the original upstream source unchanged, into a
+    folder of its own beside the working engine (for comparison only)."""
+    if source not in ("realme", "original"):
+        raise ValueError(f"source must be 'realme' or 'original', not {source!r}")
+    original = source == "original"
+    home = Path(home) if home else (original_home() if original else cpp_home())
     cli = cli_path(home)
     if cli.is_file() and not force:
         log(f"  already built: {cli}")
@@ -1432,45 +1897,43 @@ def build(home: Path | None = None, log=print, force: bool = False,
     log(f"  compiler: {kind} ({detail})")
     cmake = find_cmake(log)
 
-    src = source_dir()
-    if not (src / "CMakeLists.txt").is_file():
-        raise RuntimeError(f"Vendored source missing from {src}")
-
     # The upstream CMakeLists expects ./ggml beside the sources and its build
     # output under ./ggml/build/src, so the tree is assembled in `home` rather
     # than built in place. Building inside the package directory would also
     # write into an installed site-packages tree, which is not ours to dirty.
     home.mkdir(parents=True, exist_ok=True)
-    log(f"  staging source into {home}")
-    for item in src.iterdir():
-        # ggml is staged separately below; copying it here as well would move
-        # 25 MB twice.
-        if item.name in ("PROVENANCE.md", "ggml"):
-            continue
-        dst = home / item.name
-        if item.is_dir():
-            shutil.copytree(item, dst, dirs_exist_ok=True)
-        else:
-            shutil.copy2(item, dst)
-
-    applied = apply_all(home)
-    if applied:
-        log(f"  RealMe's changes applied ({len(applied)}; see "
-            f"qwen3cpp_batch/{CHANGES_FILE})")
+    if original:
+        src = source_dir()
+        if not (src / "CMakeLists.txt").is_file():
+            raise RuntimeError(f"The original source is missing from {src}")
+        log(f"  staging the ORIGINAL source, unchanged, into {home} "
+            f"(for comparison; RealMe does not use this build)")
+        n = _sync_tree(src, home, skip=("ggml", "PROVENANCE.md", *EXPORT_SKIP))
+    else:
+        src = integrated_dir()
+        if not integrated_ok(src):
+            log("  RealMe's engine source is not here yet; writing it from "
+                "the original and RealMe's changes")
+            integrate(src, log)
+        log(f"  staging RealMe's engine source ({src.name}) into {home}")
+        n = _sync_tree(src, home, skip=(GGML_OVERLAY, INTEGRATED_MANIFEST,
+                                        INTEGRATED_README))
+    log(f"  {n} file(s) new or changed since the last build")
 
     ggml = fetch_ggml(home, log)
-    # tinyBLAS only with its gate: without it, every product in the engine
-    # would change. A GGML the gate does not fit is built without tinyBLAS.
-    try:
-        if apply_sgemm_patch(ggml):
-            log("  GGML: tinyBLAS for the vocoder's convolutions only")
+    if original:
+        # GGML as upstream builds it; its own gate-free ggml-cpu.c.
+        base = ggml_source() / GGML_CPU_REL
+        if base.is_file() and (ggml / GGML_CPU_REL).is_file() and \
+                (ggml / GGML_CPU_REL).read_bytes() != base.read_bytes():
+            shutil.copyfile(base, ggml / GGML_CPU_REL)
             shutil.rmtree(ggml / "build", ignore_errors=True)
-        sgemm = [SGEMM_FLAG]
-    except RuntimeError as e:
-        log(f"  GGML: {e} Built without tinyBLAS.")
-        # Said, not left out: a cached ON from an earlier build would
-        # otherwise turn tinyBLAS on ungated.
-        sgemm = ["-DGGML_LLAMAFILE=OFF"]
+        sgemm = []
+    else:
+        # tinyBLAS only with its gate: without it, every product in the
+        # engine would change. A GGML the gate was not made for is built
+        # without tinyBLAS.
+        sgemm = gate_ggml(ggml, src, log)
 
     # Do this after everything is staged and before CMake runs.
     if normalise_mtimes(home, log):
@@ -1570,6 +2033,10 @@ def build(home: Path | None = None, log=print, force: bool = False,
         # Explicit, not merely absent: ggml defaults Metal ON when it detects a
         # Mac, so a CPU-only build there has to say so.
         gpu_flags = list(gpu_flags) + ["-DGGML_METAL=OFF"]
+        if not original:
+            # Accelerate too (GGML's BLAS backend, on by default on a Mac):
+            # the engine prefers it to the CPU, where RealMe's changes run.
+            gpu_flags.append("-DGGML_BLAS=OFF")
     if accelerated:
         log(f"  building ggml with the {gpu} backend")
     else:
@@ -1580,12 +2047,14 @@ def build(home: Path | None = None, log=print, force: bool = False,
           "-DCMAKE_BUILD_TYPE=Release", *gpu_flags,
           *CPU_TARGETS.get("avx2" if portable and target_cpu == "native"
                            else target_cpu, []),
-          *sgemm, "-DGGML_BUILD_TESTS=OFF", "-DGGML_BUILD_EXAMPLES=OFF"],
+          *sgemm, "-DGGML_BUILD_TESTS=OFF", "-DGGML_BUILD_EXAMPLES=OFF",
+          *([] if original else
+            [f"-DGGML_OPENMP={'ON' if ggml_openmp_wanted() else 'OFF'}"])],
          "ggml configure", log, env=env)
     _run([cmake, "--build", str(ggml / "build"), "--config", "Release", "-j", j],
          "ggml build", log, env=env)
 
-    log("  building qwen3-tts.cpp")
+    log("  building qwen3-tts.cpp" + (" (the original)" if original else ""))
     # On Windows a DLL exports NOTHING unless each symbol is marked
     # __declspec(dllexport) or a .def file lists them. Upstream does neither --
     # it never needed to, because the CLI links the static libraries directly.
@@ -1597,8 +2066,11 @@ def build(home: Path | None = None, log=print, force: bool = False,
     # is exactly what upstream would have written. Passed as a variable rather
     # than patched into their CMakeLists, so the vendored copy stays diffable.
     extra = ["-DCMAKE_WINDOWS_EXPORT_ALL_SYMBOLS=ON"] if os.name == "nt" else []
+    native = [] if original else [
+        f"-DREALME_NATIVE={'ON' if engine_native(portable, target_cpu) else 'OFF'}"]
     _run([cmake, "-S", str(home), "-B", str(home / "build"), *generator,
-          "-DCMAKE_BUILD_TYPE=Release", *extra], "configure", log, env=env)
+          "-DCMAKE_BUILD_TYPE=Release", *extra, *native],
+         "configure", log, env=env)
     _run([cmake, "--build", str(home / "build"), "--config", "Release", "-j", j],
          "build", log, env=env)
 
@@ -1623,15 +2095,25 @@ def build(home: Path | None = None, log=print, force: bool = False,
     # Record what was built. Nothing else can tell later -- a GPU-capable
     # binary and a CPU-only one look identical on disk.
     import json as _json
+    if original:
+        (home / "build_info.json").write_text(_json.dumps(
+            {"gpu": gpu, "portable": portable, "source": "original",
+             "cpu": "avx2" if portable and target_cpu == "native" else target_cpu,
+             "generator": "ninja" if generator else "default"}, indent=2),
+            encoding="utf-8")
+        log("  the original engine, for comparison only; RealMe keeps using "
+            f"{cpp_home()}")
+        return cli
     (home / "build_info.json").write_text(
-        _json.dumps({"gpu": gpu, "portable": portable,
+        _json.dumps({"gpu": gpu, "portable": portable, "source": "realme",
                      "cpu": "avx2" if portable and target_cpu == "native"
                             else target_cpu,
                      "generator": "ninja" if generator else "default",
                      "threads_applied": True, "ffn_f32": True,
                      "broadcast": True, "batch": True,
                      "fast_snake": True, "quant": True,
-                     "vocoder_f32": True, "vocoder2": True,
+                     "vocoder_f32": True, "vocoder2": True, "vocoder3": True,
+                     "stream": True, "pool": True, "openmp": ggml_openmp_wanted(),
                      "sgemm": sgemm == [SGEMM_FLAG]},
                     indent=2), encoding="utf-8")
 
@@ -1733,6 +2215,16 @@ def rebuild(home: Path | None = None, log=print) -> Path:
         raise
     shutil.rmtree(keep, ignore_errors=True)
     return cli
+
+
+def vocoder3_built(home: Path | None = None) -> bool:
+    """Was this engine built with RealMe's vocoder kernel (QWEN3_TTS_VOCODER_F32=3)?"""
+    import json as _json
+    try:
+        return bool(_json.loads((Path(home or cpp_home()) / "build_info.json")
+                                .read_text(encoding="utf-8")).get("vocoder3"))
+    except (OSError, ValueError):
+        return False
 
 
 def vocoder2_built(home: Path | None = None) -> bool:
@@ -1907,6 +2399,10 @@ def status(home: Path | None = None) -> dict:
         # it -- the same reason the compiler is reported.
         "glslc": __import__("realme.core.gpu", fromlist=["x"]).vulkan_sdk(),
         "nvcc": __import__("realme.core.gpu", fromlist=["x"]).cuda_toolkit(),
+        # What is built: RealMe's integrated source. The original is kept
+        # as the record and as GGML's source.
+        "built_from": str(integrated_dir()),
+        "built_from_present": integrated_ok(),
         "source": str(source_dir()),
         "source_present": (source_dir() / "CMakeLists.txt").is_file(),
         "ggml_present": (ggml_source() / "CMakeLists.txt").is_file(),
@@ -1933,6 +2429,48 @@ APPCONTROL_ADVICE = """  This is Smart App Control / WDAC, not the antivirus, an
   Nothing is wrong with your build. The exe is intact and was compiled on this
   machine from source in your own repository; the policy simply declines to run
   anything unsigned."""
+
+
+def pass_advice(home: Path | None = None) -> list[str]:
+    """Sentences per pass and the vocoder, as they will be used here, and
+    where the pass size comes from (measured on this engine, or the
+    default). Never raises."""
+    try:
+        from realme.adapters.tts_qwen3_dll import (DEFAULT_BATCH, DEFAULTED, batch_built_at,
+                                                   batch_measured, batch_stale,
+                                                   quant_setting, vocoder_defaults)
+        h = Path(home or cpp_home())
+        if not batch_built_at(h):
+            return ["passes     : one sentence at a time (this engine was built before "
+                    "passes; _Rebuild_Voice_Engine.bat)"]
+        q = quant_setting()
+        raw = os.environ.get("REALME_RECORD_BATCH", "").strip()
+        got = batch_measured(h).get(q)
+        if raw:
+            b, why = raw, "REALME_RECORD_BATCH"
+        elif got:
+            b, why = got, "measured on this computer and engine"
+        else:
+            b = DEFAULT_BATCH.get(q, 1)
+            why = ("the default; the last measurement predates the rebuild"
+                   if q in batch_stale(h) else "the default")
+        # A value the user set wins; one RealMe set follows the engine as built.
+        mine = "QWEN3_TTS_VOCODER_F32" not in DEFAULTED
+        voc = ((mine and os.environ.get("QWEN3_TTS_VOCODER_F32"))
+               or vocoder_defaults(h)["QWEN3_TTS_VOCODER_F32"])
+        names = {"3": "RealMe's kernel", "2": "copy-free 32-bit", "1": "32-bit", "0": "the original"}
+        import json as _json
+        info = _json.loads((h / "build_info.json").read_text(encoding="utf-8"))
+        refill = (info.get("stream") and os.environ.get("REALME_RECORD_STREAM", "").strip() != "0")
+        out = [f"passes     : {b} sentences per pass, {q} model ({why})"
+               + (", each finished sentence handing its place to the next" if refill else ""),
+               f"vocoder    : {names.get(voc, voc)} (QWEN3_TTS_VOCODER_F32={voc})"]
+        if not got and not raw:
+            out.append("  optional: Twin Setup > Measure this computer (about 15 minutes) "
+                       "finds the best pass size for this one")
+        return out
+    except Exception:
+        return []
 
 
 def engine_advice(home: Path | None = None) -> list[str]:
@@ -1994,6 +2532,7 @@ def engine_advice(home: Path | None = None) -> list[str]:
             lines.append(f"recording  : {t} threads per engine on {cores} "
                          f"cores; up to {n} engine{'s' if n > 1 else ''} at "
                          f"once, memory permitting")
+            lines.extend(pass_advice(home))
         if built == "avx2" and cpu["x86"]:
             lines.append("  optional: --cpp-action build --force  rebuilds for "
                          "this exact CPU; measure whether it is faster")

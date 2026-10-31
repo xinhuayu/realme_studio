@@ -133,6 +133,15 @@ SEED: list[Entry] = [
     Entry("GEE", ipa="ˌdʒiːˌiːˈiː", respelling="G E E", wrong=["dʒˈiː"]),
     Entry("Haenszel", ipa="hˈɛnsəl", respelling="HEN-sel", wrong=["hˈiːnszəl"]),
     Entry("PICO", ipa="pˈiːkoʊ", respelling="PEE-koh", note="verify against your usage"),
+    # Said as words in public health, found spelled letter by letter in a
+    # lecture's checks. NSDUH, CDC, MRI, PTSD and the like are said as
+    # letters and need no entry.
+    Entry("SAMHSA", ipa="sˈæmsə", respelling="Sam-suh",
+          note="Substance Abuse and Mental Health Services Administration; said as a word"),
+    Entry("JAMA", ipa="dʒˈæmə", respelling="Jam-uh",
+          note="the journal; said as a word"),
+    Entry("PET", ipa="pˈɛt", respelling="pet",
+          note="positron emission tomography, as in a PET scan; said as a word"),
     Entry("a priori", ipa="ˌeɪpɹaɪˈɔːɹaɪ", respelling="ay pry-OR-eye",
           wrong=["ɐ pɹaɪˈɔːɹi"], case_sensitive=False,
           note="espeak gives the anglicised 'uh pry-OR-ee'"),

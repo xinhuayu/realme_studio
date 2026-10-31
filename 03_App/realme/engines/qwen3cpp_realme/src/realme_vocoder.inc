@@ -1,8 +1,8 @@
 // realme_vocoder.inc -- RealMe: the vocoder's convolutions in 32-bit floats,
 // through a matrix multiply.
 //
-// Included into audio_tokenizer_decoder.cpp in RealMe's staged copy of the
-// engine (never the vendored source). The vocoder turns the codes into
+// Included into audio_tokenizer_decoder.cpp in RealMe's revised engine
+// (not in upstream's source). The vocoder turns the codes into
 // 24,000 samples a second through about thirty convolutions; on the CPU
 // upstream's version takes a quarter to a half of the engine's time.
 // Upstream runs them as
@@ -48,7 +48,8 @@ namespace qwen3_tts {
 static bool realme_vocoder_f32_wanted() {
     static const bool on = [] {
         const char * v = std::getenv("QWEN3_TTS_VOCODER_F32");
-        if (!(v && (v[0] == '1' || v[0] == '2'))) return false;   // 2: realme_vocoder2.inc
+        // 2: realme_vocoder2.inc; 3: realme_vocoder3.inc
+        if (!(v && (v[0] == '1' || v[0] == '2' || v[0] == '3'))) return false;
         // Low-memory mode reloads the model for every sentence to keep the
         // peak down; the copies would add to it.
         const char * low = std::getenv("QWEN3_TTS_LOW_MEM");
@@ -58,16 +59,16 @@ static bool realme_vocoder_f32_wanted() {
 }
 
 // Whether a sentence of n_frames codes is decoded in 32 bits (see above).
-// With QWEN3_TTS_VOCODER_F32=2 (realme_vocoder2.inc) the decoder stage needs
-// less working memory than upstream's at any length, so there is no limit
-// unless one is set.
+// With QWEN3_TTS_VOCODER_F32=2 or 3 (realme_vocoder2.inc, realme_vocoder3.inc)
+// the decoder stage needs less working memory than upstream's at any length,
+// so there is no limit unless one is set.
 static bool realme_vocoder_frames_ok(int32_t n_frames) {
     static const int32_t cap = [] {
         const char * v = std::getenv("QWEN3_TTS_VOCODER_F32_MAX_FRAMES");
         const long n = v ? std::strtol(v, nullptr, 10) : 0;
         if (n > 0) return (int32_t) n;
         const char * mode = std::getenv("QWEN3_TTS_VOCODER_F32");
-        return (mode && mode[0] == '2') ? INT32_MAX : (int32_t) 250;
+        return (mode && (mode[0] == '2' || mode[0] == '3')) ? INT32_MAX : (int32_t) 250;
     }();
     return n_frames <= cap;
 }

@@ -1,0 +1,25 @@
+{
+  "made": "2026-10-30",
+  "from": "engines/qwen3cpp (the original, unchanged)",
+  "ggml_commit": "3af5f5760e19a96427f5f7a93b79cbdf3d4b265b",
+  "changes": [
+    "apply_native_patch",
+    "apply_thread_patch",
+    "apply_pool_patch",
+    "apply_ffn_patch",
+    "apply_broadcast_patch",
+    "apply_batch_patch",
+    "apply_snake_patch",
+    "apply_quant_patch",
+    "apply_path_patch",
+    "apply_vocoder_patch",
+    "apply_vocoder2_patch",
+    "apply_vocoder3_patch"
+  ],
+  "ggml_overlay": {
+    "src/ggml-cpu/ggml-cpu.c": {
+      "base_sha256": "91dcbcb706b09786ccb76102dc897c79fcc7b649db1388a9761c9a69c48a9cbd",
+      "sha256": "d0a2cbdc64a5f974b758ea300c5599a3a1441f404d7d9302772a2ceff535d267"
+    }
+  }
+}

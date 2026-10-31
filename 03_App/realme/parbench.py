@@ -19,6 +19,10 @@ What it does, for each layout (workers x threads each):
   * does all of it more than once, because the engine samples without a
     seed and one run is one draw.
 
+With --batch N each engine records N sentences per pass (the local clone's
+passes, as lectures record them), so two engines at 3 threads with passes
+can be set against one at 6 with passes.
+
 It reports, per layout: the memory each worker took, the time for the batch,
 and the speed relative to one worker. It recommends parallel recording only
 when the best layout is faster in EVERY run than one worker is in ANY run, so
@@ -155,9 +159,30 @@ class _SelfTest:
                 2 * math.pi * 200 * i / rate))) for i in range(int(rate * secs))))
         return Path(out_wav)
 
+    def synthesize_batch(self, items):
+        return [self.synthesize(t, o, pace=p) for t, o, p, _ in items]
+
+
+def _pass(jobs, batch: int):
+    """Up to `batch` sentences: the first waited for, the rest only if they
+    are already there. Returns (items, stop)."""
+    first = jobs.get()
+    if first is None:
+        return [], True
+    items = [first]
+    while len(items) < batch:
+        try:
+            nxt = jobs.get_nowait()
+        except queue.Empty:
+            break
+        if nxt is None:
+            return items, True
+        items.append(nxt)
+    return items, False
+
 
 def _worker(spec: str, reference: str | None, threads: int, outdir: str,
-            tag: str, jobs, results, go) -> None:
+            tag: str, jobs, results, go, batch: int = 1) -> None:
     """One engine process: load, say so, wait for the start, then record
     whatever sentences are handed to it until told to stop."""
     wid = os.getpid()
@@ -177,7 +202,30 @@ def _worker(spec: str, reference: str | None, threads: int, outdir: str,
     from realme.text.prepare import prepare_for_speech
     lx = Lexicon()
     syntax = getattr(tts, "phoneme_syntax", None) or "none"
+    if batch > 1:
+        from realme.pipeline.prerecord import base_engine
+        base = base_engine(tts)
+        if not hasattr(base, "synthesize_batch"):
+            batch = 1
     go.wait()
+    while batch > 1:
+        items, stop = _pass(jobs, batch)
+        if items:
+            outs = [Path(outdir) / f"{tag}_{i:02d}.wav" for i, _t, _p in items]
+            try:
+                t0 = time.perf_counter()
+                done = base.synthesize_batch(
+                    [(prepare_for_speech(text, syntax, lx).engine_text, o, pace, None)
+                     for (i, text, pace), o in zip(items, outs)])
+                wall = time.perf_counter() - t0
+                from realme.core.media import duration_of
+                for (i, _t, _p), o in zip(items, done):
+                    results.put(("done", i, wall / len(items), duration_of(o)))
+            except Exception as e:
+                for i, _t, _p in items:
+                    results.put(("error", i, 0.0, f"{e.__class__.__name__}: {e}"))
+        if stop:
+            return
     while True:
         item = jobs.get()
         if item is None:
@@ -202,6 +250,7 @@ class Run:
     workers: int
     threads: int
     repeat: int
+    batch: int = 1
     wall_s: float = 0.0
     audio_s: float = 0.0
     load_s: float = 0.0
@@ -228,17 +277,17 @@ class Layout:
 def run_layout(spec: str, script: list[tuple[str, float]], workers: int,
                threads: int, outdir: Path, repeat: int,
                reference: Path | None, log=print,
-               load_timeout_s: float = 900.0) -> Run:
+               load_timeout_s: float = 900.0, batch: int = 1) -> Run:
     import multiprocessing as mp
     ctx = mp.get_context("spawn")
     jobs, results, go = ctx.Queue(), ctx.Queue(), ctx.Event()
-    tag = f"{workers}x{threads}_run{repeat}"
+    tag = f"{workers}x{threads}" + (f"_b{batch}" if batch > 1 else "") + f"_run{repeat}"
     outdir.mkdir(parents=True, exist_ok=True)
-    run = Run(workers, threads, repeat)
+    run = Run(workers, threads, repeat, batch)
     free_before = available_memory_gb()
     procs = [ctx.Process(target=_worker,
                          args=(spec, str(reference) if reference else None,
-                               threads, str(outdir), tag, jobs, results, go),
+                               threads, str(outdir), tag, jobs, results, go, batch),
                          daemon=True)
              for _ in range(workers)]
     for p in procs:
@@ -306,6 +355,12 @@ def estimate_s(script: list[tuple[str, float]], layouts, repeat: int) -> float:
     return total
 
 
+#: How much faster than one worker a layout must be, in every run, to be
+#: recommended.
+WORTH = 1.05
+RECORD_WORKERS_ENV = "REALME_RECORD_WORKERS"
+
+
 def verdict(layouts: list[Layout]) -> dict:
     """Is any layout faster than one worker by more than the noise?"""
     base = layouts[0]
@@ -328,20 +383,22 @@ def verdict(layouts: list[Layout]) -> dict:
                        f"({base.label} threads). Parallel recording would "
                        f"not help on this machine."}
     clear = max(best.walls()) < min(bw)
-    worth = clear and best_speed >= 1.2
+    # Small but certain gains count: a lecture is long enough for 5% to be
+    # minutes.
+    worth = clear and best_speed >= WORTH
     say = (f"{best.label} finished the same sentences {best_speed:.2f} times "
            f"as fast as one worker")
     if worth:
-        say += (", in every run. Parallel recording is worth building for "
-                f"this machine, with {best.workers} workers of "
-                f"{best.threads} threads.")
+        say += (", in every run. Worth using on this machine: "
+                f"`realme key {RECORD_WORKERS_ENV} {best.workers}` (each "
+                f"engine then gets an equal share of the cores).")
     elif not clear:
         say += (", but the runs overlap: the difference is inside the "
                 "run-to-run noise. Not worth building on this evidence; "
                 "--repeat 3 would settle it.")
     else:
-        say += (". Consistent, but under 1.2 times -- too small to be worth "
-                "the extra memory and heat.")
+        say += (f". Consistent, but under {WORTH} times -- too small to be "
+                "worth the extra memory and heat.")
     return {"worth_it": worth, "best": best.label if best else None,
             "speedup": round(best_speed, 2), "say": say}
 
@@ -393,15 +450,19 @@ def can_start(spec: str, reference: Path | None) -> str:
 
 
 def main(spec: str, script: list[tuple[str, float]], layouts, *, repeat: int,
-         outdir: Path, reference: Path | None, log=print) -> dict:
+         outdir: Path, reference: Path | None, log=print, batch: int = 1) -> dict:
     cores = os.cpu_count() or 4
     free = available_memory_gb()
     log(f"  machine: {platform.processor() or platform.machine()}, {cores} "
         f"logical cores, "
         + (f"{free:.0f} GB memory free" if free is not None else "free memory unknown"))
-    log(f"  engine: {spec}; {len(script)} sentences; each layout run {repeat} times")
+    log(f"  engine: {spec}; {len(script)} sentences; each layout run {repeat} times"
+        + (f"; {batch} sentences per pass in each engine" if batch > 1 else ""))
     results: list[Layout] = []
     gb_each = GB_PER_WORKER_GUESS if spec != "selftest" else 0.0
+    if batch > 1 and spec != "selftest":
+        from realme.pipeline.prerecord import GB_PER_BATCH_SENTENCE
+        gb_each += batch * GB_PER_BATCH_SENTENCE
     for w, t in layouts:
         lay = Layout(w, t)
         results.append(lay)
@@ -414,7 +475,8 @@ def main(spec: str, script: list[tuple[str, float]], layouts, *, repeat: int,
         for r in range(1, repeat + 1):
             log(f"\n  {lay.label} threads, run {r} of {repeat}: loading "
                 f"{w} engine{'s' if w > 1 else ''} ...")
-            run = run_layout(spec, script, w, t, outdir, r, reference, log=log)
+            run = run_layout(spec, script, w, t, outdir, r, reference, log=log,
+                             batch=batch)
             lay.runs.append(run)
             if run.wall_s:
                 log(f"    {run.wall_s:.0f}s for {run.audio_s:.0f}s of speech "
@@ -439,6 +501,7 @@ def main(spec: str, script: list[tuple[str, float]], layouts, *, repeat: int,
     stamp = time.strftime("%Y%m%d_%H%M%S")
     out = {"when": stamp, "engine": spec, "cores": cores,
            "memory_free_gb": free, "sentences": len(script), "repeat": repeat,
+           "batch": batch,
            "layouts": [{**{k: v_ for k, v_ in asdict(l).items() if k != "runs"},
                         "runs": [asdict(r) for r in l.runs]} for l in results],
            "verdict": v}

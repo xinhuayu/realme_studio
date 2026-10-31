@@ -61,8 +61,11 @@ def main() -> int:
     check(not v["worth_it"] and "noise" in v["say"],
           "runs that overlap are called noise, not a result", v["say"])
     v = PB.verdict([lay(1, 6, [300, 302]), lay(2, 4, [280, 285])])
-    check(not v["worth_it"] and "1.2" in v["say"],
-          "a consistent but small gain is not worth building", v["say"])
+    check(v["worth_it"] and "REALME_RECORD_WORKERS 2" in v["say"],
+          "a consistent gain of 5% or more is worth using, and says how", v["say"])
+    v = PB.verdict([lay(1, 6, [300, 302]), lay(2, 4, [290, 293])])
+    check(not v["worth_it"] and "1.05" in v["say"],
+          "a consistent but smaller gain is not", v["say"])
     v = PB.verdict([lay(1, 6, [300, 302]), lay(2, 4, [330, 340])])
     check(not v["worth_it"] and v["best"] is None,
           "slower is reported as no help", v["say"])

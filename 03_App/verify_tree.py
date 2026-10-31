@@ -424,7 +424,7 @@ except Exception as e:
 try:
     bad = []
     for f in (APP / "realme").rglob("*.py"):
-        if any(x in f.parts for x in ("qwen3cpp", "ov", "knnvc", "__pycache__")):
+        if any(x in f.parts for x in ("qwen3cpp", "qwen3cpp_realme", "ov", "knnvc", "__pycache__")):
             continue
         for n in ast.walk(ast.parse(f.read_text(encoding="utf-8"))):
             if (isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)
@@ -449,7 +449,7 @@ except Exception as e:
 try:
     bad = []
     for f in APP.rglob("*.py"):
-        if any(x in f.parts for x in ("qwen3cpp", "ov", "knnvc", "__pycache__")):
+        if any(x in f.parts for x in ("qwen3cpp", "qwen3cpp_realme", "ov", "knnvc", "__pycache__")):
             continue
         try:
             tree = ast.parse(f.read_text(encoding="utf-8"))

@@ -151,11 +151,18 @@ def _bind(lib: ctypes.CDLL) -> None:
         fn.argtypes = [c_void_p, POINTER(c_char_p), c_int32, POINTER(c_float),
                        c_int32, POINTER(Params), POINTER(POINTER(Audio))]
         fn.restype = c_int32
+    # Passes whose places are refilled (engines/cpp.py, apply_batch_patch).
+    # Optional: older builds lack it.
+    fn = getattr(lib, STREAM_FN, None)
+    if fn is not None:
+        fn.argtypes = [c_void_p, c_int32, STREAM_NEXT, STREAM_DONE, c_void_p,
+                       POINTER(c_float), c_int32, POINTER(Params)]
+        fn.restype = c_int32
 
 
-#: Which copy of the voice model to use: "f16" (the default, the model as
-#: converted) or "q8_0" (RealMe's 8-bit copy in models_q8/, made by
-#: `realme engine cpp --cpp-action quantize`). Set with
+#: Which copy of the voice model to use: "f16" (the model as converted) or
+#: "q8_0" (RealMe's 8-bit copy in models_q8/, made after every build or by
+#: `realme engine cpp --cpp-action quantize`; the default once it exists). Set with
 #: `realme key REALME_QWEN3CPP_QUANT q8_0`.
 QUANT_ENV = "REALME_QWEN3CPP_QUANT"
 
@@ -168,7 +175,11 @@ def quant_setting(home: Path | None = None) -> str:
     and not told apart in listening."""
     v = os.environ.get(QUANT_ENV, "").strip().lower()
     if v:
-        return "q8_0" if v.startswith("q8") else "f16"
+        if v.startswith("q8"):
+            return "q8_0"
+        if v.startswith("f"):
+            return "f16"
+        # Anything else: as if nothing were set.
     return "q8_0" if q8_ready(home) else "f16"
 
 
@@ -181,16 +192,17 @@ def q8_ready(home: Path | None = None) -> bool:
     return (d / Q8_FILE).is_file() and (d / TOKENIZER_FILE).is_file()
 
 
-#: Sentences per pass where this computer has not measured its own
-#: (`_Bench_Batch.bat`): what measures best on a 6-core PC --
-#: 16-bit 1.51 s of work per second of speech at 8 (2.54 one at a time),
-#: 8-bit 1.35 at 4 (1.77). The sound is identical whatever the size; only the
-#: memory differs, and the prerecorder lowers it where memory is short.
-DEFAULT_BATCH = {"f16": 8, "q8_0": 4}
+#: Sentences per pass where this computer has not measured its own engine
+#: (`_Bench_Batch.bat`, or Twin Setup's Measure): what measures best on a
+#: 6-core PC -- 8-bit 0.58 s of work per second of speech at 8 (0.68 at 4,
+#: 1.25 one at a time), 16-bit best at 8 as well. The sound is identical
+#: whatever the size; only the memory differs, and the prerecorder lowers it
+#: where memory is short.
+DEFAULT_BATCH = {"f16": 8, "q8_0": 8}
 
 
-def batch_measured() -> dict:
-    """What `bench-batch` saved on this computer: {"f16": 4, "q8_0": 2}."""
+def _batch_saved() -> dict:
+    """{quant: (batch, when)} as `bench-batch` saved them."""
     import json
     try:
         from realme.core.env import data_home
@@ -204,19 +216,48 @@ def batch_measured() -> dict:
     out = {}
     for q, v in saved.items():
         try:
-            out[q] = int((v or {}).get("batch"))
+            out[q] = (int((v or {}).get("batch")), str((v or {}).get("when") or ""))
         except (TypeError, ValueError, AttributeError):
             pass
     return out
 
 
+def _measured_before_build(when: str, home: Path | None = None) -> bool:
+    """Was a measurement taken (`when`: %Y%m%d_%H%M%S, local time) before
+    the engine in `home` was last built? Then it measured another engine."""
+    import time as _time
+    try:
+        from realme.engines.cpp import cpp_home
+        built = (Path(home or cpp_home()) / "build_info.json").stat().st_mtime
+        return _time.mktime(_time.strptime(when, "%Y%m%d_%H%M%S")) < built
+    except (OSError, ValueError, ImportError, OverflowError):
+        return False
+
+
+def batch_measured(home: Path | None = None) -> dict:
+    """What `bench-batch` saved on this computer for the engine as built now:
+    {"f16": 8, "q8_0": 8}. A measurement from before the last rebuild is left
+    out (see batch_stale): the defaults apply until the engine is measured
+    again."""
+    return {q: b for q, (b, when) in _batch_saved().items()
+            if not (when and _measured_before_build(when, home))}
+
+
+def batch_stale(home: Path | None = None) -> list:
+    """The models whose saved measurement predates the engine's last build."""
+    return sorted(q for q, (b, when) in _batch_saved().items()
+                  if when and _measured_before_build(when, home))
+
+
 #: The engine's vocoder switches RealMe turns on unless they are set: the
-#: one-pass snake with RealMe's sine, and the 32-bit vocoder -- in its
-#: copy-free form ("2") where the engine was built with it, else "1". On a
-#: 6-core PC "1" took the vocoder from 0.85 to 0.55 seconds of work per
-#: second of speech, the samples 62 dB below the speech apart and not heard
-#: in listening; "2" gives the same samples (about 120 dB apart) in about a
-#: third less time and a third of the working memory. A value set in the
+#: one-pass snake with RealMe's sine, and the 32-bit vocoder -- with
+#: RealMe's own convolution kernel ("3") where the engine was built with it,
+#: else in its copy-free form ("2"), else "1". On a 6-core PC "1" took the
+#: vocoder from 0.85 to 0.55 seconds of work per second of speech, the
+#: samples 62 dB below the speech apart and not heard in listening; "2"
+#: gives the same samples (about 120 dB apart) in about a third less time
+#: and a third of the working memory; "3" the same again (about 110 dB
+#: apart) in about a quarter less time than "2". A value set in the
 #: shell, in the settings file (`realme key`) or in Twin Setup ("0" for the
 #: original) wins. Read once per process by the engine, so a change takes
 #: effect in a new process.
@@ -229,8 +270,10 @@ def vocoder_defaults(home: Path | None = None) -> dict:
     """VOCODER_DEFAULTS for the engine in `home` (default: the installed one)."""
     out = dict(VOCODER_DEFAULTS)
     try:
-        from realme.engines.cpp import vocoder2_built
-        if vocoder2_built(home):
+        from realme.engines.cpp import vocoder2_built, vocoder3_built
+        if vocoder3_built(home):
+            out["QWEN3_TTS_VOCODER_F32"] = "3"
+        elif vocoder2_built(home):
             out["QWEN3_TTS_VOCODER_F32"] = "2"
     except Exception:
         pass
@@ -275,9 +318,9 @@ def vocoder_setting() -> str:
     """"fast" (both on, the default), "original" (both "0"), or "mixed"."""
     snake = os.environ.get("QWEN3_TTS_FAST_SNAKE") or VOCODER_DEFAULTS["QWEN3_TTS_FAST_SNAKE"]
     voc = os.environ.get("QWEN3_TTS_VOCODER_F32") or VOCODER_DEFAULTS["QWEN3_TTS_VOCODER_F32"]
-    if snake != "0" and voc in ("1", "2"):
+    if snake != "0" and voc in ("1", "2", "3"):
         return "fast"
-    if snake == "0" and voc not in ("1", "2"):
+    if snake == "0" and voc not in ("1", "2", "3"):
         return "original"
     return "mixed"
 
@@ -304,6 +347,18 @@ def batch_default(quant: str | None = None) -> int:
 
 #: Several sentences in one pass (see engines/qwen3cpp_batch).
 BATCH_FN = "qwen3_tts_synthesize_batch_with_embedding"
+#: A pass whose places are refilled as its sentences finish.
+STREAM_FN = "qwen3_tts_synthesize_stream_with_embedding"
+STREAM_NEXT = ctypes.CFUNCTYPE(c_int32, c_void_p, POINTER(c_char_p))
+STREAM_DONE = ctypes.CFUNCTYPE(c_int32, c_void_p, c_int32, POINTER(c_float), c_int32, c_int32)
+
+
+class StreamFailed(AdapterUnavailable):
+    """A stream stopped part way: `pending` are the items it took and did
+    not hand back (each still to record)."""
+    def __init__(self, message: str, pending: list):
+        super().__init__(message)
+        self.pending = pending
 #: Where `realme bench-batch` saves how many sentences per pass to use.
 BATCH_FILE = "qwen3_batch.json"
 
@@ -915,6 +970,109 @@ class Qwen3DllTTS(BaseTTS):
                 retime(o, p)
             probe(o)
         return [o for _, o, _, _ in items]
+
+    def can_stream(self) -> bool:
+        """Can this engine refill a pass's places (synthesize_stream)?"""
+        try:
+            self.preflight()
+        except Exception:
+            return False
+        return getattr(self._lib, STREAM_FN, None) is not None
+
+    def synthesize_stream(self, next_item, on_done, slots: int, voice=None) -> None:
+        """Record sentences up to `slots` at a time, each finished sentence
+        handing its place to the next. `next_item()` gives the next (text,
+        out_wav, pace, language), None if none is waiting now, or False when
+        none will come; it is asked whenever a place is free. `on_done(item,
+        error)` is called for each sentence as it lands where `synthesize`
+        would have put it (error None), or with why it has no audio.
+
+        Each sentence comes out as it would alone. Sentences of another
+        language than the current stream's wait for a stream of their own.
+        Returns once nothing is left to do now; raises StreamFailed with the
+        sentences still to record if the engine stops part way."""
+        self.preflight()
+        fn = getattr(self._lib, STREAM_FN, None)
+        if fn is None:
+            raise AdapterUnavailable("This engine was built before streams; "
+                                     "run _Rebuild_Voice_Engine.bat")
+        ref = Path(voice) if voice else self.reference_wav
+        if ref is not None:
+            from realme.core.media import ensure_reference_wav
+            ref = ensure_reference_wav(Path(ref))
+        emb = (self._speaker_embedding(Path(ref))
+               if ref and Path(ref).is_file() else None)
+        if emb is None:
+            raise AdapterUnavailable("A stream needs the voice's speaker embedding")
+        buf, n = self._shifted(*emb)
+        carry: list = []                    # waiting for a stream in its language
+        ended = False
+        while True:
+            first = carry.pop(0) if carry else (False if ended else next_item())
+            if first is False:
+                return
+            if first is None:
+                return
+            first = (first[0], Path(first[1]), float(first[2] or 1.0), first[3])
+            lang = first[3] or None
+            params = self._params(lang)
+            taken, handed, keep, failed = [], set(), [], []
+
+            def give(out) -> int:
+                nonlocal ended
+                try:
+                    if not taken:
+                        it = first
+                    elif ended or carry:
+                        return -1
+                    else:
+                        it = next_item()
+                        if it is False:
+                            ended = True
+                            return -1
+                        if it is None:
+                            return 0
+                        it = (it[0], Path(it[1]), float(it[2] or 1.0), it[3])
+                        if (it[3] or None) != lang:
+                            carry.append(it)
+                            return -1
+                    taken.append(it)
+                    b = c_char_p(it[0].encode("utf-8"))
+                    keep.append(b)
+                    out[0] = b
+                    return 1
+                except Exception as e:          # never across the C boundary
+                    failed.append(e)
+                    return -1
+
+            def done(user, i, samples, n_samples, rate) -> int:
+                try:
+                    it = taken[i]
+                    handed.add(i)
+                    if n_samples <= 0:
+                        on_done(it, "The engine returned no audio")
+                        return 1
+                    a = Audio()
+                    a.samples, a.n_samples, a.sample_rate = samples, n_samples, rate
+                    self._write_wav(ctypes.pointer(a), it[1])
+                    if abs(it[2] - 1.0) > 1e-3:
+                        retime(it[1], it[2])
+                    probe(it[1])
+                    on_done(it, None)
+                    return 1
+                except Exception as e:
+                    failed.append(e)
+                    return 0
+
+            nx = STREAM_NEXT(lambda user, out: give(out))
+            dn = STREAM_DONE(done)
+            got = fn(self._handle, int(slots), nx, dn, None, buf, n, byref(params))
+            pending = [it for i, it in enumerate(taken) if i not in handed]
+            if got < 0 or failed:
+                err = (self._lib.qwen3_tts_get_error(self._handle) or b"").decode(
+                    "utf-8", "replace") if got < 0 else f"{failed[0].__class__.__name__}: {failed[0]}"
+                raise StreamFailed(f"Stream stopped: {err or 'no detail from the engine'}",
+                                   pending + carry)
 
     def close(self) -> None:
         if self._handle and self._lib:

@@ -12,7 +12,7 @@ paper or a topic into a two-voice podcast.
 | | |
 |---|---|
 | **Gemini** (`gemini-tts`) | your voice cloned in your Google project. Every sentence of a lecture is sent there to be spoken. No graphics card; a lecture records in about a third of its length (100 minutes in 30–40), because the slide videos are made while the audio comes back and two sentences are requested at once; about a dollar an hour of lecture, 130 languages. Needs a **paid** Gemini project: on the free tier Google's terms say people may review what you send, and your voice is personal information |
-| **The free local clone** (`qwen3cpp`) | your voice cloned on your own computer, by RealMe's revised voice engine. Nothing leaves it and nothing to pay; about real time on a 6-core PC (an hour of lecture in about an hour), longer on a laptop. It comes in a RealMe package, or `3_Get_Voice_Engine.bat` builds it (section 12) |
+| **The free local clone** (`qwen3cpp`) | your voice cloned on your own computer, by RealMe's revised voice engine. Nothing leaves it and nothing to pay; faster than real time on a 6-core PC (an hour of lecture in about three quarters of an hour), longer on a smaller laptop; 10 languages. It comes in a RealMe package, or `3_Get_Voice_Engine.bat` builds it (section 12) |
 | **No clone** | the three free draft voices — Amy, Ryan and Cori — read your lectures |
 
 The draft voices are there either way: use them to hear a script before you
@@ -33,7 +33,7 @@ read and edit that draft before anything is spoken.
 | **A Gemini API key** | from https://aistudio.google.com. It drafts the narration from your slides, and speaks it if you choose the Gemini clone — then the project must be linked to a billing account |
 | **Your slides as a PDF** | PowerPoint: *File → Save As → PDF*. A `.pptx` works only if LibreOffice is installed; otherwise RealMe asks for the PDF |
 | **A quiet room and a decent microphone** | for a cloned voice: thirty to sixty seconds of your speech, plus one consent sentence |
-| **About 2 GB of free disk** | RealMe, the draft voices and your renders |
+| **About 2 GB of free disk** | RealMe, the draft voices and your renders; about 6 GB with the free local clone |
 
 You do not need a graphics card, a compiler, or any audio software.
 
@@ -465,11 +465,10 @@ Two Gemini settings in Twin Setup, both best left alone:
 your narration leaves the machine, it works with the network unplugged, and
 recording costs nothing. It runs on **RealMe's revised voice engine**: the
 open-source qwen3-tts.cpp (by predict-woo, on the GGML library) with RealMe's
-changes, which make it 3.5 to 3.7 times as fast with the same sound. On a
-6-core PC it measured about real time -- 1.07 seconds of work per second
-of speech, against 3.8 for the original engine -- so an hour of lecture
-records in about an hour, a twenty-minute lecture in about 20 minutes; longer
-on a smaller laptop. Draft with Amy or Ryan first and let the final render run
+changes, which make it about six and a half times as fast with the same
+sound. On a 6-core PC it measured 0.58 seconds of work per second of speech
+at 8 sentences per pass, against 3.8 for the original engine; a whole
+lecture rendered in about 0.7 times its length. Longer on a smaller laptop. Draft with Amy or Ryan first and let the final render run
 unattended. The same engine is published on its own as
 **realme-qwen3-tts.cpp**, for anyone who wants it outside RealMe.
 
@@ -489,7 +488,7 @@ build it for your own processor:
    and Ninja; RealMe finds them itself.
 2. Double-click **`00_Windows\3_Get_Voice_Engine.bat`** and answer *y*. It
    downloads the Qwen3-TTS voice model (about 2.5 GB, once), converts it,
-   builds the engine from the source inside RealMe with every change applied,
+   builds RealMe's engine from its source inside RealMe,
    and makes the 8-bit copy of the model that lectures use. About 6 GB of
    disk and 20–40 minutes; parts already done are skipped if you run it
    again.
@@ -508,33 +507,41 @@ the working engine back.
 - **Several sentences per pass**: the engine's time goes mostly into reading
   its model from memory, so a pass of several sentences reads it once for
   all of them. The sound is exactly the same as one at a time. By default 8
-  per pass with the 16-bit model and 4 with the 8-bit one, fewer where memory
-  is short; `00_Windows\_Bench_Batch.bat` measures 1 to 16 per pass on your
-  computer and saves the best size (the smallest within 6% of the fastest).
-- **The 8-bit model**, which reads half as much per step (1.35 against 1.51
-  seconds of work per second of speech, and not told apart in listening).
-  Lectures use it once a build has made it; until then, the 16-bit one.
+  per pass, fewer where memory is short; as each sentence finishes, the next
+  takes its place in the pass. `00_Windows\_Bench_Batch.bat` (or **Measure
+  this computer** in Twin Setup) measures 1 to 16 per pass on your computer
+  and saves the best size (the smallest within 6% of the fastest).
+- **The 8-bit model**, which reads half as much per step and is not told
+  apart in listening. In a pass, RealMe multiplies each 8-bit weight row
+  against every sentence at once, with exactly GGML's arithmetic (AVX2 on
+  x86, NEON on 64-bit ARM), and checks itself against GGML's own result when
+  the engine starts. Lectures use the 8-bit model once a build has made it;
+  until then, the 16-bit one.
 - **A faster vocoder** (the part that turns the model's codes into sound):
-  its convolutions in 32 bits, reading the signal in place rather than
-  through unrolled copies -- well over one and a half times as fast as the
-  original, the samples about 60 dB below the speech apart (not heard in
-  listening), and with less working memory than the original, so sentences
-  of any length use it.
+  its convolutions in 32 bits, by RealMe's own kernel -- AVX2 on x86
+  processors, chosen when the engine starts, NEON on 64-bit ARM, and the
+  copy-free vocoder elsewhere. About four times as fast as the original
+  (0.19 against 0.80 seconds of work per second of speech), the samples
+  about 60 dB below the speech apart (not heard in listening), and
+  with less working memory, so sentences of any length use it.
+- **One set of engine threads kept for the whole recording**, instead of
+  starting them again for every step.
 - **Slide videos made while it records**, where the processor has threads
   the engine leaves free (a 6-core, 12-thread desktop has six).
 
 ### A real example
 
-A 51-slide lecture of 52 minutes (578 sentences) rendered in **57 minutes**
-from start to finish: 56 minutes recording, then 42 seconds to finish the
-slide videos, join, caption and check -- 1.10 times the lecture's length.
+A 51-slide lecture, a 52-minute video of 578 sentences, recorded in **35 to
+37 minutes** and rendered in **36½ to 38** from start to finish, in two
+runs -- 0.71 to 0.73 times the lecture's length (before the latest changes,
+the same lecture took 44 and 46 minutes).
 The computer was a small Intel NUC: an i7-10710U, a 15-watt laptop processor
 with 6 cores and 12 threads, 64 GB of DDR4-2667 memory and no graphics card
 (Intel UHD graphics only), with the engine built for AVX2 processors. The
-settings were RealMe's defaults: the 8-bit model, 4 sentences per pass, the
-faster vocoder (sentences up to 30 seconds, as the machine has 64 GB), 6
-threads, and two slide-video encoders on the 6 threads the engine leaves
-free.
+settings were RealMe's defaults: the 8-bit model, 8 sentences per pass (what
+`_Bench_Batch.bat` chose on it), refilled as sentences finished, RealMe's
+vocoder kernel, 6 threads, and two
+slide-video encoders on the 6 threads the engine leaves free.
 
 On other computers: the model's steps mostly wait on memory, so faster
 memory (DDR5, or more memory channels) speeds those up; the vocoder is
@@ -583,7 +590,21 @@ when the Studio is started again. Each model keeps its own recordings, so a
 lecture recorded in the other model is recorded again the next time it
 renders. (`realme key REALME_QWEN3CPP_QUANT f16`, `REALME_RECORD_BATCH`,
 `QWEN3_TTS_FAST_SNAKE 0` and `QWEN3_TTS_VOCODER_F32 0` set the same things
-from the command line.) `00_Windows\_Engine_Check_8bit.bat` and `_Engine_Check_Vocoder.bat`
+from the command line.)
+
+**Automatic defaults**, the first button under those choices, puts every
+voice-engine setting back to RealMe's own for this computer at once: the
+8-bit model, 8 sentences per pass (fewer where memory is short), the fastest
+vocoder the engine was built with, threads and engine copies by the cores,
+and no engine switch from `realme key`. Settings made in the shell before the
+Studio started are left alone and named; recordings already made are kept.
+These defaults suit most computers. **Measure this computer**, the second
+button, is optional: it finds the best pass size for this one (about 15
+minutes, followed in Activity; nothing else records meanwhile), as
+`_Bench_Batch.bat` does. After the voice engine is rebuilt, a measurement
+made before the rebuild is set aside and the default used until it is
+measured again. `realme setup` says which pass size and vocoder are in use
+and where the pass size comes from. `00_Windows\_Engine_Check_8bit.bat` and `_Engine_Check_Vocoder.bat`
 record the same sentences each way, to listen to side by side.
 
 If it does not start:
@@ -591,13 +612,14 @@ If it does not start:
 - `realme setup` says *built for 'avx2', and it CRASHES on this processor* —
   rebuild for an older processor:
   `realme engine cpp --cpp-action build --force --target-cpu baseline`
-- `realme engine cpp --cpp-action status` says *BLOCKED by Windows* — allow it
+- `realme engine cpp --cpp-action status` says *BLOCKED by Defender* — allow it
   in Windows Security → Virus & threat protection → Protection history. Do not
   turn real-time protection off.
-- A graphics card can make it much faster:
-  `realme engine cpp --cpp-action build --force --gpu cuda` (NVIDIA) or
-  `--gpu vulkan` (any vendor). `realme setup` says whether this machine is
-  worth it. Rebuilding needs a C++ compiler (Visual Studio Build Tools).
+- A graphics card may help, but has not been measured with RealMe (see *A
+  real example* above): `realme engine cpp --cpp-action build --force --gpu
+  cuda` (NVIDIA) or `--gpu vulkan` (any vendor). `realme setup` says whether
+  this machine looks worth trying. Rebuilding needs a C++ compiler (Visual
+  Studio Build Tools).
 
 ---
 

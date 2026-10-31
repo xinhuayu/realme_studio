@@ -89,6 +89,18 @@ def main() -> int:
           "the copy-free vocoder by default, with no length limit", sw)
     for k in list(sw):
         os.environ.pop(k, None)
+    _lib = Path(tempfile.mkdtemp()) / "libqwen3tts.so"
+    _lib.write_bytes(b"\0ELF..  [realme] vocoder 3: on (%d convolutions)\0")
+    sw = S.set_engine_defaults(False, 3, _lib)
+    check(sw["QWEN3_TTS_VOCODER_F32"] == "3" and "QWEN3_TTS_VOCODER_F32_MAX_FRAMES" not in sw,
+          "RealMe's vocoder kernel with an engine built with it", sw)
+    for k in list(sw):
+        os.environ.pop(k, None)
+    _lib.write_bytes(b"\0ELF..  [realme] vocoder 2: on\0")
+    sw = S.set_engine_defaults(False, 3, _lib)
+    check(sw["QWEN3_TTS_VOCODER_F32"] == "2", "and the copy-free one with an engine built before it", sw)
+    for k in list(sw):
+        os.environ.pop(k, None)
     os.environ["QWEN3_TTS_VOCODER_F32"] = "1"
     sw = S.set_engine_defaults(False, 3)
     check(sw["QWEN3_TTS_VOCODER_F32_MAX_FRAMES"] in ("125", "250", "375"),
@@ -220,9 +232,11 @@ def main() -> int:
           and (out / "server" / "start_server.bat").is_file()
           and (out / "voices" / "realme.wav").read_bytes() == b"RIFFvoice"
           and json.loads((out / "voice_server.json").read_text(encoding="utf-8"))["voice"] == "realme"
-          and "avx2" in (out / "README.md").read_text(encoding="utf-8")
-          and (out / "NOTICE.md").is_file() and (out / "CHANGES.md").is_file(),
-          "it carries the engine, the 8-bit model, the server, the voice and the notices")
+          and "built for\nany AVX2 processors" in (out / "README.md").read_text(encoding="utf-8")
+          and (out / "NOTICE.md").is_file() and (out / "CHANGES.md").is_file()
+          and ((out / "LICENSE_GGML").is_file() or not (cpp.ggml_source() / "LICENSE").is_file()),
+          "it carries the engine, the 8-bit model, the server, the voice and the "
+          "notices, GGML's licence among them")
     (out / "voices" / "guest.wav").write_bytes(b"RIFFguest")
     (out / "stale.txt").write_text("x")
     (out / "voice_server.json").write_text('{"port": 5050}', encoding="utf-8")

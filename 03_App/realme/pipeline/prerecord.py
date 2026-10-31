@@ -36,6 +36,12 @@ a failure here costs time, never takes.
                             step; a pass of several sentences reads them once
                             for all. Unset: what `realme bench-batch`
                             measured on this computer, or 1 (off).
+    REALME_RECORD_STREAM    with passes, on an engine that can: 0 records in
+                            fixed passes instead of a stream whose places are
+                            refilled as sentences finish.
+    REALME_RECORD_LOOKAHEAD fixed passes: how many passes' worth of waiting
+                            sentences a pass chooses among, by length (1-8;
+                            default 3; 1 takes them in order).
 """
 from __future__ import annotations
 
@@ -287,7 +293,11 @@ def _record_batch(tts, group: list, results) -> None:
     except QuotaExceeded as e:
         for t in group:
             results.put(("quota", t.key, 0.0, (str(e), _per_minute(e))))
-    except Exception:
+    except Exception as e:
+        # Said, so a slower stretch of the render has a reason in the log.
+        results.put(("note", None, 0.0,
+                     f"a pass of {len(group)} sentences failed "
+                     f"({e.__class__.__name__}: {e}); recording them one at a time"))
         for t in group:
             _record(tts, t, results)
 
@@ -311,7 +321,160 @@ def _engine_process(blob: bytes, fingerprint: str, threads: int, jobs,
     _consume(tts, jobs, results, batch)
 
 
-def _consume(tts, jobs, results, batch: int = 1) -> None:
+#: A pass runs until its longest sentence is done, its places emptying as
+#: the shorter ones finish, so a pass of similar lengths wastes less. Each
+#: pass takes the oldest waiting sentence -- the slide the render waits for
+#: is never put off -- and fills its other places with the waiting sentences
+#: nearest it in length (same language first), chosen among LOOKAHEAD
+#: passes' worth; a sentence that has waited 2 x LOOKAHEAD passes goes in
+#: the next one whatever its length. A sentence's samples do not depend on
+#: its pass. On a real script, 8 per pass, this took the time lost to
+#: uneven passes from about 20% of the generation to about 6%, no sentence
+#: more than 4 passes later than in order.
+LOOKAHEAD_ENV = "REALME_RECORD_LOOKAHEAD"
+LOOKAHEAD = 3
+
+
+def lookahead() -> int:
+    raw = os.environ.get(LOOKAHEAD_ENV, "").strip()
+    try:
+        return max(1, min(8, int(raw))) if raw else LOOKAHEAD
+    except ValueError:
+        return LOOKAHEAD
+
+
+def pick_pass(waiting: list, batch: int, due: int = 1) -> list:
+    """Take a pass out of `waiting` (oldest first): its first `due` (at
+    least the oldest), then the sentences nearest the oldest in length. In
+    the order they were waiting."""
+    head = waiting[0]
+    chosen = list(range(min(len(waiting), max(1, due), batch)))
+    rest = range(len(chosen), len(waiting))
+    near = sorted(rest, key=lambda j: (waiting[j].language != head.language,
+                                       abs(len(waiting[j].text) - len(head.text)), j))
+    chosen = sorted(chosen + near[:batch - len(chosen)])
+    group = [waiting[j] for j in chosen]
+    for j in reversed(chosen):
+        del waiting[j]
+    return group
+
+
+def _consume_passes(tts, jobs, results, batch: int) -> None:
+    ahead = lookahead()
+    window = batch * ahead
+    waiting, since, last, n = [], {}, False, 0
+    while True:
+        while not last and len(waiting) < window:
+            try:
+                # Wait for the first; then take what is already there.
+                item = jobs.get() if not waiting else jobs.get(timeout=0.5)
+            except Exception:                  # empty for now: go with these
+                break
+            if item is None:
+                last = True
+                break
+            waiting.append(item)
+            since[id(item)] = n
+        if not waiting:
+            return
+        # Waiting is oldest first, so the overdue ones lead it.
+        due = 0
+        while due < len(waiting) and n - since[id(waiting[due])] >= 2 * ahead:
+            due += 1
+        group = pick_pass(waiting, batch, due)
+        for t in group:
+            since.pop(id(t), None)
+        n += 1
+        if len(group) > 1 and hasattr(tts, "synthesize_batch"):
+            _record_batch(tts, group, results)
+        else:
+            for t in group:
+                _record(tts, t, results)
+        if last and not waiting:
+            return
+
+
+#: With passes, an engine that can refill a pass's places (the local
+#: clone's stream entry point) records in a stream: up to `batch` sentences
+#: at once, in order, each finished one handing its place to the next, so
+#: no pass waits on its longest sentence. A sentence's samples do not depend
+#: on its pass. 0 records in fixed passes instead (grouped by length, as
+#: above).
+STREAM_ENV = "REALME_RECORD_STREAM"
+
+
+def stream_wanted() -> bool:
+    return os.environ.get(STREAM_ENV, "").strip() != "0"
+
+
+def _consume_stream(tts, jobs, results, batch: int) -> None:
+    from realme.adapters.tts_qwen3_dll import StreamFailed
+    from realme.core.media import duration_of
+    taken: dict = {}                     # out_wav -> Take, handed to the engine
+    state = {"last": False, "t": time.perf_counter()}
+    first: list = []
+
+    def item_of(t):
+        taken[str(t.path)] = t
+        return (t.text, t.path, t.pace, t.language)
+
+    def next_item():
+        if first:
+            return first.pop()
+        if state["last"]:
+            return False
+        try:
+            t = jobs.get(timeout=0.05)
+        except Exception:                      # none waiting now
+            return None
+        if t is None:
+            state["last"] = True
+            return False
+        return item_of(t)
+
+    def on_done(it, error):
+        t = taken.pop(str(it[1]))
+        now = time.perf_counter()
+        secs, state["t"] = now - state["t"], now
+        if error:
+            results.put(("error", t.key, 0.0, error))
+        else:
+            results.put(("done", t.key, secs, duration_of(t.path)))
+
+    while not state["last"]:
+        t = jobs.get()                         # wait for work
+        if t is None:
+            return
+        first.append(item_of(t))
+        state["t"] = time.perf_counter()
+        try:
+            tts.synthesize_stream(next_item, on_done, batch)
+        except StreamFailed as e:
+            results.put(("note", None, 0.0, f"the stream stopped ({e}); recording "
+                                            f"{len(e.pending)} sentence(s) one at a time"))
+            for it in e.pending:
+                rec = taken.pop(str(it[1]), None)
+                if rec is not None:
+                    _record(tts, rec, results)
+        except Exception as e:
+            # The engine could not stream at all: these one by one, and the
+            # rest in fixed passes.
+            results.put(("note", None, 0.0, f"no stream ({e.__class__.__name__}: {e}); "
+                                            f"recording in fixed passes"))
+            for rec in list(taken.values()):
+                _record(tts, rec, results)
+            taken.clear()
+            if not state["last"]:
+                _consume(tts, jobs, results, batch, stream=False)
+            return
+
+
+def _consume(tts, jobs, results, batch: int = 1, stream: bool = True) -> None:
+    if (batch > 1 and stream and stream_wanted() and callable(getattr(tts, "can_stream", None))
+            and tts.can_stream()):
+        return _consume_stream(tts, jobs, results, batch)
+    if batch > 1 and lookahead() > 1:
+        return _consume_passes(tts, jobs, results, batch)
     while True:
         item = jobs.get()
         if item is None:
@@ -477,6 +640,9 @@ class Prerecorder:
                 self._settle_rest()
             return False
         if kind == "ready":
+            return True
+        if kind == "note":
+            self.log(f"  {extra}")
             return True
         if kind == "failed":
             self.failed_engines += 1

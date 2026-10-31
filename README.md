@@ -9,8 +9,8 @@ records in about a third of its length (100 minutes in 30–40), about a dollar
 an hour of lecture — your recording and the
 narration are sent to Google, so use a **paid** API project. **The free local
 clone** (`qwen3cpp`) keeps everything on your computer at no cost, on
-RealMe's revised voice engine: about real time on a 6-core PC (an hour
-of lecture in about an hour). It comes in a RealMe package, or
+RealMe's revised voice engine: faster than real time on a 6-core PC (an
+hour of lecture in about three quarters of an hour). It comes in a RealMe package, or
 `3_Get_Voice_Engine.bat` builds it (Visual Studio Build Tools). Or use the
 three free draft voices for everything.
 
@@ -46,6 +46,7 @@ realme lecture RealMe_Guide_v4.pdf --script imported -o guide_v4
 03_App\         The application — a Python package.
 tools\          ffmpeg and the draft voices (and the local clone, if added).
 START_HERE.md   The guide.
+DESIGN.md       How the local voice engine is built, and why it is fast.
 HANDOVER.md     How to package RealMe for a colleague.
 realme.bat      Runs the command line without activating the environment.
 ```
@@ -81,7 +82,7 @@ python 03_App\run_tests.py --json    every check and suite; one exit code and a 
 python 03_App\make_update_zip.py     build RealMe_Update.zip
 ```
 
-Both want the environment's own Python; `verify_tree.py` prints the right path
+All three want the environment's own Python; `verify_tree.py` prints the right path
 if run under another one.
 
 **[DESIGN.md](DESIGN.md)** describes how the free local voice clone is built
@@ -92,9 +93,17 @@ and how it was checked, is in
 
 ### The local voice engine
 
-- The vendored upstream (`03_App/realme/engines/qwen3cpp`, with GGML) is
-  never edited. `engines/cpp.py` applies RealMe's changes (`PATCHES`, and
-  `apply_sgemm_patch` for GGML) to the copy it builds.
+- RealMe's engine source is `03_App/realme/engines/qwen3cpp_realme`: the
+  original qwen3-tts.cpp with every RealMe change already made, RealMe's own
+  `src/realme_*.inc`, and GGML's one gated file under `ggml_overlay/`. Every
+  build compiles it; nothing is patched while building. The original
+  (`engines/qwen3cpp`, with GGML) is kept unchanged as the record and as
+  GGML's source, and is built only when asked for by name (`realme engine
+  cpp --cpp-action build --source original`, into `tools\qwen3cpp_original`;
+  RealMe never uses that build). A change to an upstream file is made as a
+  patch in `engines/cpp.py` (`PATCHES`, `apply_sgemm_patch`), and `realme
+  engine cpp --cpp-action integrate` writes `qwen3cpp_realme` again from the
+  original.
 - `3_Get_Voice_Engine.bat` downloads and converts the weights, builds the
   engine and makes the 8-bit model. `_Rebuild_Voice_Engine.bat` (`realme
   engine cpp --cpp-action rebuild`; `rebuild-all` also restages GGML and
@@ -103,10 +112,17 @@ and how it was checked, is in
   Packages do not carry `models_q8\`; a build or the first recording makes it.
 - Defaults: the 8-bit model once made (`REALME_QWEN3CPP_QUANT=f16` for the
   16-bit one), one thread per core up to 6 (`REALME_ENGINE_THREADS`), the
-  fast snake and the copy-free 32-bit vocoder (`QWEN3_TTS_FAST_SNAKE`,
-  `QWEN3_TTS_VOCODER_F32=2` on an engine built with it, else `1` with
-  `QWEN3_TTS_VOCODER_F32_MAX_FRAMES` by memory), several
-  sentences per pass (`REALME_RECORD_BATCH`, 1 = off). A computer with cores
+  fast snake and the 32-bit vocoder with RealMe's own convolution kernel
+  (`QWEN3_TTS_FAST_SNAKE`; `QWEN3_TTS_VOCODER_F32=3` on an engine built with
+  it -- AVX2 on x86, chosen at run time, NEON on 64-bit ARM -- else `2`, else
+  `1` with `QWEN3_TTS_VOCODER_F32_MAX_FRAMES` by memory), RealMe's 8-bit
+  multiply for a pass (AVX2/NEON, checked against GGML's at first use;
+  `QWEN3_TTS_Q8_BATCH=0` off), one pool of engine threads kept between steps
+  (`QWEN3_TTS_POOL=0` off), 8 sentences per pass (`REALME_RECORD_BATCH`,
+  1 = off), each finished
+  sentence handing its place to the next (`REALME_RECORD_STREAM=0` for fixed
+  passes, made of sentences of similar length: `REALME_RECORD_LOOKAHEAD`,
+  1 = in order). A computer with cores
   to spare records with more than one engine at once: one per 6 cores, at
   most 4, as free memory allows (`REALME_RECORD_WORKERS`). Slide videos are
   made on the threads the engine leaves free (`REALME_EARLY_VIDEOS`).
@@ -116,7 +132,8 @@ and how it was checked, is in
   `_Engine_Check_8bit.bat`, `_Engine_Check_Vocoder.bat`; `_Bench_Batch.bat`
   (`realme bench-batch`) measures the best pass size and saves it;
   `_Engine_Timing.bat` reports where the time goes; `_Bench_Parallel.bat`
-  measures whether more than one engine at once helps. None changes the
+  (`realme bench-parallel`) measures whether more than one engine at once
+  helps, one sentence at a time or in passes (`--batch 8`). None changes the
   working engine.
 
 ### The voice server
@@ -141,16 +158,16 @@ RealMe's revised qwen3-tts.cpp is also published as a standalone source
 release, **realme-qwen3-tts.cpp** (MIT; predict-woo's and the ggml authors'
 credit and licences kept). `00_Windows\_Make_qwen3cpp_Release.bat` (or
 `realme engine cpp --cpp-action export-release --export-to <new folder>`)
-writes it from the vendored source with every change applied -- GGML with its
-tinyBLAS gate, upstream's README as README_UPSTREAM.md, and the release's own
-README, CHANGES (`engines/qwen3cpp_batch/REALME_CHANGES.md`), NOTICE,
-RELEASE_NOTES, LICENSE, `build.bat`/`build.sh`, `tools/quantize_q8.py`, the
+writes it from RealMe's engine source (`engines/qwen3cpp_realme`), with GGML
+from `engines/qwen3cpp` and its tinyBLAS gate -- upstream's README as
+README_UPSTREAM.md, and the release's own README, CHANGES
+(`engines/qwen3cpp_batch/REALME_CHANGES.md`), NOTICE, RELEASE_NOTES, LICENSE, `build.bat`/`build.sh`, `tools/quantize_q8.py`, the
 voice server and `voice_server.json` (from `engines/qwen3cpp_batch/release/`)
 -- plus a source zip beside it. The launcher writes them beside the RealMe
 folder (`..\realme-qwen3-tts.cpp`), so the two repositories never nest, and
 ends with the GitHub Desktop steps that publish it. Run again, it brings that
-folder up to date in place and keeps its git history. Version:
-`cpp.RELEASE_VERSION`.
+folder up to date in place and keeps its git history. Version: 1.3.0
+(`cpp.RELEASE_VERSION`).
 
 ### Driving RealMe from a script
 
@@ -195,9 +212,11 @@ RealMe Studio is written by **Xinhua Yu**, and released under the
 copyright notice. To cite it, use [`CITATION.cff`](CITATION.cff) (GitHub's
 *Cite this repository* button reads it).
 
-Third-party code keeps its own licence: the local voice clone's source,
-`03_App/realme/engines/qwen3cpp` and its `ggml` library, is MIT, with its
-notices retained unchanged (see `PROVENANCE.md` there). Python libraries are
+Third-party code keeps its own licence: the local voice clone's original
+source, `03_App/realme/engines/qwen3cpp` and its `ggml` library, is MIT,
+with its notices retained unchanged (see `PROVENANCE.md` there); RealMe's
+revised source, `engines/qwen3cpp_realme`, keeps upstream's `LICENSE` and
+adds RealMe's changes under the same licence. Python libraries are
 installed from PyPI under their own licences. PyMuPDF is AGPL-3.0; with it
 uninstalled, RealMe reads PDFs through a permissively licensed fallback
 (pdfplumber, pypdf and poppler) instead.

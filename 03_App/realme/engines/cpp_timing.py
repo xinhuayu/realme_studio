@@ -41,8 +41,9 @@ from realme.engines.cpp import (THREADS_ANCHOR as _THREADS_ANCHOR,  # noqa: E402
                                 THREADS_INCLUDE_ANCHOR as _INCLUDE_ANCHOR,
                                 apply_broadcast_patch, apply_ffn_patch,
                                 apply_quant_patch, apply_snake_patch,
-                                apply_path_patch, apply_thread_patch,
-                                apply_vocoder_patch, apply_vocoder2_patch)
+                                apply_path_patch, apply_pool_patch, apply_thread_patch,
+                                apply_vocoder_patch, apply_vocoder2_patch,
+                                apply_vocoder3_patch)
 _GGML_DIR_LINE = 'set(GGML_DIR "${CMAKE_CURRENT_SOURCE_DIR}/ggml")'
 
 #: The default thread counts to compare. 4 is GGML's default.
@@ -64,7 +65,10 @@ def library(out: Path) -> Path:
 
 def patch_sources(out: Path, ggml_dir: Path) -> None:
     """The timing copy's own edits: GGML from the working engine's folder,
-    and the thread count applied. Each anchor must be found exactly once."""
+    and the stopwatch. RealMe's changes are already in the integrated source
+    it is copied from (each patch below finds its mark and does nothing);
+    they are made here only on a copy of the original, for a RealMe from
+    before the integrated source. Each anchor must be found exactly once."""
     cm = out / "CMakeLists.txt"
     text = cm.read_text(encoding="utf-8")
     if text.count(_GGML_DIR_LINE) != 1:
@@ -74,12 +78,14 @@ def patch_sources(out: Path, ggml_dir: Path) -> None:
     cm.write_text(text.replace(
         _GGML_DIR_LINE, f'set(GGML_DIR "{ggml_dir.as_posix()}")'), encoding="utf-8")
     apply_thread_patch(out)
+    apply_pool_patch(out)
     apply_ffn_patch(out)
     apply_broadcast_patch(out)
     apply_snake_patch(out)
     apply_quant_patch(out)
     apply_vocoder_patch(out)
     apply_vocoder2_patch(out)
+    apply_vocoder3_patch(out)
     apply_path_patch(out)
     apply_profile_patch(out)
 
@@ -167,9 +173,10 @@ def patched(out: Path) -> bool | None:
     except OSError:
         return None
     from realme.engines.cpp import (BCAST_MARK, FFN_MARK, QUANT_MARK, SNAKE_MARK,
-                                    VOC2_MARK, VOC_MARK)
+                                    VOC2_MARK, VOC3_MARK, VOC_MARK)
     return (FFN_MARK in tc and "ggml_is_quantized" in tc and BCAST_MARK in dc
             and SNAKE_MARK in dc and VOC_MARK in dc and VOC2_MARK in dc
+            and VOC3_MARK in dc
             and "realme_prof_cb" in dc
             and QUANT_MARK in ca)
 
@@ -180,7 +187,8 @@ def _settings(home: Path) -> dict:
         info = json.loads((home / "build_info.json").read_text(encoding="utf-8"))
     except (OSError, ValueError):
         info = {}
-    return {"cpu": info.get("cpu") or "avx2", "gpu": info.get("gpu") or "off"}
+    return {"cpu": info.get("cpu") or "avx2", "gpu": info.get("gpu") or "off",
+            "portable": bool(info.get("portable"))}
 
 
 NO_COMPILER = """There is no C++ compiler on this computer, so the stopwatch copy of
@@ -232,7 +240,10 @@ def build(home: Path | None = None, log=print, force: bool = False) -> Path:
     # staged source carries whatever the RealMe that last built it applied.
     # Only its GGML build is reused.
     vendored = cpp.source_dir()
-    src_root = vendored if (vendored / "CMakeLists.txt").is_file() else home
+    integrated = cpp.integrated_dir()
+    if not cpp.integrated_ok(integrated) and (vendored / "CMakeLists.txt").is_file():
+        cpp.integrate(integrated, log)
+    src_root = integrated if cpp.integrated_ok(integrated) else home
     if not (src_root / "CMakeLists.txt").is_file():
         raise RuntimeError(f"The engine's source is not in {src_root}; this "
                            f"RealMe installation is incomplete. Run 0_Update.bat.")
@@ -240,7 +251,7 @@ def build(home: Path | None = None, log=print, force: bool = False) -> Path:
         shutil.rmtree(out, ignore_errors=True)
     out.mkdir(parents=True, exist_ok=True)
     log(f"  copying the engine's source into {out}"
-        + (" (from the copy inside RealMe)" if src_root == vendored else ""))
+        + (" (RealMe's engine source)" if src_root == integrated else ""))
     for name in ("CMakeLists.txt", "src", "tests", "main.cpp", "qwen3_tts.cpp",
                  "qwen3_tts.h"):
         src = src_root / name
@@ -263,12 +274,7 @@ def build(home: Path | None = None, log=print, force: bool = False) -> Path:
         ggml = home / "ggml"
     else:
         ggml = cpp.fetch_ggml(out, log)
-        try:
-            if cpp.apply_sgemm_patch(ggml):
-                shutil.rmtree(ggml / "build", ignore_errors=True)
-            sgemm = [cpp.SGEMM_FLAG]
-        except RuntimeError:
-            sgemm = ["-DGGML_LLAMAFILE=OFF"]
+        sgemm = cpp.gate_ggml(ggml, integrated, log)
         cpp.normalise_mtimes(out, log)
         # A build folder that came along with the source was configured
         # somewhere else; CMake refuses it. Start it over here.
@@ -280,9 +286,10 @@ def build(home: Path | None = None, log=print, force: bool = False) -> Path:
         log(f"  building GGML for {settings['cpu']} processors, CPU only "
             f"(a few minutes)")
         cpp._run([cmake, "-S", str(ggml), "-B", str(ggml / "build"), *generator,
-                  "-DCMAKE_BUILD_TYPE=Release", "-DGGML_METAL=OFF",
+                  "-DCMAKE_BUILD_TYPE=Release", "-DGGML_METAL=OFF", "-DGGML_BLAS=OFF",
                   *cpp.CPU_TARGETS.get(settings["cpu"], cpp.CPU_TARGETS["avx2"]),
-                  *sgemm, "-DGGML_BUILD_TESTS=OFF", "-DGGML_BUILD_EXAMPLES=OFF"],
+                  *sgemm, "-DGGML_BUILD_TESTS=OFF", "-DGGML_BUILD_EXAMPLES=OFF",
+                  f"-DGGML_OPENMP={'ON' if cpp.ggml_openmp_wanted() else 'OFF'}"],
                  "ggml configure", log, env=env)
         cpp._run([cmake, "--build", str(ggml / "build"), "--config", "Release",
                   "-j", j], "ggml build", log, env=env)
@@ -291,7 +298,10 @@ def build(home: Path | None = None, log=print, force: bool = False) -> Path:
     extra = ["-DCMAKE_WINDOWS_EXPORT_ALL_SYMBOLS=ON"] if os.name == "nt" else []
     log("  configuring the timing engine (stopwatch on, threads applied)")
     cpp._run([cmake, "-S", str(out), "-B", str(out / "build"), *generator,
-              "-DCMAKE_BUILD_TYPE=Release", "-DQWEN3_TTS_TIMING=ON", *extra],
+              "-DCMAKE_BUILD_TYPE=Release", "-DQWEN3_TTS_TIMING=ON", *extra,
+              # Tuned for this computer only when the working engine is: the
+              # copy may be carried to another computer (NO_COMPILER).
+              f"-DREALME_NATIVE={'ON' if cpp.engine_native(settings['portable'], settings['cpu']) else 'OFF'}"],
              "timing configure", log, env=env)
     log("  building it")
     cpp._run([cmake, "--build", str(out / "build"), "--config", "Release",
@@ -585,10 +595,12 @@ VARIANTS = (
             "QWEN3_TTS_FAST_SNAKE": "1", "REALME_QWEN3CPP_QUANT": "q8_0"}),
     ("voc2", {**_BASE, "QWEN3_TTS_FFN_F32": "1", "QWEN3_TTS_BROADCAST": "1",
               "QWEN3_TTS_FAST_SNAKE": "1", "QWEN3_TTS_VOCODER_F32": "2"}),
+    ("voc3", {**_BASE, "QWEN3_TTS_FFN_F32": "1", "QWEN3_TTS_BROADCAST": "1",
+              "QWEN3_TTS_FAST_SNAKE": "1", "QWEN3_TTS_VOCODER_F32": "3"}),
 )
 #: Runs when none are named: everything but the 8-bit model and the 32-bit
 #: vocoders, which are asked for by name (--variants fast,q8 /
-#: fast,voc,voc2).
+#: fast,voc,voc2,voc3).
 DEFAULT_VARIANTS = ("before", "after", "snake", "fast")
 
 
@@ -656,6 +668,7 @@ def _run_variant(tag: str, env: dict, threads: int, texts, outdir: Path,
             "switched_on": "F32 copy: on" in raw,
             "vocoder_f32": "vocoder F32: on" in raw,
             "vocoder2": "vocoder 2: on" in raw,
+            "vocoder3": "vocoder 3: on" in raw,
             "tinyblas": "tinyBLAS yes" in raw, **s}
 
 
@@ -674,6 +687,7 @@ def compare(threads: int, sentences: int = 4, *, outdir: Path,
              "fast": "plus the one-pass snake, RealMe's sine",
              "voc": "as 'fast', with the 32-bit vocoder",
              "voc2": "as 'fast', with the copy-free 32-bit vocoder",
+             "voc3": "as 'fast', with RealMe's vocoder kernel",
              "q8": "as 'fast', with the 8-bit model"}
     for tag, env in variants:
         log(f"\n  {tag}: {threads} threads, {names.get(tag, tag)}; "
@@ -696,11 +710,14 @@ def compare(threads: int, sentences: int = 4, *, outdir: Path,
     if "voc2" in results and "fast" in results:
         results["voc2_vs_fast"] = audio_difference(
             outdir / "identity_fast.wav", outdir / "identity_voc2.wav")
+    if "voc3" in results and "voc2" in results:
+        results["voc3_vs_voc2"] = audio_difference(
+            outdir / "identity_voc2.wav", outdir / "identity_voc3.wav")
     return results
 
 
 def compare_report(res: dict) -> tuple[str, dict]:
-    order = ("before", "after", "snake", "fast", "voc", "voc2", "q8")
+    order = ("before", "after", "snake", "fast", "voc", "voc2", "voc3", "q8")
     cols = [(t, res[t]) for t in order if "rtf" in res.get(t, {})]
     if not cols:
         return "The comparison did not finish; see the stopwatch files.", {}
@@ -832,6 +849,32 @@ def compare_report(res: dict) -> tuple[str, dict]:
                              "length; do not use it -- send this file.")
             lines.append("  RealMe uses it by default on an engine built with it "
                          "(off: realme key QWEN3_TTS_VOCODER_F32 1).")
+    v3, d3 = res.get("voc3", {}), res.get("voc3_vs_voc2")
+    if "rtf" in v3 and "rtf" in v2:
+        gain = v2["rtf"] / v3["rtf"]
+        vg = part(v2, "vocoder") / (part(v3, "vocoder") or 1e-9)
+        verdict.update({"voc3_speedup": round(gain, 3),
+                        "voc3_vocoder_speedup": round(vg, 3), "voc3_difference": d3})
+        lines.append("")
+        if not v3.get("vocoder3"):
+            lines.append("RealMe's vocoder kernel did not switch on in this engine "
+                         "(it needs AVX2); 'voc3' ran as 'voc2'.")
+        else:
+            lines.append(f"RealMe's vocoder kernel: the vocoder {vg:.2f} times as fast "
+                         f"as 'voc2', recording {gain:.2f} times as fast "
+                         f"({100 * (1 - v3['rtf'] / v2['rtf']):.0f}% less time).")
+            if d3 and d3.get("identical"):
+                lines.append("  Identical to 'voc2', sample for sample.")
+            elif d3 and d3.get("max_step") is not None:
+                lines.append(f"  Differs from 'voc2' by at most {d3['max_step']} "
+                             f"steps of 32768 ({d3['differ_pct']}% of samples), "
+                             f"{d3['snr_db']} dB below the speech: the same "
+                             f"arithmetic in a different order.")
+            elif d3:
+                lines.append("  The comparison sentence came out a different "
+                             "length; do not use it -- send this file.")
+            lines.append("  RealMe uses it by default on an engine built with it "
+                         "(back to the copy-free one: realme key QWEN3_TTS_VOCODER_F32 2).")
     q = res.get("q8", {})
     if "rtf" in q:
         base_tag = next((t for t in ("fast", "snake", "after") if "rtf" in res.get(t, {})), None)

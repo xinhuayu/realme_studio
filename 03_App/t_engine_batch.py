@@ -11,7 +11,7 @@ in different languages kept to separate passes, and a failed pass reported
 rather than half-written.
 """
 from __future__ import annotations
-import ctypes, math, os, struct, sys, tempfile, wave
+import ctypes, inspect, json, math, os, struct, sys, tempfile, wave
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
@@ -35,10 +35,39 @@ def tone(path: Path, seconds: float, rate=24000):
 
 class FakeLib:
     """The engine's C API, as far as a batch needs it."""
-    def __init__(self, fail=False):
-        from realme.adapters.tts_qwen3_dll import BATCH_FN
+    def __init__(self, fail=False, stream_fail_after=None):
+        from realme.adapters.tts_qwen3_dll import BATCH_FN, STREAM_FN
         self.fail, self.calls, self.freed, self.keep = fail, [], 0, []
+        self.stream_fail_after, self.streams = stream_fail_after, []
         setattr(self, BATCH_FN, self._batch)
+        setattr(self, STREAM_FN, self._stream)
+
+    def _stream(self, handle, slots, nx, dn, user, buf, n, params):
+        """The oldest live sentence finishes first; a free place is filled at once."""
+        said, live, more, k, done = [], [], True, 0, 0
+        self.streams.append(said)
+        while True:
+            while more and len(live) < slots:
+                o = ctypes.c_char_p()
+                r = nx(None, ctypes.byref(o))
+                if r < 0:
+                    more = False
+                elif r == 0:
+                    break
+                else:
+                    said.append(o.value.decode())
+                    live.append((k, o.value.decode()))
+                    k += 1
+            if not live:
+                return done
+            if self.stream_fail_after is not None and done >= self.stream_fail_after:
+                return -1
+            i, t = live.pop(0)
+            m = 2400 * (1 + len(t.split()))
+            arr = (ctypes.c_float * m)(*[0.1 * math.sin(j / 7) for j in range(m)])
+            if not dn(None, i, ctypes.cast(arr, ctypes.POINTER(ctypes.c_float)), m, 24000):
+                return done
+            done += 1
 
     def qwen3_tts_is_loaded(self, h):
         return 1
@@ -104,6 +133,47 @@ def main() -> int:
         n0 = w.getnframes()
     check(n0 == 2400 * 7, "with its own samples", n0)
     check(lib.freed == 3, "and every buffer the engine made is freed", lib.freed)
+
+    print("\nthe adapter's stream")
+    from realme.adapters.tts_qwen3_dll import StreamFailed
+    lib = FakeLib()
+    q = engine(lib)
+    sitems = [(f"Stream sentence {i} with {'many ' * i}words.", out / f"st{i}.wav", 1.0, None)
+             for i in range(5)]
+    queue, landed = list(sitems), []
+    q.synthesize_stream(lambda: queue.pop(0) if queue else False,
+                        lambda it, err: landed.append((it[1], err)), 2)
+    check(len(lib.streams) == 1 and lib.streams[0] == [t for t, _, _, _ in sitems]
+          and [e for _, e in landed] == [None] * 5
+          and sorted(str(o) for o, _ in landed) == sorted(str(o) for _, o, _, _ in sitems),
+          "five sentences go through one stream, two places, each handed back", lib.streams)
+    with wave.open(str(sitems[3][1])) as w:
+        check(w.getnframes() == 2400 * (1 + len(sitems[3][0].split())),
+              "each written where it was asked, with its own samples")
+    lib = FakeLib()
+    q = engine(lib)
+    mixed = [("One in English.", out / "se1.wav", 1.0, None),
+             ("Une en français.", out / "sf1.wav", 1.0, "fr"),
+             ("Two in English.", out / "se2.wav", 1.0, None)]
+    queue, landed = list(mixed), []
+    q.synthesize_stream(lambda: queue.pop(0) if queue else False,
+                        lambda it, err: landed.append(it[1]), 4)
+    check(lib.streams == [["One in English."], ["Une en français."], ["Two in English."]]
+          and sorted(map(str, landed)) == sorted(str(o) for _, o, _, _ in mixed),
+          "a sentence in another language waits for a stream of its own", lib.streams)
+    lib = FakeLib(stream_fail_after=1)
+    q = engine(lib)
+    queue, landed = list(sitems), []
+    try:
+        q.synthesize_stream(lambda: queue.pop(0) if queue else False,
+                            lambda it, err: landed.append(it[1]), 3)
+        pending = None
+    except StreamFailed as e:
+        pending = [it[1] for it in e.pending]
+    check(pending is not None and len(landed) == 1 and len(pending) == 3
+          and landed[0] not in pending and set(pending) | set(landed) == {o for _, o, _, _ in sitems[:4]},
+          "a stream that stops says which of the sentences it took are still to record",
+          (landed, pending))
 
     print("\nlanguages")
     lib = FakeLib()
@@ -323,7 +393,7 @@ def main() -> int:
     c = TestClient(S.app, base_url="http://127.0.0.1")
     r = c.get("/api/local-clone").json()
     check(r["installed"] and r["quant"] == "f16" and r["batch"] == "auto"
-          and r["batches_built"] and r["defaults"] == {"f16": 8, "q8_0": 4},
+          and r["batches_built"] and r["defaults"] == {"f16": 8, "q8_0": 8},
           "an installed clone: 16-bit, automatic passes, the defaults shown", r)
     forgot = []
     real_forget = S.forget_tts
@@ -433,11 +503,105 @@ def main() -> int:
             r = c.post("/api/local-clone", json={"vocoder": "fast"}).json()
             check(r["vocoder"] == "fast" and os.environ["QWEN3_TTS_VOCODER_F32"] == "2",
                   "and Twin Setup's 'faster' gives it too")
+            bi.write_text('{"vocoder2": true, "vocoder3": true}', encoding="utf-8")
+            for k in (*QD.VOCODER_DEFAULTS, QD.FRAMES_ENV):
+                os.environ.pop(k, None)
+                QD.DEFAULTED.discard(k)
+            QD.apply_vocoder_defaults(q.home)
+            check(os.environ.get("QWEN3_TTS_VOCODER_F32") == "3"
+                  and QD.FRAMES_ENV not in os.environ and QD.vocoder_setting() == "fast",
+                  "an engine built with the vocoder kernel gets it, with no length limit")
+            os.environ.pop("QWEN3_TTS_VOCODER_F32", None)
+            QD.DEFAULTED.discard("QWEN3_TTS_VOCODER_F32")
+            r = c.post("/api/local-clone", json={"vocoder": "fast"}).json()
+            check(r["vocoder"] == "fast" and os.environ["QWEN3_TTS_VOCODER_F32"] == "3",
+                  "and Twin Setup's 'faster' gives that")
         finally:
             if had is None:
                 bi.unlink(missing_ok=True)
             else:
                 bi.write_text(had, encoding="utf-8")
+        print("\nautomatic defaults, and measuring")
+        for k, v in ((QUANT_ENV, "f16"), (BATCH_ENV, "4"), ("REALME_RECORD_STREAM", "0"),
+                     ("QWEN3_TTS_SGEMM_ALL", "1"), ("QWEN3_TTS_VOCODER_F32", "0"),
+                     ("REALME_NOT_AN_ENGINE_SETTING", "kept")):
+            E.set_key(k, v)
+        bi = q.home / "build_info.json"
+        had_bi = bi.read_text(encoding="utf-8")
+        try:
+            bi.write_text('{"gpu": "off", "batch": true, "vocoder2": true}', encoding="utf-8")
+            res = c.post("/api/local-clone/automatic")
+            r = res.json()
+            envf = (E.data_home() / ".env").read_text(encoding="utf-8")
+            check(res.status_code == 200 and "job_id" not in r and r["installed"]
+                  and set(r["cleared"]) >= {QUANT_ENV, BATCH_ENV, "REALME_RECORD_STREAM",
+                                            "QWEN3_TTS_SGEMM_ALL", "QWEN3_TTS_VOCODER_F32"}
+                  and not any(k in envf for k in r["cleared"])
+                  and "REALME_NOT_AN_ENGINE_SETTING=kept" in envf
+                  and os.environ.get("QWEN3_TTS_VOCODER_F32") == "2"
+                  and BATCH_ENV not in os.environ and QUANT_ENV not in os.environ
+                  and r["batch"] == "auto" and r["vocoder"] == "fast",
+                  "Automatic defaults, at once: every voice-engine setting back to RealMe's "
+                  "own for the engine as built (here the copy-free vocoder); other settings "
+                  "kept; nothing to wait for", (r, envf))
+            from realme.adapters.tts_qwen3_dll import BATCH_FILE, batch_measured, batch_stale
+            import time as _t
+            built = bi.stat().st_mtime
+            when = lambda t: _t.strftime("%Y%m%d_%H%M%S", _t.localtime(t))
+            bf = E.data_home() / BATCH_FILE
+            had_bf = bf.read_text(encoding="utf-8") if bf.is_file() else None
+            try:
+                bf.write_text(json.dumps({"q8_0": {"batch": 12, "when": when(built - 3600)},
+                                          "f16": {"batch": 4, "when": when(built + 60)}}),
+                              encoding="utf-8")
+                r = c.get("/api/local-clone").json()
+                check(batch_measured() == {"f16": 4} and batch_stale() == ["q8_0"]
+                      and r["measured"] == {"f16": 4} and r["stale"] == ["q8_0"],
+                      "a measurement from before the engine's last build is not used (the "
+                      "default is, until it is measured again); one since it is", r)
+            finally:
+                if had_bf is None:
+                    bf.unlink(missing_ok=True)
+                else:
+                    bf.write_text(had_bf, encoding="utf-8")
+            bi.write_text('{"gpu": "off", "batch": true, "vocoder3": true, "stream": true}',
+                          encoding="utf-8")
+            from realme.engines import cpp as _C
+            adv = _C.pass_advice(q.home)
+            check(len(adv) == 3 and "8 sentences per pass" in adv[0] and "the default" in adv[0]
+                  and "handing its place" in adv[0] and "RealMe's kernel" in adv[1]
+                  and "Measure this computer" in adv[2],
+                  "realme setup says the pass size and where it comes from, the vocoder, "
+                  "and that measuring is optional", adv)
+            bi.write_text('{"gpu": "off", "vocoder2": true}', encoding="utf-8")
+            res = c.post("/api/local-clone/measure")
+            check(res.status_code == 409 and "nothing to measure" in res.json()["detail"],
+                  "an engine without passes has nothing to measure, and says so")
+            from realme.app.jobs import Job
+            fake = Job(id="measuring1", kind="engine", label="x", status="running")
+            S.runner.jobs[fake.id] = fake
+            S.MEASURING["job"] = fake.id
+            try:
+                pv = c.post("/api/preview", json={"text": "Hello there."})
+                rd = c.post("/api/lecture/nothing/render", json={})
+                again = c.post("/api/local-clone/measure")
+                auto = c.post("/api/local-clone/automatic")
+                check(pv.status_code == 409 and "being measured" in pv.json()["detail"]
+                      and rd.status_code == 409 and again.status_code == 409
+                      and auto.status_code == 409,
+                      "while it measures, nothing records, and neither button starts",
+                      (pv.status_code, rd.status_code, again.status_code, auto.status_code))
+            finally:
+                fake.status = "done"
+                S.MEASURING["job"] = None
+        finally:
+            bi.write_text(had_bi, encoding="utf-8")
+            E.remove_key("REALME_NOT_AN_ENGINE_SETTING")
+        src = (HERE / "realme/app/server.py").read_text(encoding="utf-8")
+        check('"realme", "bench-batch"' in src and "CREATE_NO_WINDOW" in src
+              and src.count("_refuse_while_measuring()") == 6,
+              "the measurement is `realme bench-batch` in its own process, without a window; "
+              "preview, render, narration, dialogue and the warm-up wait for it")
         os.environ[BATCH_ENV] = "1"          # set in the shell, not by RealMe
         r = c.get("/api/local-clone").json()
         check(BATCH_ENV in r["shell"]
@@ -453,6 +617,11 @@ def main() -> int:
     check('id="lc-quant"' in ui and 'id="lc-batch"' in ui
           and "loadLocalClone();" in ui and "/api/local-clone" in ui,
           "Twin Setup shows both, and loads them with the page")
+    check('id="lc-auto"' in ui and "/api/local-clone/automatic" in ui
+          and 'id="lc-measure"' in ui and "/api/local-clone/measure" in ui
+          and "watch(r.job_id, 'Measure this computer" in ui and "r.stale" in ui,
+          "Twin Setup has Automatic defaults (at once) and Measure this computer (a job "
+          "followed in Activity), and says when a measurement predates a rebuild")
 
     print("\nthe source patch")
     from realme.engines import cpp
@@ -489,6 +658,19 @@ def main() -> int:
     inc = (tree / "src" / cpp.BATCH_FILE).read_text(encoding="utf-8")
     check(cpp.BATCH_FILE in inc and "qwen3_tts_synthesize_batch_with_embedding" in inc
           and BATCH_FN in inc, "and exports the function the adapter calls")
+    import re as _re
+    check(inc.count("realme_mm(ctx0") == 10 and "QWEN3_TTS_Q8_BATCH" in inc
+          and "realme_q8mm_selfcheck()" in inc and "cur->ne[1] >= 2" in inc
+          and "ggml_backend_buffer_is_host(w->buffer)" in inc
+          and not _re.search(r"ggml_mul_mat\(ctx0, (layer|t\.model_)", inc),
+          "a pass's 8-bit products go through RealMe's multi-column kernel (two or "
+          "more columns, checked against GGML's own at first use, off with "
+          "QWEN3_TTS_Q8_BATCH=0); attention is left to GGML")
+    check("REALME_Q8MM_ANY" in inc and "#define REALME_Q8MM_ARM 1" in inc
+          and "vdotq_s32" in inc and "__ARM_FEATURE_DOTPROD" in inc
+          and "#endif  // REALME_Q8MM_X86" in inc,
+          "the 8-bit pass kernel has a 64-bit ARM version (dot-product instructions "
+          "where the build has them) beside the AVX2 one, sharing the rest")
     bad = Path(_ISO) / "bad"
     (bad / "src").mkdir(parents=True)
     for n in names:
@@ -500,12 +682,35 @@ def main() -> int:
         refused = True
     check(refused, "changed sources are refused, not half-patched")
 
+    print("\na pass that fails is recorded one at a time, and says why")
+    import queue as _q
+    from realme.pipeline import prerecord as PR
+    class _Take:
+        def __init__(self, i):
+            self.text, self.pace, self.language, self.key = f"s{i}", 1.0, None, f"k{i}"
+            self.path = Path(_ISO) / "pr" / f"{i}.wav"
+    class _Fails:
+        def synthesize_batch(self, items):
+            raise RuntimeError("batch: not enough memory for another sentence's cache")
+    one_by_one, res = [], _q.Queue()
+    keep_record = PR._record
+    PR._record = lambda tts, t, results: one_by_one.append(t.key)
+    try:
+        PR._record_batch(_Fails(), [_Take(i) for i in range(3)], res)
+    finally:
+        PR._record = keep_record
+    kind, _k, _s, msg = res.get_nowait()
+    check(one_by_one == ["k0", "k1", "k2"] and kind == "note"
+          and "a pass of 3 sentences failed" in msg and "not enough memory" in msg
+          and "one at a time" in msg,
+          "every sentence is recorded on its own, and the log says the pass failed and why")
+
     print("\nthe 32-bit vocoder and GGML's tinyBLAS, for it alone")
     check("apply_vocoder_patch" in cpp.PATCHES
           and cpp.PATCHES.index("apply_vocoder_patch") > cpp.PATCHES.index("apply_snake_patch"),
           "every build applies the vocoder patch, after the snake's")
     vinc = cpp.vocoder_source().read_text(encoding="utf-8")
-    check("v && (v[0] == '1' || v[0] == '2')" in vinc and "QWEN3_TTS_LOW_MEM" in vinc
+    check("v && (v[0] == '1' || v[0] == '2' || v[0] == '3')" in vinc and "QWEN3_TTS_LOW_MEM" in vinc
           and vinc.count('ggml_set_name(r, "realme_sgemm")') == 1
           and vinc.count('ggml_set_name(R, "realme_sgemm")') == 1
           and "ggml_backend_is_cpu(backend)" in vinc,
@@ -515,16 +720,42 @@ def main() -> int:
           or cpp.PATCHES.index("apply_vocoder2_patch") > cpp.PATCHES.index("apply_vocoder_patch"),
           "every build applies the copy-free vocoder after the 32-bit one")
     v2 = cpp.vocoder2_source().read_text(encoding="utf-8")
-    check("v && v[0] == '2' && realme_vocoder_f32_wanted()" in v2
+    check("v && (v[0] == '2' || v[0] == '3') && realme_vocoder_f32_wanted()" in v2
           and "ggml_backend_is_cpu(backend)" in v2
           and v2.count('ggml_set_name(r, "realme_sgemm")') == 1
           and v2.count('ggml_set_name(R, "realme_sgemm")') == 1
           and v2.count('ggml_set_name(z2, "realme_sgemm")') == 1
           and "ggml_set_name(t," not in v2,
-          "the copy-free vocoder: only with QWEN3_TTS_VOCODER_F32=2 (and so never in "
-          "low-memory mode), CPU only, naming only its own three multiplies")
-    check("INT32_MAX" in vinc and "mode[0] == '2'" in vinc,
+          "the copy-free vocoder: only with QWEN3_TTS_VOCODER_F32=2 (or 3, as its "
+          "fallback; never in low-memory mode), CPU only, naming only its own three "
+          "multiplies")
+    check("INT32_MAX" in vinc and "mode[0] == '2'" in vinc and "mode[0] == '3'" in vinc,
           "with it, no length limit unless one is set")
+    check(cpp.PATCHES.index("apply_vocoder3_patch") > cpp.PATCHES.index("apply_vocoder2_patch"),
+          "every build applies the vocoder kernel after the copy-free vocoder")
+    v3 = cpp.vocoder3_source().read_text(encoding="utf-8")
+    check("v && v[0] == '3' && realme_vocoder_f32_wanted()" in v3
+          and "ggml_backend_is_cpu(backend)" in v3
+          and "realme_sgemm" not in v3 and "ggml_set_name(" not in v3
+          and "if (m.realme3_ctx) return;" in v2
+          and "(v[0] == '2' || v[0] == '3')" in v2,
+          "the vocoder kernel: only with QWEN3_TTS_VOCODER_F32=3 and the CPU, "
+          "naming no product for tinyBLAS; the copy-free path is its fallback and "
+          "makes its copies only when the kernel's weights were not packed")
+    check("REALME_V3_ANY" not in v3 and "static void realme_v3_tile_c(" in v3
+          and "static void realme_v3_snake_c(" in v3
+          and v3.count("static void realme_v3_tile_c(") == 2      # vector extension, plain loop
+          and "vector_size(16)" in v3,
+          "the kernel is built for every processor: a plain C++ tile and snake are always there")
+    check("return realme_have_avx2() ? 2 : 0;" in v3 and "realme_v3_tile_avx2" in v3
+          and "realme_v3_snake_avx2" in v3 and "realme_v3_tile_neon" in v3
+          and 'getenv("QWEN3_TTS_V3_GENERIC")' in v3
+          and "if (realme_v3_generic()) return 0;" in v3,
+          "AVX2 (chosen at run time) and NEON are additions; QWEN3_TTS_V3_GENERIC=1 forces the plain ones")
+    check("const realme_v3_tile_fn tile = realme_v3_tile();" in v3
+          and "tile(a, bp, n, cp, mr, add);" in v3 and "vocoder 3: on (" in v3
+          and "realme_v3_isa_name()" in v3,
+          "the tile is picked once per product, and the log names it")
     g = Path(_ISO) / "ggml"
     (g / "src" / "ggml-cpu").mkdir(parents=True)
     gc = g / "src" / "ggml-cpu" / "ggml-cpu.c"
@@ -539,6 +770,16 @@ def main() -> int:
           and "    if (src1->type != vec_dot_type) {\n        char * wdata" in t,
           "both of its calls ask the name first; the ordinary conversion is untouched")
     check(not cpp.apply_sgemm_patch(g), "gating twice changes nothing")
+    check("QWEN3_TTS_SGEMM_ALL" in t and t.count('getenv("QWEN3_TTS_SGEMM_ALL")') == 1
+          and "if (realme_sgemm_all < 0)" in t,
+          "tinyBLAS for every product only with QWEN3_TTS_SGEMM_ALL=1, read once")
+    old_gate = body.replace(cpp.SGEMM_INCLUDE_ANCHOR, cpp.SGEMM_INCLUDE_V1, 1)
+    for a, b in cpp.SGEMM_EDITS[1:]:
+        old_gate = old_gate.replace(a, b, 1)
+    gc.write_text(old_gate, encoding="utf-8")
+    check(cpp.apply_sgemm_patch(g) and gc.read_text(encoding="utf-8") == t,
+          "a GGML gated before the switch existed is brought up to date (and so rebuilt)")
+    check(not cpp.apply_sgemm_patch(g), "and then left alone")
     gc.write_text("changed upstream\n", encoding="utf-8")
     try:
         cpp.apply_sgemm_patch(g)
@@ -549,7 +790,7 @@ def main() -> int:
           "a GGML the gate does not fit is refused and left as it was")
     bsrc = (HERE / "realme" / "engines" / "cpp.py").read_text(encoding="utf-8")
     check("*sgemm, \"-DGGML_BUILD_TESTS=OFF\"" in bsrc
-          and 'sgemm = ["-DGGML_LLAMAFILE=OFF"]' in bsrc
+          and 'return ["-DGGML_LLAMAFILE=OFF"]' in bsrc
           and '"sgemm": sgemm == [SGEMM_FLAG]' in bsrc,
           "the build turns tinyBLAS on only when the gate is in, and records it")
 
@@ -572,6 +813,33 @@ def main() -> int:
         refused = True
     check(refused, "a file that no longer has the line is refused")
     check("apply_path_patch" in cpp.PATCHES, "and every build applies it")
+
+    print("\nthe engine's compiler flags follow the processor target")
+    nt = Path(_ISO) / "native"
+    nt.mkdir()
+    cm = nt / "CMakeLists.txt"
+    cm.write_text('if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")\n' + cpp.NATIVE_OLD
+                  + "endif()\n", encoding="utf-8")
+    check(cpp.apply_native_patch(nt) and not cpp.apply_native_patch(nt),
+          "upstream's -march=native is put under an option, once")
+    ct = cm.read_text(encoding="utf-8")
+    check("option(REALME_NATIVE" in ct and ct.count('-O3 -march=native")') == 1
+          and '-O3 -mcpu=native")' in ct
+          and "if(NOT REALME_NATIVE)" in ct, "on by default, as upstream (-mcpu=native on 64-bit ARM)")
+    check(cpp.engine_native(False, "native") and not cpp.engine_native(True, "native")
+          and not cpp.engine_native(False, "avx2") and not cpp.engine_native(False, "baseline"),
+          "a build for this computer keeps it; a portable, avx2 or baseline build drops it")
+    cm.write_text("changed upstream\n", encoding="utf-8")
+    try:
+        cpp.apply_native_patch(nt)
+        refused = False
+    except RuntimeError:
+        refused = True
+    check(refused and cpp.PATCHES[0] == "apply_native_patch",
+          "a CMakeLists without the line is refused; every build applies it first")
+    bsrc = inspect.getsource(cpp.build)
+    check("-DREALME_NATIVE=" in bsrc and "engine_native(portable, target_cpu)" in bsrc,
+          "the engine is configured with it")
 
     print("\nthe revised source, exported")
     if (cpp.source_dir() / "CMakeLists.txt").is_file() and \
@@ -601,8 +869,110 @@ def main() -> int:
           "the change list credits upstream and names every switch")
     check(all(m in changes for m in ("QWEN3_TTS_VOCODER_F32", "QWEN3_TTS_SGEMM",
                                      "QWEN3_TTS_VOCODER_F32_MAX_FRAMES",
-                                     "realme_vocoder.inc", "ggml_fopen")),
-          "including the vocoder, the GGML gate and the Unicode paths")
+                                     "realme_vocoder.inc", "ggml_fopen",
+                                     "QWEN3_TTS_Q8_BATCH", "QWEN3_TTS_SGEMM_ALL")),
+          "including the vocoder, the GGML gate, the 8-bit pass products, the "
+          "opt-in tinyBLAS for everything and the Unicode paths")
+
+    print("\nRealMe's engine source, integrated")
+    ig = cpp.integrated_dir()
+    man = cpp._manifest(ig)
+    check(cpp.integrated_ok(ig) and (ig / cpp.INTEGRATED_README).is_file()
+          and (ig / cpp.CHANGES_FILE).is_file()
+          and all((ig / "src" / n).is_file() for n in (
+              cpp.BATCH_FILE, cpp.SNAKE_MARK, cpp.QUANT_MARK, cpp.VOC_MARK,
+              cpp.VOC2_MARK, cpp.VOC3_MARK))
+          and cpp.FFN_MARK in (ig / "src" / "tts_transformer.cpp").read_text(encoding="utf-8")
+          and cpp.NATIVE_MARK in (ig / "CMakeLists.txt").read_text(encoding="utf-8")
+          and man.get("changes") == list(cpp.PATCHES),
+          "the folder holds the original with every change made, RealMe's own "
+          "files and the change list")
+    check(cpp.vocoder3_source().parent == ig / "src"
+          and cpp.batch_source().parent == ig / "src",
+          "RealMe's own files are read from it (one copy, edited there)")
+    ov = man.get("ggml_overlay", {}).get(cpp.GGML_CPU_REL, {})
+    ovf = ig / cpp.GGML_OVERLAY / cpp.GGML_CPU_REL
+    check(ovf.is_file() and cpp._sha256(ovf) == ov.get("sha256")
+          and cpp.SGEMM_MARK in ovf.read_text(encoding="utf-8")
+          and len(ov.get("base_sha256", "")) == 64,
+          "GGML's gated file is kept whole, with the fingerprints of it and of "
+          "the file it was made from")
+    if (cpp.source_dir() / "CMakeLists.txt").is_file():
+        diff = cpp.integrated_differs()
+        check(diff == [], "it is exactly the original with RealMe's changes made "
+                          f"(differs: {diff[:4]})")
+    else:
+        check(True, "(no original here to compare with; checked where it is)")
+    # The gate on a GGML: GGML's own file -> the gated one; already gated ->
+    # left; another GGML's -> tinyBLAS off.
+    gg = Path(_ISO) / "gg"
+    (gg / "src" / "ggml-cpu").mkdir(parents=True)
+    (gg / "build").mkdir()
+    tgt = gg / cpp.GGML_CPU_REL
+    fake = Path(_ISO) / "fakeint"
+    (fake / cpp.GGML_OVERLAY / "src" / "ggml-cpu").mkdir(parents=True)
+    (fake / cpp.GGML_OVERLAY / cpp.GGML_CPU_REL).write_text("gated\n", encoding="utf-8")
+    tgt.write_text("upstream\n", encoding="utf-8")
+    (fake / cpp.INTEGRATED_MANIFEST).write_text(json.dumps({"ggml_overlay": {
+        cpp.GGML_CPU_REL: {"base_sha256": cpp._sha256(tgt),
+                           "sha256": cpp._sha256(fake / cpp.GGML_OVERLAY / cpp.GGML_CPU_REL)}}}),
+        encoding="utf-8")
+    f1 = cpp.gate_ggml(gg, fake, log=lambda *_: None)
+    check(f1 == [cpp.SGEMM_FLAG] and tgt.read_text(encoding="utf-8") == "gated\n"
+          and not (gg / "build").exists(),
+          "GGML's own file is replaced by the gated one, and GGML rebuilt")
+    check(cpp.gate_ggml(gg, fake, log=lambda *_: None) == [cpp.SGEMM_FLAG]
+          and tgt.read_text(encoding="utf-8") == "gated\n", "an already gated one is left")
+    tgt.write_text("another GGML\n", encoding="utf-8")
+    check(cpp.gate_ggml(gg, fake, log=lambda *_: None) == ["-DGGML_LLAMAFILE=OFF"]
+          and tgt.read_text(encoding="utf-8") == "another GGML\n",
+          "another GGML's file is not touched, and tinyBLAS is left off")
+    tgt.write_text("upstream\n", encoding="utf-8")
+    tgt.write_bytes(b"upstream\r\n")
+    check(cpp.gate_ggml(gg, fake, log=lambda *_: None) == [cpp.SGEMM_FLAG],
+          "GGML's own file with Windows line endings is still GGML's own")
+    if (cpp.source_dir() / "CMakeLists.txt").is_file():
+        import shutil as _sh
+        crlf = Path(_ISO) / "crlf"
+        _sh.copytree(ig, crlf)
+        cm2 = crlf / "CMakeLists.txt"
+        cm2.write_bytes(cm2.read_bytes().replace(b"\n", b"\r\n"))
+        check(cpp.integrated_differs(crlf) == [],
+              "the same source with Windows line endings is the same source")
+    # Staging writes only what changed, so only that is rebuilt.
+    sa, sb = Path(_ISO) / "sa", Path(_ISO) / "sb"
+    (sa / "src").mkdir(parents=True)
+    (sa / "src" / "a.cpp").write_text("a", encoding="utf-8")
+    (sa / "src" / "b.cpp").write_text("b", encoding="utf-8")
+    (sa / "skipme").mkdir()
+    (sa / "skipme" / "x").write_text("x", encoding="utf-8")
+    first = cpp._sync_tree(sa, sb, skip=("skipme",))
+    (sa / "src" / "b.cpp").write_text("b2", encoding="utf-8")
+    check(first == 2 and cpp._sync_tree(sa, sb, skip=("skipme",)) == 1
+          and not (sb / "skipme").exists()
+          and (sb / "src" / "b.cpp").read_text(encoding="utf-8") == "b2",
+          "staging writes only the files that differ")
+    bsrc = inspect.getsource(cpp.build)
+    check("apply_all(" not in bsrc and "_sync_tree(src, home" in bsrc
+          and 'source == "original"' in bsrc and "original_home()" in bsrc
+          and "gate_ggml(ggml, src, log)" in bsrc,
+          "the engine is built from it, nothing patched; the original only when "
+          "named, into a folder of its own")
+    check(cpp.original_home(Path(_ISO) / "tools" / "qwen3cpp")
+          == Path(_ISO) / "tools" / "qwen3cpp_original",
+          "beside the working engine, never in it")
+    try:
+        cpp.build(Path(_ISO) / "nowhere", source="upstream")
+        bad_src = False
+    except ValueError:
+        bad_src = True
+    check(bad_src, "any other source is refused")
+    clis = (HERE / "realme" / "cli.py").read_text(encoding="utf-8")
+    check('dest="engine_source"' in clis and 'a.engine_source == "original"' in clis,
+          "the command line's --source has a name of its own (not --from's)")
+    esrc = inspect.getsource(cpp.export_source)
+    check("apply_all(" not in esrc and "integrated_dir()" in esrc,
+          "the standalone source is exported from it too")
 
     print("\nrealme-qwen3-tts.cpp, the release")
     rel = cpp.release_source()

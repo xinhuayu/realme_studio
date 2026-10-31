@@ -157,10 +157,6 @@ class ChatterboxTTS(BaseTTS):
         return out_wav
 
 
-#: The draft voices kept installed, so the Studio can offer a choice. Piper is
-#: the *draft* voice -- the one you iterate script, pacing and slide timing
-#: against before paying for a real render -- and which of these is more
-#: comfortable to work against is a matter of taste, not of correctness.
 #: The draft voice's own pace. It is a draft: the words, the ordering and the
 #: slide timing are what it is for, and it is replaced by the cloned voice
 #: before anything is published. `realme voice pace` measures a ratio against
@@ -168,6 +164,11 @@ class ChatterboxTTS(BaseTTS):
 #: voices alternate and a mismatch is audible, and not to lecture drafting.
 NATURAL_SPEED = 1.0
 
+#: The draft voices kept installed, so the Studio can offer a choice. Piper is
+#: the *draft* voice -- the one you iterate script, pacing and slide timing
+#: against before paying for a real render -- and which of these is more
+#: comfortable to work against is a matter of taste, not of correctness.
+#:
 #: The stock draft voices the Studio offers, and the ones `realme engine
 #: install` fetches. Every entry costs ~60 MB on a fresh install, so this is a
 #: chosen shortlist rather than the whole piper catalogue -- `explore_expressive

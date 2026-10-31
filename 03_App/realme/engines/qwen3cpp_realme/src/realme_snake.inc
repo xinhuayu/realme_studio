@@ -1,8 +1,8 @@
 // realme_snake.inc -- RealMe: the vocoder's snake activation in one pass,
 // with its own sine.
 //
-// Included into audio_tokenizer_decoder.cpp in RealMe's staged copy of the
-// engine (never the vendored source). Upstream computes
+// Included into audio_tokenizer_decoder.cpp in RealMe's revised engine
+// (not in upstream's source). Upstream computes
 //     y = x + exp(-beta) * sin(exp(alpha) * x)^2
 // as five GGML passes over a signal-sized array (multiply, sine, square,
 // multiply, add), and its sine calls the C library's sinf one number at a

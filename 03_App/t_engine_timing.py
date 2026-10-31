@@ -156,10 +156,11 @@ def main() -> int:
     (src / "src").mkdir(parents=True)
     (src / "CMakeLists.txt").write_text(
         'project(x)\n' + T._GGML_DIR_LINE + '\n', encoding="utf-8")
+    _cpp = __import__("realme.engines.cpp", fromlist=["x"])
     (src / "src" / "gguf_loader.cpp").write_text(
-        T._INCLUDE_ANCHOR + "int f() {\n" + T._THREADS_ANCHOR + "\n}\n"
-        + "\n".join(__import__("realme.engines.cpp", fromlist=["x"])
-                     .PATH_EDITS["gguf_loader.cpp"]) + "\n",
+        T._INCLUDE_ANCHOR + _cpp.POOL_HELPER_ANCHOR + "int f() {\n" + T._THREADS_ANCHOR
+        + "\n}\nvoid g() {\n" + _cpp.POOL_EDITS[2][0] + "}\n"
+        + "\n".join(_cpp.PATH_EDITS["gguf_loader.cpp"]) + "\n",
         encoding="utf-8")
     stand_in_engine(src)
     T.patch_sources(src, Path(_ISO) / "ggml")
@@ -167,6 +168,9 @@ def main() -> int:
     cm = (src / "CMakeLists.txt").read_text(encoding="utf-8")
     check('#include "ggml-cpu.h"' in gl and "ggml_backend_cpu_set_n_threads" in gl
           and "QWEN3_TTS_THREADS" in gl, "the thread count is applied in the copy")
+    check("realme_pool_attach(backend" in gl and "realme_pool_release();" in gl
+          and T.apply_pool_patch(src) is False,
+          "and the thread pool, once")
     check(f'set(GGML_DIR "{(Path(_ISO) / "ggml").as_posix()}")' in cm,
           "and GGML comes from the working engine's folder")
     try:
@@ -211,10 +215,19 @@ def main() -> int:
           and (src / "src" / "realme_vocoder2.inc").is_file(),
           "and the copy-free vocoder: tried before the decoder stage, copies "
           "made at load and freed with the model")
+    check('#include "realme_vocoder3.inc"' in dc and "realme_voc3_prepare(model_" in dc
+          and dc.index("realme_voc3_prepare(model_") < dc.index("realme_voc2_prepare(model_")
+          and dc.index("realme_voc3_back(ctx0, model_, cur)") < dc.index("realme_voc2_back(ctx0, model_, cur)")
+          and "if (!realme_audio) realme_audio = realme_voc2_back(" in dc
+          and "realme3_w;" in dh and "ggml_backend_buffer_free(model.realme3_buffer)" in dc
+          and (src / "src" / "realme_vocoder3.inc").is_file(),
+          "and the vocoder kernel: tried first, the copy-free path as its fallback, "
+          "packed at load (before the copy-free copies, which it makes unneeded) "
+          "and freed with the model")
     check(T.patched(src) is True, "and the copy knows it carries them")
     check(not cpp.apply_ffn_patch(src) and not cpp.apply_broadcast_patch(src)
           and not cpp.apply_snake_patch(src) and not cpp.apply_vocoder_patch(src)
-          and not cpp.apply_vocoder2_patch(src)
+          and not cpp.apply_vocoder2_patch(src) and not cpp.apply_vocoder3_patch(src)
           and not T.apply_profile_patch(src), "patching twice changes nothing")
     bad = Path(_ISO) / "bad"
     (bad / "src").mkdir(parents=True)
@@ -329,10 +342,24 @@ def main() -> int:
     res4["voc2"]["vocoder2"] = False
     text, v = T.compare_report(res4)
     check("did not switch on" in text, "one that did not switch on says so", text)
+    res5 = {"voc2": {**rec(2.42, 0.12 / 2.42), "vocoder2": True},
+            "voc3": {**rec(2.36, 0.09 / 2.36), "vocoder3": True},
+            "voc3_vs_voc2": {"identical": False, "max_step": 1, "differ_pct": 0.1,
+                             "snr_db": 111.0}}
+    text, v = T.compare_report(res5)
+    check(v.get("voc3_vocoder_speedup") == round(0.12 / 0.09, 3) and "111.0 dB below" in text
+          and "vocoder kernel" in text and "QWEN3_TTS_VOCODER_F32 2" in text,
+          "the vocoder kernel is compared with 'voc2'", text)
+    res5["voc3"]["vocoder3"] = False
+    text, v = T.compare_report(res5)
+    check("did not switch on" in text and "AVX2" in text, "one that did not switch on says so", text)
     envs = dict(T.VARIANTS)
     check(envs["voc2"]["QWEN3_TTS_VOCODER_F32"] == "2"
           and envs["voc2"]["QWEN3_TTS_FAST_SNAKE"] == "1",
           "'voc2' is 'fast' with the copy-free vocoder")
+    check(envs["voc3"]["QWEN3_TTS_VOCODER_F32"] == "3"
+          and envs["voc3"]["QWEN3_TTS_FAST_SNAKE"] == "1",
+          "'voc3' is 'fast' with the vocoder kernel")
     check(all(e.get("REALME_QWEN3CPP_QUANT") and e.get("QWEN3_TTS_VOCODER_F32")
               for e in envs.values())
           and envs["voc"]["QWEN3_TTS_VOCODER_F32"] == "1"
@@ -400,6 +427,41 @@ def main() -> int:
     except RuntimeError:
         ok = True
     check(ok, "source that no longer fits is refused")
+    print("\none thread pool for the engine's backend")
+    pool = Path(_ISO) / "pool"
+    (pool / "src").mkdir(parents=True)
+    (pool / "src" / "gguf_loader.cpp").write_text(
+        cpp.THREADS_INCLUDE_ANCHOR + cpp.POOL_HELPER_ANCHOR + "int f() {\n"
+        + cpp.THREADS_ANCHOR + "\n}\nvoid g() {\n" + cpp.POOL_EDITS[2][0] + "}\n",
+        encoding="utf-8")
+    check(cpp.apply_thread_patch(pool) and cpp.apply_pool_patch(pool)
+          and not cpp.apply_pool_patch(pool), "it applies after the thread patch, once")
+    gp = (pool / "src" / "gguf_loader.cpp").read_text(encoding="utf-8")
+    check(gp.count("realme_pool_attach(backend, n > 0 ? n : GGML_DEFAULT_N_THREADS);") == 1
+          and gp.index("ggml_backend_free(shared.backend);") < gp.index("realme_pool_release();")
+          and 'getenv("QWEN3_TTS_POOL")' in gp and "ggml_threadpool_new(&p)" in gp
+          and "ggml_backend_cpu_set_threadpool(backend, realme_pool)" in gp,
+          "made with the backend's thread count, freed after the backend, off with "
+          "QWEN3_TTS_POOL=0")
+    check(cpp.PATCHES.index("apply_pool_patch") == cpp.PATCHES.index("apply_thread_patch") + 1,
+          "every build applies it right after the thread patch")
+    import os as _os
+    keep = _os.environ.pop("REALME_GGML_OPENMP", None)
+    try:
+        on = cpp.ggml_openmp_wanted()
+        _os.environ["REALME_GGML_OPENMP"] = "0"
+        off = not cpp.ggml_openmp_wanted()
+    finally:
+        _os.environ.pop("REALME_GGML_OPENMP", None)
+        if keep is not None:
+            _os.environ["REALME_GGML_OPENMP"] = keep
+    bsrc = (HERE / "realme" / "engines" / "cpp.py").read_text(encoding="utf-8")
+    tsrc = (HERE / "realme" / "engines" / "cpp_timing.py").read_text(encoding="utf-8")
+    check(on and off and "-DGGML_OPENMP={'ON' if ggml_openmp_wanted() else 'OFF'}" in bsrc
+          and "-DGGML_OPENMP={'ON' if cpp.ggml_openmp_wanted() else 'OFF'}" in tsrc
+          and '"openmp": ggml_openmp_wanted()' in bsrc,
+          "OpenMP unless REALME_GGML_OPENMP=0 at build time, for the engine and its "
+          "timing copy alike, and recorded")
 
     from realme.adapters import tts_qwen3_dll as D
     from realme.core import cpu as CPU

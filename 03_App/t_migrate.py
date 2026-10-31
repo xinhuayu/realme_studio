@@ -249,6 +249,21 @@ def main() -> int:
                and ("qwen" in m.lower() or "engine" in m.lower())]
         check("leaving the engine out is not a preflight failure", not bad,
               str(bad)[:200])
+        real = HERE.parent
+        if (real / "03_App/realme/engines/qwen3cpp_realme/CMakeLists.txt").is_file():
+            rg = {"code": [(real / r, f"RealMe/{r.as_posix()}")
+                           for r in __import__("realme.core.build", fromlist=["x"])
+                           .shipped_files(real)]}
+            src_lines = [(ok, m) for ok, m in M.preflight(real, data, rg)
+                         if "engine source travels" in m]
+            check("a package of this tree carries RealMe's engine source and the "
+                  "original, and says so",
+                  len(src_lines) == 1 and src_lines[0][0], str(src_lines)[:200])
+            rg["code"] = [(f, a_) for f, a_ in rg["code"] if "qwen3cpp_realme" not in a_]
+            miss = [(ok, m) for ok, m in M.preflight(real, data, rg)
+                    if "engine source travels" in m]
+            check("and one without the engine source is flagged",
+                  len(miss) == 1 and not miss[0][0])
         check("and the preflight says why it is absent and how to build it",
               any("left out" in m and "3_Get_Voice_Engine.bat" in m for _, m in pf),
               " | ".join(m for _, m in pf)[:200])
@@ -399,7 +414,9 @@ def main() -> int:
         spec = _iu.spec_from_file_location("ghpkg", HERE / "make_github_package.py")
         G = _iu.module_from_spec(spec); spec.loader.exec_module(G)
         real_user = _gp.getuser
-        fake = "jd" + "oe"           # built, so this file does not name it
+        # Built, so this file does not name it; not "jdoe", which GGML's own
+        # scripts use as an example name.
+        fake = "rmz" + "qtester"
         _gp.getuser = lambda: fake
         try:
             gh = tmp / "gh"

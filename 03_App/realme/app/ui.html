@@ -1086,6 +1086,12 @@ Consider a cohort where 15.3 percent received the intervention…</pre>
             <option value="mixed" disabled>Partly faster (set by realme key)</option>
           </select></label>
         </div>
+        <div class="row">
+          <button class="ghost" id="lc-auto" onclick="autoLocalClone()"
+            title="Every voice-engine setting back to RealMe's own for this computer, at once">Automatic defaults</button>
+          <button class="ghost" id="lc-measure" onclick="measureLocalClone()"
+            title="Measure the best number of sentences per pass on this computer and its engine (optional; about 15 minutes)">Measure this computer (about 15 min)</button>
+        </div>
         <p class="hint" id="lc-note" role="status" aria-live="polite"></p>
       </div>
       <p class="hint">The draft voice is a free stock voice: fast, not you. Use it to
@@ -3268,11 +3274,13 @@ function paintLocalClone(r){
   $('lc-quant').value = r.quant;
   const auto = (r.measured||{})[r.quant] || (r.defaults||{})[r.quant] || 1;
   const how = (r.measured||{})[r.quant] ? 'measured on this computer' : 'the default';
+  const stale = (r.stale||[]).includes(r.quant);
   $('lc-batch').innerHTML =
     `<option value="auto">Automatic — ${auto} (${how})</option>`
     + [1,2,4,8,12,16].map(n => `<option value="${n}">${n === 1 ? '1 — one at a time' : n}</option>`).join('');
   $('lc-batch').value = String(r.batch);
   $('lc-batch').disabled = !r.batches_built;
+  if($('lc-measure')) $('lc-measure').disabled = !r.batches_built;
   const shell = r.shell || [];
   $('lc-quant').disabled = shell.includes('REALME_QWEN3CPP_QUANT');
   if(shell.includes('REALME_RECORD_BATCH')) $('lc-batch').disabled = true;
@@ -3284,7 +3292,8 @@ function paintLocalClone(r){
       + (r.q8_ready ? '' : ' It is made from the 16-bit model the first time it records (a minute or two).')
     : 'The 16-bit model is the original; the 8-bit one, the default, records faster (1.35 against 1.51 seconds of work per second of speech on a 6-core PC).');
   notes.push(r.batches_built
-    ? 'Several sentences per pass sound exactly the same as one at a time and record faster; a larger pass needs more memory, and less is used where memory is short. _Bench_Batch.bat measures the best size for this computer.'
+    ? 'Several sentences per pass sound exactly the same as one at a time and record faster; a larger pass needs more memory, and less is used where memory is short. The default suits most computers; Measure this computer (below, about 15 minutes) finds the best size for this one.'
+      + (stale ? ' The last measurement was made before the voice engine was rebuilt, so the default is used until it is measured again.' : '')
     : 'Sentences per pass: this engine records one at a time. Run _Rebuild_Voice_Engine.bat to record several per pass.');
   if(shell.length) notes.push(`${shell.join(' and ')} ${shell.length > 1 ? 'are' : 'is'} set outside RealMe and decides this until it is unset there.`);
   notes.push('Each model keeps its own recordings: a lecture recorded in the other model is recorded again the next time it renders, and switching back reuses the earlier takes.');
@@ -3305,6 +3314,48 @@ async function saveLocalClone(which){
     paintLocalClone(j);
     $('lc-note').textContent = 'Saved; used from the next preview or render. ' + $('lc-note').textContent;
   }catch(e){ $('lc-note').textContent = 'not saved: ' + e; }
+}
+
+/* Automatic defaults: every voice-engine setting back to RealMe's own for
+   this computer, at once. Measuring is the separate, optional button. */
+async function autoLocalClone(){
+  if(!confirm('Set the voice engine back to RealMe\'s defaults for this computer?\n\n'
+              + 'Model, sentences per pass, vocoder, threads and the engine\'s switches go '
+              + 'back to RealMe\'s own choices for this computer and the engine as built. '
+              + 'Recordings already made are kept.')) return;
+  $('lc-note').textContent = 'saving …';
+  const res = await fetch('/api/local-clone/automatic', {method:'POST'});
+  const r = await jsonOf(res);
+  if(!res.ok){ $('lc-note').textContent = detailText(r); return; }
+  paintLocalClone(r);
+  $('lc-note').textContent = 'Back to RealMe\'s defaults for this computer'
+    + (r.kept && r.kept.length ? ` (kept, as they are set outside RealMe: ${r.kept.join(', ')})` : '')
+    + '; used from the next preview or render. ' + $('lc-note').textContent;
+}
+
+/* Measure this computer: the sentences-per-pass measurement on this
+   computer and its engine as built (about 15 minutes), followed in
+   Activity. Optional: the defaults are used until it is done. */
+async function measureLocalClone(){
+  if(!confirm('Measure how many sentences per pass suit this computer?\n\n'
+              + 'About 15 minutes. Nothing else can record meanwhile, and the computer '
+              + 'is best left alone. The defaults stay in use if it is stopped.')) return;
+  const btn = $('lc-measure');
+  btn.disabled = true;
+  $('lc-note').textContent = 'starting …';
+  const res = await fetch('/api/local-clone/measure', {method:'POST'});
+  const r = await jsonOf(res);
+  if(!res.ok){ btn.disabled = false; $('lc-note').textContent = detailText(r); return; }
+  $('lc-note').textContent = 'Measuring this computer — follow it in Activity.';
+  watch(r.job_id, 'Measure this computer — voice engine', async j => {
+    btn.disabled = false;
+    await loadLocalClone();
+    const b = j.result && j.result.batch_auto;
+    $('lc-note').textContent = j.status === 'done'
+      ? (b ? `Measured: ${b} sentence${b === 1 ? '' : 's'} per pass suit this computer, used from the next render. ` : '')
+        + $('lc-note').textContent
+      : 'The measurement did not finish; the defaults stay in use. ' + (j.error || '');
+  });
 }
 
 async function loadDraftVoices(){

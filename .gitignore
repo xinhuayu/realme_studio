@@ -30,3 +30,4 @@ RealMe_Package.zip
 gemini_probe/
 *.wav
 *.mp4
+!RealMe_Guide_narrated_v4.mp4

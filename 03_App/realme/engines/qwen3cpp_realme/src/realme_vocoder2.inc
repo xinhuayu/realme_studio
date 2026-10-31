@@ -1,8 +1,8 @@
 // realme_vocoder2.inc -- RealMe: the vocoder's decoder stage without the
 // unrolled copies (QWEN3_TTS_VOCODER_F32=2).
 //
-// Included into audio_tokenizer_decoder.cpp in RealMe's staged copy of the
-// engine (never the vendored source), after realme_vocoder.inc and
+// Included into audio_tokenizer_decoder.cpp in RealMe's revised engine
+// (not in upstream's source), after realme_vocoder.inc and
 // realme_snake.inc, whose 32-bit weight copies, overlap-add and sine it uses.
 //
 // The decoder stage (dec0 to dec6: about 95% of the vocoder's arithmetic)
@@ -37,10 +37,11 @@
 
 namespace qwen3_tts {
 
+// 2, or 3 (realme_vocoder3.inc), for which this is the fallback.
 static bool realme_voc2_wanted() {
     static const bool on = [] {
         const char * v = std::getenv("QWEN3_TTS_VOCODER_F32");
-        return v && v[0] == '2' && realme_vocoder_f32_wanted();
+        return v && (v[0] == '2' || v[0] == '3') && realme_vocoder_f32_wanted();
     }();
     return on;
 }
@@ -51,6 +52,7 @@ static bool realme_voc2_wanted() {
 // layout.
 static void realme_voc2_prepare(audio_decoder_model & m, ggml_backend_t backend) {
     if (!realme_voc2_wanted() || !backend || !ggml_backend_is_cpu(backend)) return;
+    if (m.realme3_ctx) return;            // 3 is ready; this is not needed
     std::vector<struct ggml_tensor *> conv;
     auto want = [](struct ggml_tensor * w) {
         return w && w->type == GGML_TYPE_F16 && ggml_is_contiguous(w);

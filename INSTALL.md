@@ -8,7 +8,7 @@ checks for a working copy first instead of downloading again.
 
 ## 1. Python and the package
 
-Python 3.11 or newer.
+Python 3.10 or newer (the Windows installer uses 3.11).
 
 ```
 conda create -n realme python=3.12     # or python -m venv .venv
@@ -44,13 +44,14 @@ realme voice choose                  # asks: Gemini, the local clone, or none
 ```
 
 - **The free local clone** (`qwen3cpp`) clones your voice on your own
-  computer: nothing uploaded, nothing to pay, about real time on a small
-  6-core PC (a 51-slide, 52-minute lecture rendered in 57 minutes on an
-  Intel i7-10710U with 64 GB of DDR4-2667 and no graphics card). It runs on RealMe's revised
-  qwen3-tts.cpp: the source of qwen3-tts.cpp (predict-woo, MIT) and GGML
-  (MIT) is vendored under `03_App/realme/engines/qwen3cpp`, and RealMe's
-  changes (`03_App/realme/engines/qwen3cpp_batch/REALME_CHANGES.md`) are
-  applied to the copy that is built. It is compiled on the machine that uses
+  computer: nothing uploaded, nothing to pay, faster than real time on a
+  small 6-core PC (a 51-slide, 52-minute lecture rendered in 36 to 38 minutes on an
+  Intel i7-10710U, a 15-watt laptop processor, with 64 GB of DDR4-2667 and
+  no graphics card). It runs on RealMe's revised qwen3-tts.cpp: the original source of qwen3-tts.cpp (predict-woo, MIT)
+  and GGML (MIT) is kept unchanged under `03_App/realme/engines/qwen3cpp`,
+  and RealMe's engine source -- the original with RealMe's changes made
+  (`03_App/realme/engines/qwen3cpp_realme`, see its `REALME_CHANGES.md`) --
+  is what is built. It is compiled on the machine that uses
   it. On Windows that needs **Visual Studio 2022 Build Tools** with
   *Desktop development with C++* (it brings CMake and Ninja); on Linux or
   macOS, a C++17 compiler and CMake.
@@ -68,7 +69,9 @@ realme voice choose                  # asks: Gemini, the local clone, or none
   (`realme engine cpp --cpp-action export-release --export-to <folder>`
   writes it). `DESIGN.md` explains how it is built and why it is fast.
   `00_Windows\_Make_Voice_Server.bat` packs it as a voice server for other
-  tools (an OpenAI-compatible `/v1/audio/speech` on this computer).
+  tools (an OpenAI-compatible `/v1/audio/speech` on this computer, port
+  8800 by default, model `realme-qwen3-tts`, voice `realme`; it needs only
+  Python 3.9 or newer).
 
 - **Gemini** (`gemini-tts`) clones your voice in your Google project; your
   reference clip and every sentence are sent there, at about a dollar an

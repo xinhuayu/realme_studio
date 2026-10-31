@@ -108,6 +108,39 @@ class BatchStub(Stub):
         return [Path(o) for _, o, _, _ in items]
 
 
+class StreamStub(BatchStub):
+    """Plays a local clone that can refill a pass's places: the oldest of
+    its live sentences finishes first, and a free place is filled at once."""
+    def __init__(self, fail_after=None):
+        super().__init__()
+        self.fail_after = fail_after
+
+    def can_stream(self):
+        return True
+
+    def synthesize_stream(self, next_item, on_done, slots, voice=None):
+        from realme.adapters.tts_qwen3_dll import StreamFailed
+        live, n = [], 0
+        while True:
+            while len(live) < slots:
+                it = next_item()
+                if it is False or it is None:
+                    break
+                live.append(it)
+            if not live:
+                return
+            it = live.pop(0)
+            if self.fail_after is not None and n >= self.fail_after:
+                raise StreamFailed("stand-in stream stopped", [it] + live)
+            time.sleep(0.01)
+            tone(Path(it[1]), max(0.5, len(it[0].split()) * 0.2))
+            with open(CALLS, "a", encoding="utf-8") as f:
+                f.write(json.dumps({"pid": os.getpid(), "text": it[0], "lang": it[3],
+                                    "stream": slots, "live": len(live) + 1}) + "\n")
+            n += 1
+            on_done(it, None)
+
+
 class NetStub(Stub):
     """Plays Gemini: requests wait on the network, several may be in flight
     from threads sharing one adapter, a take can come back hurried, Google
@@ -318,9 +351,9 @@ def main() -> int:
     (data_home() / BATCH_FILE).write_text('{"batch": 3}', encoding="utf-8")
     check(PR.batch_for(BatchStub(), 20) == 3, "measured, what was measured")
     os.environ["REALME_QWEN3CPP_QUANT"] = "q8_0"
-    check(PR.batch_for(BatchStub(), 20) == 4,
+    check(PR.batch_for(BatchStub(), 20) == 8,
           "but not for the other model, which is measured on its own (its "
-          "default is 4)")
+          "default is 8)")
     (data_home() / BATCH_FILE).write_text(
         '{"f16": {"batch": 2}, "q8_0": {"batch": 4}}', encoding="utf-8")
     check(PR.batch_for(BatchStub(), 20) == 4, "the 8-bit model's own measurement")
@@ -358,6 +391,76 @@ def main() -> int:
         speak_segment(seg.spoken_text, Refuse(), bwork / "audio", seg.segment_id,
                       bledger, pace=seg.prosody.pace, prerecorded=pre["keys"])
     check(True, "and the render loop records nothing itself")
+    from types import SimpleNamespace as _NS
+    w = [_NS(text="x" * n, language=lang) for n, lang in
+         ((50, None), (200, None), (55, None), (48, "de"), (120, None), (52, None))]
+    g = PR.pick_pass(w, 3)
+    check([len(t.text) for t in g] == [50, 55, 52] and len(w) == 3,
+          "a pass takes the oldest sentence and the nearest in length, same language first",
+          [len(t.text) for t in g])
+    g = PR.pick_pass(w, 3, due=2)
+    check([len(t.text) for t in g] == [200, 48, 120],
+          "sentences that have waited too long go in whatever their length")
+    os.environ[PR.LOOKAHEAD_ENV] = "1"
+    check(PR.lookahead() == 1, "REALME_RECORD_LOOKAHEAD=1 records in order")
+    os.environ[PR.LOOKAHEAD_ENV] = "99"
+    check(PR.lookahead() == 8, "and it is kept between 1 and 8")
+    os.environ.pop(PR.LOOKAHEAD_ENV)
+    check(PR.lookahead() == PR.LOOKAHEAD == 3, "three passes' worth unless set")
+    class _Q:
+        def __init__(self, items): self.items = list(items) + [None]
+        def get(self, timeout=None): return self.items.pop(0)
+    lens = [30, 200, 35, 190, 40, 180, 33, 210, 31, 205, 38, 195]
+    got = []
+    keep = PR._record_batch
+    PR._record_batch = lambda tts, grp, res: got.append([len(t.text) for t in grp])
+    try:
+        PR._consume(BatchStub(), _Q([_NS(text="x" * n, language=None) for n in lens]),
+                    None, 3)
+    finally:
+        PR._record_batch = keep
+    check(sorted(n for grp in got for n in grp) == sorted(lens) and len(got) == 4
+          and all(max(grp) < 50 or min(grp) > 150 for grp in got),
+          "every sentence once, in passes of similar length", got)
+    sproj, sm = project("streamed")
+    swork = sproj / "_work"
+    sledger = RenderLedger(swork / "ledger.json")
+    stakes = PR.plan(sm, StreamStub(), sledger, swork / "audio")
+    CALLS.unlink(missing_ok=True)
+    msgs = []
+    pre = PR.run(sm, StreamStub(), swork / "audio", sledger, log=msgs.append)
+    said = calls()
+    check(pre["spoken"] == len(stakes) and all(c.get("stream") == 3 for c in said)
+          and max(c["live"] for c in said) <= 3 and len(said) == len({c["text"] for c in said})
+          == len(stakes),
+          "an engine that can refill its places records in a stream, three at a time, "
+          "each sentence once", said[:3])
+    fproj2, fm2 = project("stream_fails")
+    fwork2 = fproj2 / "_work"
+    fledger2 = RenderLedger(fwork2 / "ledger.json")
+    ftakes2 = PR.plan(fm2, StreamStub(), fledger2, fwork2 / "audio")
+    CALLS.unlink(missing_ok=True)
+    msgs = []
+    pre = PR.run(fm2, StreamStub(fail_after=2), fwork2 / "audio", fledger2, log=msgs.append)
+    said = calls()
+    check(pre["spoken"] == len(ftakes2) and sum(1 for c in said if c.get("stream")) >= 2
+          and any("stream" not in c for c in said) and len(said) == len(ftakes2)
+          and any("the stream stopped" in m for m in msgs),
+          "a stream that stops part way: the rest one at a time, each once, and the log says so",
+          (len(said), len(ftakes2), msgs[-3:]))
+    os.environ[PR.STREAM_ENV] = "0"
+    try:
+        pproj, pm = project("stream_off")
+        pwork = pproj / "_work"
+        pledger = RenderLedger(pwork / "ledger.json")
+        PR.plan(pm, StreamStub(), pledger, pwork / "audio")
+        CALLS.unlink(missing_ok=True)
+        pre = PR.run(pm, StreamStub(), pwork / "audio", pledger, log=lambda *_: None)
+        said = calls()
+        check(said and all("batch" in c and "stream" not in c for c in said),
+              "REALME_RECORD_STREAM=0 records in fixed passes")
+    finally:
+        os.environ.pop(PR.STREAM_ENV, None)
     fproj, fm = project("batch_fails")
     fwork = fproj / "_work"
     fledger = RenderLedger(fwork / "ledger.json")
