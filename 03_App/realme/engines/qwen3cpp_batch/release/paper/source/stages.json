@@ -1,0 +1,16 @@
+{
+ "earlier": {
+  "predictor": 18.34,
+  "talker": 7.42,
+  "vocoder": 14.6,
+  "other": 1.36,
+  "total": 41.7
+ },
+ "revised": {
+  "predictor": 12.82,
+  "talker": 6.74,
+  "vocoder": 14.33,
+  "other": 1.31,
+  "total": 35.19
+ }
+}

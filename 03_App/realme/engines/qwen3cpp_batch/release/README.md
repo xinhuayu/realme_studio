@@ -17,6 +17,18 @@ the model. This repository adds a set of changes on top of upstream commit
 [CHANGES.md](CHANGES.md) with how it was checked and the switch that turns it
 off. Upstream's own README is kept as [README_UPSTREAM.md](README_UPSTREAM.md).
 
+## Report
+
+[paper/realme-qwen3-tts-report.pdf](paper/realme-qwen3-tts-report.pdf)
+describes what limits this model on an ordinary CPU, what was changed, what
+did not pay, and how a full lecture compares with a hosted voice. Since the
+table below was measured, the code predictor's attention for a whole pass
+became one operation with its graphs kept, and RealMe Studio records with 12
+predictor steps (15 for a take that fails its check): in passes of 16 the
+engine needs 0.48 seconds of work per second of speech (a short test), and the
+same 51.7-minute lecture was recorded in 30.2 minutes (0.59 of its length).
+Its sources (Markdown, LaTeX, figures) are in `paper/source/`.
+
 ## What changed, and what it bought
 
 Measured on a small PC with a 6-core, 12-thread laptop processor (Intel i7-10710U, 15 W; 64 GB DDR4-2667; AVX2 build, no GPU),

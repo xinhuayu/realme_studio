@@ -10,7 +10,7 @@ an hour of lecture — your recording and the
 narration are sent to Google, so use a **paid** API project. **The free local
 clone** (`realme-rev-qwen3-tts`) keeps everything on your computer at no
 cost, on RealMe's revised voice engine: faster than real time on a 6-core PC
-(a 52-minute lecture recorded in 33 minutes on a 2019 NUC). It comes in a
+(a 52-minute lecture recorded in 30 minutes on a 2019 NUC). It comes in a
 RealMe package, or `3_Get_Voice_Engine.bat` builds it (Visual Studio Build
 Tools); `_Rebuild_Voice_Engine.bat` builds it again for a new processor. Or use the
 three free draft voices for everything.
@@ -39,6 +39,15 @@ Render it in your own voice — it makes a good first lecture: Lecture tab →
 realme import-script RealMe_Guide_notes_v4.txt --project guide_v4
 realme lecture RealMe_Guide_v4.pdf --script imported -o guide_v4
 ```
+
+## The research report
+
+[Running AI models locally on a small budget: how software design made a
+cloned-voice lecture narrator practical on an ordinary CPU](03_App/realme/engines/qwen3cpp_batch/release/paper/realme-qwen3-tts-report.pdf)
+(November 2026) describes what limits the voice engine on a laptop processor
+without a graphics card, which changes made it about eight times as fast,
+which did not pay, and how a full lecture compares with Gemini. Its sources
+are beside it in `paper/source/`.
 
 ## What is in this folder
 

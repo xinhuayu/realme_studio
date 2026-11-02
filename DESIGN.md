@@ -86,10 +86,14 @@ records that sentence again on its own, in order -- with all 15 steps, the
 fallback. On the 78 takes of the two listening tests it flagged only the
 run-on. `REALME_TAKE_CHECK=0` leaves only the run-on check.
 
-**What it gives.** A 51.8-minute lecture (51 slides, 578 sentences) on the
-NUC recorded in 1956.7 s (0.63 of its length) against 2435.8 s the day
-before (0.80 of it), the voice not told apart. The
-original upstream engine needs 3.79 s of work per second of speech.
+**What it gives.** The same lecture (51 slides, 578 sentences) on the NUC,
+with these defaults (12 steps, take check, 16 a pass): a 51.7-minute video
+recorded in 1814.0 s (0.59 of its length) and finished in 1884.5 s (0.61),
+no term flagged by the audio check (2026-11-02). With 15 steps and the
+batched predictor attention it had taken 1956.7 s (0.63), and with the
+settings before that 2435.8 s (0.78). The original upstream engine needs
+3.79 s of work per second of speech. The research report on all of it is in
+`03_App/realme/engines/qwen3cpp_batch/release/paper/`.
 
 **The previous local engine** (`qwen3cpp`: the same source built the older
 way, upstream's settings) is no longer offered in the voice list; a profile
