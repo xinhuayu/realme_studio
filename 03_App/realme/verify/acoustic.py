@@ -224,6 +224,7 @@ class AcousticVerifier:
         # to listen. So the threshold is biased toward inconclusive.
         self.min_margin = min_margin
         self._templates: dict[str, tuple[np.ndarray, np.ndarray] | None] = {}
+        self._separation: dict[str, float] = {}
         # Templates belong to a voice. The draft-then-final workflow renders
         # both in one project, and a template synthesised by the 22 kHz draft
         # voice must not be DTW-matched against the 24 kHz clone -- a
@@ -274,6 +275,25 @@ class AcousticVerifier:
         self._templates[term] = result
         return result
 
+    @staticmethod
+    def judge(d_int: float, d_wrong: float, separation: float,
+              min_margin: float) -> tuple[float, str]:
+        """(margin, verdict) for one term in one utterance.
+
+        `separation` is the distance between the two templates themselves. A
+        neural voice that already knows a term (SAMHSA, JAMA) says the bare
+        word and the respelling alike, so its two templates are close; when
+        they are closer to each other than the utterance is to either, which
+        one the utterance sits nearer to says nothing about the
+        pronunciation, and the verdict is inconclusive rather than a coin
+        flip reported as a mispronunciation.
+        """
+        denom = min(d_int, d_wrong) or 1e-6
+        margin = (max(d_int, d_wrong) - min(d_int, d_wrong)) / denom
+        if margin < min_margin or separation < min(d_int, d_wrong):
+            return margin, "inconclusive"
+        return margin, "intended" if d_int < d_wrong else "MISPRONOUNCED"
+
     def check_utterance(self, wav: Path, terms: list[str],
                         label: str = "") -> list[TermVerdict]:
         out: list[TermVerdict] = []
@@ -298,14 +318,9 @@ class AcousticVerifier:
             d_wrong = best_window_distance(feats, naive)
             if not (math.isfinite(d_int) and math.isfinite(d_wrong)):
                 continue
-            denom = min(d_int, d_wrong) or 1e-6
-            margin = (max(d_int, d_wrong) - min(d_int, d_wrong)) / denom
-            if margin < self.min_margin:
-                verdict = "inconclusive"
-            elif d_int < d_wrong:
-                verdict = "intended"
-            else:
-                verdict = "MISPRONOUNCED"
+            if term not in self._separation:
+                self._separation[term] = dtw_distance(intended, naive)
+            margin, verdict = self.judge(d_int, d_wrong, self._separation[term], self.min_margin)
             out.append(TermVerdict(term=term, utterance=label,
                                    intended_distance=round(d_int, 4),
                                    wrong_distance=round(d_wrong, 4),

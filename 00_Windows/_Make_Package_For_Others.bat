@@ -5,10 +5,10 @@ REM  Package this install for SOMEBODY ELSE: the code, ffmpeg and the
 REM  Piper draft voices, with your enrolled voice and your profile left
 REM  out. They record their own; the instructions inside tell them how.
 REM
-REM  Gemini is their default voice, so the local Qwen3 engine (~2.2 GB)
-REM  is left out unless you answer y below. Without it the package is
-REM  far smaller, and they can still add the engine later with
-REM  3_Get_Voice_Engine.bat.
+REM  The free local voice (realme-rev-qwen3-tts: its model files and a
+REM  portable engine build, about 3 GB) goes in unless you answer n below.
+REM  Without it the package is far smaller, and they can still add it later
+REM  with 3_Get_Voice_Engine.bat.
 REM
 REM  This is the one you send. 7_Make_Migration_Package.bat makes the
 REM  other one, which carries your voice and is for another machine of
@@ -49,8 +49,8 @@ if not "!RC!"=="0" (
 )
 
 echo.
-echo  The free local voice clone ^(qwen3cpp^) is a standard part of RealMe and
-echo  travels ready to run, adding about 2.2 GB. Without it, your colleague
+echo  The free local voice clone ^(realme-rev-qwen3-tts^) is a standard part of RealMe and
+echo  travels ready to run, adding about 3 GB. Without it, your colleague
 echo  needs Visual Studio Build Tools to build it themselves.
 echo.
 set "QQ="

@@ -448,7 +448,23 @@ def _local_clone_state() -> dict:
         batch = max(1, min(MAX_BATCH, int(raw))) if raw else "auto"
     except ValueError:
         batch = "auto"
+    # The local voice lectures use (realme-rev-qwen3-tts): its pass size,
+    # measured here or its default, and where that came from.
+    rev = {}
+    try:
+        from realme.engines.rev import NAME as REV, engine_home, batch_default as rev_batch
+        from realme.enrollment.choice import local_clone_installed
+        from realme.adapters.tts_qwen3_dll import _batch_saved
+        if local_clone_installed():
+            rh = engine_home()
+            got = rev_batch(rh)
+            measured_rev = (_batch_saved().get(REV) or (0, ""))[0]
+            rev = {"name": REV, "batch": got,
+                   "source": "measured" if measured_rev and got == measured_rev else "default"}
+    except Exception:
+        rev = {}
     return {
+        "local_voice": rev,
         "installed": library_path(home).is_file()
                      and (home / "models" / C.F16_FILE).is_file(),
         "quant": quant_setting(),
@@ -541,7 +557,16 @@ ENGINE_KEYS = ("REALME_QWEN3CPP_QUANT", "REALME_RECORD_BATCH", "REALME_RECORD_ST
                "QWEN3_TTS_THREADS", "QWEN3_TTS_FAST_SNAKE", "QWEN3_TTS_VOCODER_F32",
                "QWEN3_TTS_VOCODER_F32_MAX_FRAMES", "QWEN3_TTS_Q8_BATCH", "QWEN3_TTS_SGEMM",
                "QWEN3_TTS_SGEMM_ALL", "QWEN3_TTS_FFN_F32", "QWEN3_TTS_BROADCAST",
-               "QWEN3_TTS_LOW_MEM")
+               "QWEN3_TTS_LOW_MEM",
+               # realme-rev-qwen3-tts's switches and tests (its own settings
+               # are in engines/rev.py and tools/realme-rev-qwen3-tts/local).
+               "QWEN3_TTS_CP_STEPS", "QWEN3_TTS_CP_FILL", "QWEN3_TTS_VOCODER_CODEBOOKS",
+               "QWEN3_TTS_VOCODER_Q8", "QWEN3_TTS_VOCODER_BACKEND", "QWEN3_TTS_Q8_SHARE",
+               "QWEN3_TTS_Q8_VNNI", "QWEN3_TTS_DECODE_ASYNC", "QWEN3_TTS_DECODE_THREADS",
+               "QWEN3_TTS_CP_BATCH_ATTN", "QWEN3_TTS_CP_GRAPH_REUSE",
+               "QWEN3_TTS_TALK_GRAPH_REUSE", "QWEN3_TTS_STAGE_TIMING", "QWEN3_TTS_CACHE_GROW",
+               "QWEN3_TTS_WEIGHT_MMAP", "QWEN3_TTS_TEXT_MMAP", "QWEN3_TTS_ATTN_JOIN",
+               "QWEN3_TTS_TOPK_SELECT", "REALME_TAKE_CHECK", "REALME_RUNAWAY_CHECK")
 #: The measurement started from Twin Setup, while it runs: its job id.
 MEASURING: dict = {"job": None}
 
@@ -594,7 +619,8 @@ def local_clone_automatic():
     if any(j["status"] in ("queued", "running") for j in runner.recent(200)):
         raise HTTPException(409, "Something is running; change this when it has finished.")
     from realme.engines import cpp as C
-    if not (C.cpp_home() / "build_info.json").is_file():
+    from realme.enrollment.choice import local_clone_installed
+    if not (C.cpp_home() / "build_info.json").is_file() and not local_clone_installed():
         raise HTTPException(409, "The free local clone is not installed here.")
     cleared, kept = reset_engine_settings()
     return {**_local_clone_state(), "cleared": cleared, "kept": kept}
@@ -612,9 +638,11 @@ def local_clone_measure():
                                  "as it measures how fast this computer records.")
     from realme.adapters.tts_qwen3_dll import batch_built_at
     from realme.engines import cpp as C
-    if not (C.cpp_home() / "build_info.json").is_file():
+    from realme.enrollment.choice import local_clone_installed
+    rev_here = local_clone_installed()        # realme-rev-qwen3-tts: what bench-batch measures
+    if not rev_here and not (C.cpp_home() / "build_info.json").is_file():
         raise HTTPException(409, "The free local clone is not installed here.")
-    if not batch_built_at(C.cpp_home()):
+    if not rev_here and not batch_built_at(C.cpp_home()):
         raise HTTPException(409, "This engine records one sentence at a time; there is "
                                  "nothing to measure. Run _Rebuild_Voice_Engine.bat to "
                                  "record several per pass.")
@@ -650,8 +678,9 @@ def local_clone_measure():
                                "the defaults stay in use.")
         forget_tts()
         st = _local_clone_state()
+        lv = st.get("local_voice") or {}
         return {"measured": st.get("measured"),
-                "batch_auto": (st.get("measured") or {}).get(st.get("quant"))}
+                "batch_auto": lv.get("batch") or (st.get("measured") or {}).get(st.get("quant"))}
 
     job = runner.submit("engine", "Measure this computer — voice engine", work)
     MEASURING["job"] = job.id
@@ -677,7 +706,15 @@ def warm_engine(name: str = "", *, block: bool = False) -> None:
     """
     import time
     from realme.adapters.tts import DEVELOPED as _DEV
+    # REALME_NATIVE_WARMUP_POLICY
+    automatic = not name
     name = name or profile.data.get("adapters", {}).get("tts") or _DEV[0]
+    if automatic and name in ('qwen3cpp', 'realme-rev-qwen3-tts'):
+        # A lecture can select a different build from the global default.
+        # Loading one at startup prevents Windows from loading the other pair.
+        WARM.update(engine=name, state='idle', detail='loads on first use', seconds=0.0)
+        return
+    # END_REALME_NATIVE_WARMUP_POLICY
     try:
         _refuse_while_measuring()
     except HTTPException:

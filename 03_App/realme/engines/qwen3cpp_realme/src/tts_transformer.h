@@ -159,6 +159,8 @@ struct tts_transformer_model {
     struct ggml_context * realme_f32_ctx = nullptr;
     ggml_backend_buffer_t realme_f32_buffer = nullptr;
     
+    std::shared_ptr<struct realme_text_mapping> realme_text_mapping;
+
     // Tensor name to tensor mapping
     std::map<std::string, struct ggml_tensor *> tensors;
 };
@@ -338,6 +340,7 @@ private:
     // Cached hidden states from last forward pass
     std::vector<float> last_hidden_;
     std::vector<ggml_fp16_t> embd_row_fp16_scratch_;
+    std::shared_ptr<struct realme_embedding_cache> realme_embedding_rows_;
     std::mt19937 rng_{std::random_device{}()};
     CoreMLCodePredictor coreml_code_predictor_;
     bool use_coreml_code_predictor_ = false;

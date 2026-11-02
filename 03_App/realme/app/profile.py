@@ -223,9 +223,11 @@ class Profile:
             self.save()
 
     #: Engine names an older profile may hold, and the current engine each
-    #: maps to. None of these is in the registry.
-    RETIRED_ENGINES = {"qwen3": "qwen3cpp", "qwen3cpp-cli": "qwen3cpp",
-                       "piper+knnvc": "qwen3cpp", "piper+openvoice": "qwen3cpp",
+    #: maps to. qwen3cpp, the previous local engine, is still in the registry
+    #: (it makes the model files) but no longer offered: its profiles move on.
+    RETIRED_ENGINES = {"qwen3": "realme-rev-qwen3-tts", "qwen3cpp-cli": "realme-rev-qwen3-tts",
+                       "qwen3cpp": "realme-rev-qwen3-tts",
+                       "piper+knnvc": "realme-rev-qwen3-tts", "piper+openvoice": "realme-rev-qwen3-tts",
                        "espeak": "piper"}
 
     def _migrate(self) -> bool:
@@ -246,7 +248,7 @@ class Profile:
             # A guest must not clone the instructor's voice. An older profile
             # may hold a cloning engine here; reset it to the draft default.
             if ad.get("guest_tts") in ("qwen3cpp", "qwen3", "chatterbox",
-                                       "indextts"):
+                                       "indextts", "realme-rev-qwen3-tts"):
                 ad["guest_tts"] = "piper:en_US-amy-medium"
                 changed = True
                 import sys as _sys

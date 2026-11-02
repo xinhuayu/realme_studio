@@ -14,6 +14,7 @@
 #include "realme_snake.inc"
 #include "realme_vocoder2.inc"
 #include "realme_vocoder3.inc"
+#include "realme_codebooks.inc"
 
 namespace qwen3_tts {
 
@@ -378,12 +379,13 @@ bool AudioTokenizerDecoder::load_model(const std::string & model_path) {
         upload_if_present(model_.vq_rest_codebook[i]);
     }
     
-    state_.backend = init_preferred_backend("AudioTokenizerDecoder", &error_msg_);
+    state_.backend = realme_decoder_backend(&error_msg_, realme_private_backend_);
     if (!state_.backend) {
         return false;
     }
-    realme_vocoder_prepare(model_, state_.backend);
+    realme_vocoder_weights_to(model_, state_.backend, nullptr);   // RealMe: a GPU's weights on the GPU
     realme_voc3_prepare(model_, state_.backend);
+    realme_vocoder_prepare(model_, state_.backend);
     realme_voc2_prepare(model_, state_.backend);
 
     ggml_backend_dev_t device = ggml_backend_get_device(state_.backend);
@@ -392,6 +394,7 @@ bool AudioTokenizerDecoder::load_model(const std::string & model_path) {
     
     if (device && ggml_backend_dev_type(device) != GGML_BACKEND_DEVICE_TYPE_CPU) {
         state_.backend_cpu = ggml_backend_init_by_type(GGML_BACKEND_DEVICE_TYPE_CPU, nullptr);
+        realme_vocoder_fallback_threads(state_.backend_cpu);          // RealMe
         if (!state_.backend_cpu) {
             error_msg_ = "Failed to initialize CPU fallback backend for AudioTokenizerDecoder";
             return false;
@@ -732,7 +735,9 @@ struct ggml_cgraph * AudioTokenizerDecoder::build_graph(int32_t n_frames) {
                                                                  cfg.codebook_dim, cfg.hidden_dim);
     
      struct ggml_tensor * rest_proj_2d = nullptr;
-     for (int cb = 0; cb < 15; ++cb) {
+     // RealMe: the first codebooks only (QWEN3_TTS_VOCODER_CODEBOOKS, QWEN3_TTS_CP_STEPS); all 15 unset
+     const int realme_rest = realme_vocoder_rest_codebooks();
+     for (int cb = 0; cb < realme_rest; ++cb) {
          struct ggml_tensor * cb_emb_2d = ggml_reshape_2d(ctx0, rest_emb[cb], cfg.codebook_dim, n_frames);
          
          if (cb == 0) {
@@ -818,6 +823,10 @@ struct ggml_cgraph * AudioTokenizerDecoder::build_graph(int32_t n_frames) {
      // RealMe (QWEN3_TTS_VOCODER_F32=2): the decoder stage without unrolled copies
      struct ggml_tensor * realme_audio = realme_voc3_back(ctx0, model_, cur);
      if (!realme_audio) realme_audio = realme_voc2_back(ctx0, model_, cur);
+     if (!realme_audio && model_.realme_on && !realme_vocoder_prepare(model_, state_.backend, true)) {
+         error_msg_ = "Failed to prepare F32 vocoder fallback";
+         return nullptr;
+     }
      if (realme_audio) {
          cur = realme_audio;
      } else {
@@ -916,6 +925,7 @@ bool AudioTokenizerDecoder::decode_single(const int32_t * codes, int32_t n_frame
     
     model_.realme_on = realme_vocoder_frames_ok(n_frames);
     struct ggml_cgraph * gf = build_graph(n_frames);
+    if (!gf) return false;
     
     if (!ggml_backend_sched_alloc_graph(state_.sched, gf)) {
         error_msg_ = "Failed to allocate graph";
@@ -927,6 +937,7 @@ bool AudioTokenizerDecoder::decode_single(const int32_t * codes, int32_t n_frame
         char name[32];
         snprintf(name, sizeof(name), "codes_cb%d", cb);
         struct ggml_tensor * cb_tensor = ggml_graph_get_tensor(gf, name);
+        if (!cb_tensor && cb > realme_vocoder_rest_codebooks()) continue;   // RealMe: left out
         if (!cb_tensor) {
             error_msg_ = "Failed to find codes tensor for codebook " + std::to_string(cb);
             ggml_backend_sched_reset(state_.sched);
@@ -1048,6 +1059,10 @@ bool AudioTokenizerDecoder::decode(const int32_t * codes, int32_t n_frames,
 
 void free_audio_decoder_model(audio_decoder_model & model) {
     model.realme_f32.clear();
+    if (model.realme_lazy_buffer) ggml_backend_buffer_free(model.realme_lazy_buffer);
+    if (model.realme_lazy_ctx) ggml_free(model.realme_lazy_ctx);
+    model.realme_lazy_buffer = nullptr;
+    model.realme_lazy_ctx = nullptr;
     model.realme2_f32.clear();
     model.realme3_w.clear();
     if (model.realme3_buffer) {

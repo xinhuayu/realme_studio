@@ -128,6 +128,20 @@ def _rush_of(tts) -> float | None:
     return float(value) if value and value > 1.0 else None
 
 
+def _runaway_of(tts) -> float | None:
+    """Seconds of the last take if it ran on past its text (the local clone
+    sometimes never ends a sentence), else None. Asked like `_rush_of`; an
+    engine with no such check returns None and nothing happens."""
+    ask = getattr(tts, "last_runaway", None)
+    if not callable(ask):
+        return None
+    try:
+        value = ask()
+    except Exception:
+        return None
+    return float(value) if value else None
+
+
 class _Utterances(list):
     """A plain list that can also carry what the segment cost.
 
@@ -418,6 +432,8 @@ def speak_segment(text: str, tts, workdir: Path, seg_id: int, ledger,
         # flag is "may this still be retried": one level only, so a passage
         # the engine simply says quickly cannot loop.
         queue = [(c, True) for c in chunks]
+        # Run-on takes by text: said again once, then split, then kept.
+        runaways: dict[str, int] = {}
         while queue:
             chunk, retryable = queue.pop(0)
             prepared = prepare_for_speech(chunk, engine, lx,
@@ -475,6 +491,32 @@ def speak_segment(text: str, tts, workdir: Path, seg_id: int, ledger,
                 dur = duration_of(wav)
                 spoke += 1
                 synth_s += _time.perf_counter() - _t0
+
+                # A take far longer than its text: the engine ran on past the
+                # end. Not cached. Said again first (a fresh draw usually
+                # ends); if it runs on again, in smaller pieces; a piece that
+                # cannot be split further is kept, with a note to listen.
+                ran = _runaway_of(tts)
+                if ran:
+                    tries = runaways.get(chunk, 0) + 1
+                    runaways[chunk] = tries
+                    if tries == 1:
+                        log(f"  seg{seg_id}: that take ran on past its text "
+                            f"({ran:.0f} s) -- recording it again")
+                        queue[0:0] = [(chunk, retryable)]
+                        discarded += 1
+                        continue
+                    half = max(40, len(chunk) // 2)
+                    pieces = split_utterances(chunk, half, max(half + 20, 60), mode=mode) \
+                        if tries == 2 else [chunk]
+                    if len(pieces) > 1 and sum(runaways.values()) <= 8:
+                        log(f"  seg{seg_id}: it ran on again -- recording it "
+                            f"as {len(pieces)} shorter calls")
+                        queue[0:0] = [(p_, False) for p_ in pieces]
+                        discarded += 1
+                        continue
+                    log(f"  seg{seg_id}: that take ran on past its text twice "
+                        f"and cannot be split further -- keeping it; worth a listen")
 
                 # On-the-spot QC. A hurried take contains every word, so no
                 # length or content check fires on it. Ask the engine, and if

@@ -195,13 +195,13 @@ NO_COMPILER = """There is no C++ compiler on this computer, so the stopwatch cop
   the engine cannot be built here. Two ways on:
 
   1. On the computer that built the engine (it has the compiler), run
-         _Engine_Timing.bat --build-only
+         realme engine-timing --build-only   (in 5_Command_Prompt.bat)
      then copy its folder  tools\\qwen3cpp_timing  into this computer's
-     RealMe\\tools  folder, beside qwen3cpp, and run _Engine_Timing.bat here
+     RealMe\\tools  folder, beside qwen3cpp, and run realme engine-timing here
      again. It is built for the same processors as your engine ({cpu}).
 
   2. Or install a compiler here -- Visual Studio Build Tools, "Desktop
-     development with C++" -- and run _Engine_Timing.bat again.
+     development with C++" -- and run realme engine-timing again.
 
   ({detail})"""
 
@@ -937,7 +937,7 @@ def main_cli(threads, sentences: int, rebuild: bool, outdir: Path,
     if build_only:
         log(f"\n  Built, not measured. To measure on another computer, copy\n"
             f"    {timing_home()}\n  into that computer's RealMe tools folder "
-            f"and run _Engine_Timing.bat there.")
+            f"and run realme engine-timing there.")
         return 0
     res = measure(threads, sentences, outdir=outdir, reference=reference,
                   library_path=lib, log=log)

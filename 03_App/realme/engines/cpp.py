@@ -564,6 +564,9 @@ def apply_batch_patch(tree: Path) -> bool:
     not found exactly once. The .inc file is always refreshed."""
     src = Path(tree) / "src"
     shutil.copy2(batch_source(), src / BATCH_FILE)
+    shutil.copy2(own_source("realme_batch_scratch.inc"), src / "realme_batch_scratch.inc")
+    for name in ("realme_sampling.inc", "realme_q8_kernels.inc", "realme_codebooks.inc", "realme_share.inc", "realme_q8_compute.inc", "realme_runtime.inc", "realme_embedding.inc", "realme_q8_schedule.inc", "realme_attention.inc"):
+        shutil.copy2(own_source(name), src / name)
     th, qh, ca = (src / "tts_transformer.h", src / "qwen3_tts.h",
                   src / "qwen3tts_c_api.cpp")
     tht, qht, cat = (f.read_text(encoding="utf-8") for f in (th, qh, ca))
@@ -1142,10 +1145,374 @@ def apply_sgemm_patch(ggml_dir: Path) -> bool:
 #: Made, in this order, by integrate() when it writes qwen3cpp_realme;
 #: nothing is patched while building. The timing copy adds its stopwatch
 #: (cpp_timing.apply_profile_patch) on top.
+def apply_vocoder_storage_patch(tree: Path) -> bool:
+    """Prepare packed weights first and retain older layouts only on fallback."""
+    src = Path(tree) / "src"
+    h, c = src / "audio_tokenizer_decoder.h", src / "audio_tokenizer_decoder.cpp"
+    ht, ct = h.read_text(encoding="utf-8"), c.read_text(encoding="utf-8")
+    if 'realme_lazy_buffer' in ht and 'Failed to prepare F32 vocoder fallback' in ct:
+        return False
+    anchor = '    bool realme_on = false;   // this sentence is short enough for them\n'
+    edits = [
+        ('    realme_vocoder_prepare(model_, state_.backend);\n    realme_voc3_prepare(model_, state_.backend);',
+         '    realme_voc3_prepare(model_, state_.backend);\n    realme_vocoder_prepare(model_, state_.backend);'),
+        ('     if (realme_audio) {\n',
+         '     if (!realme_audio && model_.realme_on && !realme_vocoder_prepare(model_, state_.backend, true)) {\n'
+         '         error_msg_ = "Failed to prepare F32 vocoder fallback";\n         return nullptr;\n     }\n'
+         '     if (realme_audio) {\n'),
+        ('    struct ggml_cgraph * gf = build_graph(n_frames);\n',
+         '    struct ggml_cgraph * gf = build_graph(n_frames);\n    if (!gf) return false;\n'),
+        ('    model.realme_f32.clear();\n',
+         '    model.realme_f32.clear();\n'
+         '    if (model.realme_lazy_buffer) ggml_backend_buffer_free(model.realme_lazy_buffer);\n'
+         '    if (model.realme_lazy_ctx) ggml_free(model.realme_lazy_ctx);\n'
+         '    model.realme_lazy_buffer = nullptr;\n    model.realme_lazy_ctx = nullptr;\n'),
+    ]
+    if ht.count(anchor) != 1 or any(ct.count(old) != 1 for old, _ in edits):
+        raise RuntimeError('audio_tokenizer_decoder changed upstream; lazy vocoder anchors differ')
+    ht = ht.replace(anchor, anchor + '\n    struct ggml_context * realme_lazy_ctx = nullptr;\n'
+                    '    ggml_backend_buffer_t realme_lazy_buffer = nullptr;\n')
+    for old, new in edits:
+        ct = ct.replace(old, new)
+    h.write_text(ht, encoding='utf-8')
+    c.write_text(ct, encoding='utf-8')
+    return True
+
+
+def apply_text_mmap_patch(tree: Path) -> bool:
+    """Keep CPU text vocabulary weights file-backed; copying remains the fallback."""
+    src = Path(tree) / "src"
+    h, c = src / "tts_transformer.h", src / "tts_transformer.cpp"
+    ht, ct = h.read_text(encoding="utf-8"), c.read_text(encoding="utf-8")
+    name = "realme_text_mmap.inc"
+    shutil.copy2(own_source(name), src / name)
+    if name in ct and "realme_text_mapping" in ht:
+        return False
+    replacements = [
+        ('#include <sys/stat.h>\n', '#include <sys/stat.h>\n#include "realme_text_mmap.inc"\n'),
+        ('    model_.buffer = ggml_backend_alloc_ctx_tensors(model_.ctx, backend);',
+         '    realme_map_text(model_, path, ctx, backend);\n'
+         '    model_.buffer = ggml_backend_alloc_ctx_tensors(model_.ctx, backend);'),
+        ('        read_buf.resize(nbytes);',
+         '        if (model_.realme_text_mapping && tensor == model_.text_embd) continue;\n'
+         '        read_buf.resize(nbytes);'),
+        ('void free_transformer_model(tts_transformer_model & model) {',
+         'void free_transformer_model(tts_transformer_model & model) {\n'
+         '    model.realme_text_mapping.reset();'),
+    ]
+    anchor = '    // Tensor name to tensor mapping\n'
+    if ht.count(anchor) != 1 or any(ct.count(old) != 1 for old, _ in replacements):
+        raise RuntimeError("tts_transformer changed upstream; text mmap anchors differ")
+    ht = ht.replace(anchor, '    std::shared_ptr<struct realme_text_mapping> realme_text_mapping;\n\n' + anchor)
+    for old, new in replacements:
+        ct = ct.replace(old, new)
+    h.write_text(ht, encoding="utf-8")
+    c.write_text(ct, encoding="utf-8")
+    return True
+
+
+def apply_weight_mmap_patch(tree: Path) -> bool:
+    """Allow all immutable CPU transformer weights to share a GGUF mapping."""
+    p = Path(tree) / 'src/tts_transformer.cpp'
+    text = p.read_text(encoding='utf-8')
+    edits = [
+        ('    if (!model_.buffer) {\n',
+         '    if (!model_.buffer && !(model_.realme_text_mapping && model_.realme_text_mapping->all_weights)) {\n'),
+        ('        if (model_.realme_text_mapping && tensor == model_.text_embd) continue;',
+         '        if (model_.realme_text_mapping && tensor->buffer == model_.realme_text_mapping->buffer) continue;'),
+    ]
+    if all(text.count(b) == 1 for _, b in edits):
+        return False
+    if any(text.count(a) != 1 for a, _ in edits):
+        raise RuntimeError('Transformer weight mapping anchors changed upstream')
+    for a,b in edits:
+        text = text.replace(a,b)
+    p.write_text(text,encoding='utf-8')
+    return True
+
+
+def apply_cpu_compute_patch(tree: Path) -> bool:
+    """Owned CPU compute helpers and exact top-k selection."""
+    src=Path(tree)/'src'
+    h,c=src/'tts_transformer.h',src/'tts_transformer.cpp'
+    ht,ct=h.read_text(encoding='utf-8'),c.read_text(encoding='utf-8')
+    shared='    std::shared_ptr<struct realme_text_mapping> realme_text_mapping;\n'
+    lifetime='    model.realme_text_mapping.reset();\n'
+    include='#include "realme_text_mmap.inc"\n'
+    pattern='''            std::vector<std::pair<float, int32_t>> scored(vocab_size);
+            for (int32_t i = 0; i < vocab_size; ++i) {
+                scored[i] = {logits_ptr[i], i};
+            }
+            std::partial_sort(scored.begin(), scored.begin() + top_k, scored.end(),
+                [](const std::pair<float, int32_t> & a, const std::pair<float, int32_t> & b) {
+                    return a.first > b.first;
+                });
+            float threshold = scored[top_k - 1].first;'''
+    pattern2='''                std::vector<std::pair<float, int32_t>> scored(cfg.codec_vocab_size);
+                for (int32_t i = 0; i < cfg.codec_vocab_size; ++i) {
+                    scored[i] = {logits[i], i};
+                }
+                std::partial_sort(scored.begin(), scored.begin() + top_k, scored.end(),
+                    [](const std::pair<float, int32_t> & a, const std::pair<float, int32_t> & b) {
+                        return a.first > b.first;
+                    });
+                float threshold = scored[top_k - 1].first;'''
+    new='            float threshold = realme_topk_threshold(logits_ptr, vocab_size, top_k, code_probs);'
+    new2='                float threshold = realme_topk_threshold(logits.data(), cfg.codec_vocab_size, top_k, probs);'
+    load='bool TTSTransformer::load_model(const std::string & model_path) {\n'
+    seed='''    // Optional reproducible sampling for short accuracy checks; default RNG is unchanged.
+    if (const char * seed = std::getenv("QWEN3_TTS_SEED")) {
+        char * end = nullptr;
+        const auto value = std::strtoull(seed, &end, 10);
+        if (end != seed && *end == 0 && value <= UINT32_MAX &&
+            std::all_of(seed, static_cast<const char *>(end), [](char c) { return c >= '0' && c <= '9'; })) {
+            rng_.seed((uint32_t) value);
+            fprintf(stderr, "  [realme] sampling seed: %u\\n", (unsigned) value);
+        }
+    }
+'''
+    edits=[(include,include+'#include "realme_sampling.inc"\n',1),
+           (pattern,new,2),(pattern2,new2,1),(load,load+seed,1)]
+    if all(ct.count(b)==n for _,b,n in edits): return False
+    if ht.count(shared)!=1 or any(ct.count(a)!=n for a,_,n in edits):
+        raise RuntimeError('CPU compute/sampling anchors changed upstream')
+    for a,b,_ in edits: ct=ct.replace(a,b)
+    c.write_text(ct,encoding='utf-8')
+    return True
+
+
+def apply_embedding_validation_patch(tree: Path) -> bool:
+    """Reject mismatched speaker buffers before any synthesis entry point reads them."""
+    src = Path(tree) / "src"
+    paths = [src / n for n in ("qwen3_tts.h", "qwen3_tts.cpp", "qwen3tts_c_api.cpp")]
+    texts = [p.read_text(encoding="utf-8") for p in paths]
+    if all("validate_speaker_embedding" in t for t in texts[:2]) and \
+            'if (!tts || !text) return nullptr;' in texts[2]:
+        return False
+    declaration = '    // Set progress callback\n'
+    old = '''    if (embedding == nullptr || embedding_size <= 0) {
+        result.error_msg = "Invalid speaker embedding";
+        return result;
+    }'''
+    method = '''bool Qwen3TTS::validate_speaker_embedding(const float * embedding, int32_t size,
+                                         std::string & error) const {
+    if (!models_loaded_) {
+        error = "Models not loaded";
+        return false;
+    }
+    const int32_t expected = transformer_.get_config().hidden_size;
+    if (!embedding || size != expected || expected <= 0) {
+        error = "Invalid speaker embedding: expected " + std::to_string(expected)
+              + " floats, received " + std::to_string(size)
+              + (embedding ? "" : " (null buffer)");
+        return false;
+    }
+    return true;
+}
+
+'''
+    edits = [
+        (0, declaration, '    bool validate_speaker_embedding(const float * embedding, int32_t size,\n'
+                         '                                    std::string & error) const;\n\n' + declaration),
+        (1, old, '    if (!validate_speaker_embedding(embedding, embedding_size, result.error_msg)) return result;'),
+        (1, 'tts_result Qwen3TTS::synthesize_with_embedding(', method + 'tts_result Qwen3TTS::synthesize_with_embedding('),
+        (1, '    return synthesize_internal(text, speaker_embedding.data(), params, result);',
+            '    if (!validate_speaker_embedding(speaker_embedding.data(), (int32_t) speaker_embedding.size(),\n'
+            '                                    result.error_msg)) return result;\n'
+            '    return synthesize_internal(text, speaker_embedding.data(), params, result);'),
+        (2, '    if (!tts || !text || !embedding || embedding_size <= 0) return nullptr;',
+            '    if (!tts || !text) return nullptr;'),
+    ]
+    if any(texts[i].count(a) != 1 for i, a, _ in edits):
+        raise RuntimeError('qwen3_tts embedding validation anchors changed upstream')
+    for i, a, b in edits:
+        texts[i] = texts[i].replace(a, b)
+    for p, t in zip(paths, texts):
+        p.write_text(t, encoding="utf-8")
+    return True
+
+
+def apply_cpu_runtime_patch(tree: Path) -> bool:
+    """Per-engine CPU overrides, immutable for an entire C API synthesis call."""
+    src = Path(tree) / "src"
+    c, h = src / "qwen3tts_c_api.cpp", src / "qwen3tts_c_api.h"
+    ct, ht = c.read_text(encoding="utf-8"), h.read_text(encoding="utf-8")
+    marker = "// RealMe per-engine CPU runtime controls"
+    state = '    std::string last_error;\n'
+    include = '#include "qwen3_tts.h"\n'
+    anchor = 'const char * qwen3_tts_get_error(const Qwen3Tts * tts) {'
+    declaration = '/* Get last error message (or empty string) */'
+    api = '''// RealMe per-engine CPU runtime controls
+// mask=0 restores environment defaults; bits 1..2097152 select independent CPU experiments.
+// 0 success; -1 invalid bits/handle; -2 engine busy. Changes apply to the next call.
+int32_t qwen3_tts_set_cpu_options(Qwen3Tts * tts, uint32_t mask, uint32_t enabled) {
+    if (!tts || (mask & ~uint32_t(qwen3_tts::REALME_CPU_FLAGS)) || (enabled & ~mask)) return -1;
+    qwen3_tts::realme_call_scope scope(tts->cpu_runtime);
+    if (!scope.acquired) return -2;
+    tts->cpu_runtime.options={mask,enabled};
+    return 0;
+}
+
+'''
+    declarations = '''// RealMe per-engine CPU runtime controls
+// Bits: 1 top-k selection, 2 shared Q8 prep, 4 grouped products, 32 direct embeddings,
+// 64 row cache, 512 adaptive matrix tasks, 2048 dense attention views, 4096 attention
+// gather, 8192 redundant-mask elision. Retired with the packed layouts and the
+// vocabulary table (accepted, no effect): 8, 16, 128, 256, 1024, 16384, 32768,
+// 65536, 131072, 262144, 524288, 1048576, 2097152. mask=0 restores environment.
+// Returns 0, -1 invalid arguments, -2 busy; call between synthesis calls.
+int32_t qwen3_tts_set_cpu_options(Qwen3Tts * tts, uint32_t mask, uint32_t enabled);
+
+'''
+    edits = [(include,include+'#include "realme_runtime.inc"\n',1),
+             (state,state+'    qwen3_tts::realme_runtime_state cpu_runtime;\n',1),
+             (anchor,api+anchor,1)]
+    guards = [
+        ('    if (!tts || !text) return nullptr;\n', 'nullptr', 2),
+        ('    if (!tts || !text || !reference_audio_path) return nullptr;\n', 'nullptr', 1),
+        ('    if (!tts || !text || !ref_samples || n_ref_samples <= 0) return nullptr;\n', 'nullptr', 1),
+        ('    if (!tts || !reference_audio_path || !embedding_out || max_size <= 0) return -1;\n', '-1', 1),
+    ]
+    for a, failure, count in guards:
+        edits.append((a,a+'    qwen3_tts::realme_call_scope scope(tts->cpu_runtime);\n'
+                       f'    if (!scope.acquired) return {failure};\n',count))
+    if all(ct.count(b)==n for _,b,n in edits) and ht.count(declarations+declaration)==1:
+        return False
+    if marker in ct or marker in ht or ht.count(declaration)!=1 or any(ct.count(a)!=n for a,_,n in edits):
+        raise RuntimeError('CPU runtime control anchors changed upstream')
+    for a,b,_ in edits: ct=ct.replace(a,b)
+    ht=ht.replace(declaration,declarations+declaration)
+    c.write_text(ct,encoding="utf-8");h.write_text(ht,encoding="utf-8")
+    return True
+
+
+def apply_embedding_access_patch(tree: Path) -> bool:
+    """Optional CPU row access/cache, owned by the transformer's model lifetime."""
+    src=Path(tree)/"src"
+    paths=[src/"tts_transformer.h",src/"tts_transformer.cpp"]
+    texts=[p.read_text(encoding="utf-8") for p in paths]
+    edits=[
+        (0,'    std::vector<ggml_fp16_t> embd_row_fp16_scratch_;\n',
+           '    std::vector<ggml_fp16_t> embd_row_fp16_scratch_;\n'
+           '    std::shared_ptr<struct realme_embedding_cache> realme_embedding_rows_;\n'),
+        (1,'#include "realme_sampling.inc"\n',
+           '#include "realme_sampling.inc"\n#include "realme_embedding.inc"\n'),
+        (1,'    embd_row_fp16_scratch_.clear();\n',
+           '    embd_row_fp16_scratch_.clear();\n    realme_embedding_rows_.reset();\n'),
+        (1,'    const size_t row_offset = (size_t) token_id * embedding->nb[1];\n',
+           '    if (realme_embedding_row(realme_embedding_rows_, embedding, token_id, out_row,\n'
+           '                             ggml_backend_is_cpu(state_.backend), embd_row_fp16_scratch_)) return true;\n'
+           '    const size_t row_offset = (size_t) token_id * embedding->nb[1];\n'),
+    ]
+    if all(texts[i].count(b)==1 for i,_,b in edits):return False
+    if any(texts[i].count(a)!=1 for i,a,_ in edits) or 'realme_embedding_rows_' in texts[0]:
+        raise RuntimeError('CPU embedding access anchors changed upstream')
+    for i,a,b in edits:texts[i]=texts[i].replace(a,b)
+    for p,t in zip(paths,texts):p.write_text(t,encoding="utf-8")
+    return True
+
+
+def apply_decode_async_patch(tree: Path) -> bool:
+    """Let the vocoder take a CPU backend of its own (QWEN3_TTS_DECODE_ASYNC=1),
+    so the stream can decode a finished sentence beside the pass. Off, the
+    vocoder shares the transformer's backend exactly as before."""
+    src = Path(tree) / "src"
+    h, c = src / "audio_tokenizer_decoder.h", src / "audio_tokenizer_decoder.cpp"
+    ht, ct = h.read_text(encoding="utf-8"), c.read_text(encoding="utf-8")
+    edits = [
+        (0, 'class AudioTokenizerDecoder {\npublic:\n',
+            'class AudioTokenizerDecoder {\npublic:\n'
+            '    // RealMe: true when it decodes on a CPU backend of its own, whose\n'
+            '    // thread count realme_set_threads changes (no effect otherwise).\n'
+            '    bool realme_private_backend() const { return realme_private_backend_; }\n'
+            '    void realme_set_threads(int n);\n'),
+        (0, '    audio_decoder_state state_;\n',
+            '    audio_decoder_state state_;\n    bool realme_private_backend_ = false;\n'),
+        (1, '    state_.backend = init_preferred_backend("AudioTokenizerDecoder", &error_msg_);\n',
+            '    state_.backend = realme_decoder_backend(&error_msg_, realme_private_backend_);\n'),
+    ]
+    texts = [ht, ct]
+    if all(texts[i].count(b) == 1 for i, a, b in edits):
+        return False
+    if any(texts[i].count(a) != 1 for i, a, b in edits):
+        raise RuntimeError("audio_tokenizer_decoder changed upstream; decode-beside-the-pass anchors differ")
+    for i, a, b in edits:
+        texts[i] = texts[i].replace(a, b)
+    h.write_text(texts[0], encoding="utf-8")
+    c.write_text(texts[1], encoding="utf-8")
+    return True
+
+
+#: Fewer codebooks (experimental, lossy; `qwen3cpp_realme/src/realme_codebooks.inc`):
+#: the vocoder adds up the first QWEN3_TTS_VOCODER_CODEBOOKS codebooks, and no
+#: more than QWEN3_TTS_CP_STEPS predicted. Unset, all 16 as upstream.
+CODEBOOKS_MARK = "realme_codebooks.inc"
+
+
+def apply_codebooks_patch(tree: Path) -> bool:
+    """The vocoder's sum of codebooks limited by realme_codebooks.inc's
+    switches; with them unset it is upstream's sum of all 15 after the
+    first, in the same order. Applied after the vocoder patches."""
+    src = Path(tree) / "src"
+    shutil.copy2(own_source(CODEBOOKS_MARK), src / CODEBOOKS_MARK)
+    c = src / "audio_tokenizer_decoder.cpp"
+    ct = c.read_text(encoding="utf-8")
+    edits = [
+        ('#include "realme_vocoder3.inc"\n',
+         '#include "realme_vocoder3.inc"\n#include "realme_codebooks.inc"\n'),
+        ('     struct ggml_tensor * rest_proj_2d = nullptr;\n     for (int cb = 0; cb < 15; ++cb) {\n',
+         '     struct ggml_tensor * rest_proj_2d = nullptr;\n'
+         '     // RealMe: the first codebooks only (QWEN3_TTS_VOCODER_CODEBOOKS, QWEN3_TTS_CP_STEPS); all 15 unset\n'
+         '     const int realme_rest = realme_vocoder_rest_codebooks();\n'
+         '     for (int cb = 0; cb < realme_rest; ++cb) {\n'),
+        ('        if (!cb_tensor) {\n            error_msg_ = "Failed to find codes tensor for codebook "',
+         '        if (!cb_tensor && cb > realme_vocoder_rest_codebooks()) continue;   // RealMe: left out\n'
+         '        if (!cb_tensor) {\n            error_msg_ = "Failed to find codes tensor for codebook "'),
+    ]
+    if all(ct.count(b) == 1 for a, b in edits):
+        return False
+    if any(ct.count(a) != 1 for a, b in edits):
+        raise RuntimeError("audio_tokenizer_decoder changed upstream; codebook anchors differ")
+    for a, b in edits:
+        ct = ct.replace(a, b)
+    c.write_text(ct, encoding="utf-8")
+    return True
+
+
+def apply_vocoder_gpu_patch(tree: Path) -> bool:
+    """With the vocoder on a GPU (QWEN3_TTS_VOCODER_BACKEND=gpu,
+    realme_vocoder.inc): its weights moved there once the backend is chosen,
+    and the CPU fallback given the vocoder's thread count. A CPU vocoder is
+    untouched (both helpers return at once)."""
+    c = Path(tree) / "src" / "audio_tokenizer_decoder.cpp"
+    ct = c.read_text(encoding="utf-8")
+    edits = [
+        ('    state_.backend = realme_decoder_backend(&error_msg_, realme_private_backend_);\n'
+         '    if (!state_.backend) {\n        return false;\n    }\n',
+         '    state_.backend = realme_decoder_backend(&error_msg_, realme_private_backend_);\n'
+         '    if (!state_.backend) {\n        return false;\n    }\n'
+         '    realme_vocoder_weights_to(model_, state_.backend, nullptr);   // RealMe: a GPU\'s weights on the GPU\n'),
+        ('        state_.backend_cpu = ggml_backend_init_by_type(GGML_BACKEND_DEVICE_TYPE_CPU, nullptr);\n',
+         '        state_.backend_cpu = ggml_backend_init_by_type(GGML_BACKEND_DEVICE_TYPE_CPU, nullptr);\n'
+         '        realme_vocoder_fallback_threads(state_.backend_cpu);          // RealMe\n'),
+    ]
+    if all(ct.count(b) == 1 for a, b in edits):
+        return False
+    if any(ct.count(a) != 1 for a, b in edits):
+        raise RuntimeError("audio_tokenizer_decoder changed upstream; GPU vocoder anchors differ")
+    for a, b in edits:
+        ct = ct.replace(a, b)
+    c.write_text(ct, encoding="utf-8")
+    return True
+
+
 PATCHES = ("apply_native_patch", "apply_thread_patch", "apply_pool_patch", "apply_ffn_patch",
            "apply_broadcast_patch", "apply_batch_patch", "apply_snake_patch",
            "apply_quant_patch", "apply_path_patch", "apply_vocoder_patch",
-           "apply_vocoder2_patch", "apply_vocoder3_patch")
+           "apply_vocoder2_patch", "apply_vocoder3_patch", "apply_text_mmap_patch",
+           "apply_vocoder_storage_patch", "apply_embedding_validation_patch",
+           "apply_weight_mmap_patch", "apply_cpu_compute_patch", "apply_cpu_runtime_patch",
+           "apply_embedding_access_patch", "apply_decode_async_patch", "apply_codebooks_patch", "apply_vocoder_gpu_patch")
 CHANGES_FILE = "REALME_CHANGES.md"
 EXPORT_SKIP = {".git", ".sisyphus", "build", "models", "models_q8", "__pycache__"}
 
@@ -2110,8 +2477,17 @@ def build(home: Path | None = None, log=print, force: bool = False,
                             else target_cpu,
                      "generator": "ninja" if generator else "default",
                      "threads_applied": True, "ffn_f32": True,
-                     "broadcast": True, "batch": True,
-                     "fast_snake": True, "quant": True,
+                     "broadcast": True, "batch": True, "cache_growth": True, "text_mmap": True,
+                     "fast_snake": True, "quant": True, "vocoder_lazy": True,
+                     "scratch_reuse": True, "stage_timing": True,
+                     "decode_async": True, "cp_batch_attention": True, "cp_graph_reuse": True, "frame_limit": True,
+                     "topk_select": True, "sampling_seed": True,
+                     "q8_shared_prep": True, "q8_grouped": True,
+                     "cpu_runtime_options": 4194303,
+                     "embedding_direct": True, "embedding_cache": True,
+                     "q8_adaptive_tasks": True,
+                     "attention_views": True, "attention_join": True, "attention_mask_elision": True,
+                     "weight_mmap": True,
                      "vocoder_f32": True, "vocoder2": True, "vocoder3": True,
                      "stream": True, "pool": True, "openmp": ggml_openmp_wanted(),
                      "sgemm": sgemm == [SGEMM_FLAG]},

@@ -9,8 +9,7 @@ if not defined REALME_ENV (
 )
 set "R=%REALME_ENV%\Scripts\realme.exe"
 REM  Delayed expansion only from here, after every %~dp0 above: a `!` in the
-REM  folder name would otherwise be eaten. It is needed to strip quotes from
-REM  a pasted path safely - see the QW prompt below.
+REM  folder name would otherwise be eaten.
 setlocal EnableDelayedExpansion
 echo.
 echo  Paste your Gemini API key (free from aistudio.google.com).
@@ -30,21 +29,6 @@ set /p OK="  OPENAI_API_KEY (platform.openai.com): "
 if not "!OK!"=="" "!R!" key OPENAI_API_KEY "!OK!"
 echo.
 echo  Optional - press Enter to skip.
-REM  LEAVE THIS BLANK if you ran step 3. Not pre-filled: REALME_QWEN3_ROOT
-REM  *overrides* the engine copied into tools\qwen3, so pointing it at an
-REM  older engine folder pins RealMe there - and step 6 deletes such a folder
-REM  out from under it. It exists only for someone who would rather point at
-REM  an external engine than copy one in.
-set "QW="
-set /p QW="  Path to an external qwen3 folder (leave blank if you ran step 3): "
-REM  Explorer's "Copy as path" wraps the path in quotes. Removed with delayed
-REM  expansion, which happens after cmd has parsed the line, so a `)` or `&`
-REM  in the path is never seen by the parser. A for /f "%%~A" idiom puts the
-REM  quoted value inside a second pair of quotes, which UN-quotes the path
-REM  and lets "C:\x (work)\qwen3" end the for-list at its `)`.
-if defined QW set "QW=!QW:"=!"
-if defined QW if "!QW:~-1!"=="\" set "QW=!QW!."
-if not "!QW!"=="" "!R!" key REALME_QWEN3_ROOT "!QW!"
 set "EL="
 set /p EL="  ELEVENLABS_API_KEY: "
 if not "!EL!"=="" "!R!" key ELEVENLABS_API_KEY "!EL!"

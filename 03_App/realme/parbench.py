@@ -505,6 +505,8 @@ def main(spec: str, script: list[tuple[str, float]], layouts, *, repeat: int,
            "layouts": [{**{k: v_ for k, v_ in asdict(l).items() if k != "runs"},
                         "runs": [asdict(r) for r in l.runs]} for l in results],
            "verdict": v}
+    # Every layout may have been skipped for memory, so nothing made it yet.
+    outdir.mkdir(parents=True, exist_ok=True)
     f = outdir / f"parallel_{stamp}.json"
     f.write_text(json.dumps(out, indent=2), encoding="utf-8")
     log(f"\n  results: {f}\n  audio:   {outdir}")

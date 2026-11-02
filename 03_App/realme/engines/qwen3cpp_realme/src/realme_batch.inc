@@ -12,20 +12,34 @@
 // for step; where it differs, it says why.
 
 #include "ggml-cpu.h"
+#include "realme_batch_scratch.inc"
+#include "realme_codebooks.inc"
+#include "realme_share.inc"
+#include "ggml-alloc.h"
 #include <unordered_set>
 #include <random>
 #include <algorithm>
 #include <cmath>
 #include <cstdlib>
 #include <cstring>
+#include <atomic>
+#include <chrono>
+#include <condition_variable>
+#include <deque>
+#include <mutex>
+#include <thread>
 #include <functional>
 #include <list>
+#include <map>
+#include <memory>
 #include <string>
 #include <vector>
 #if defined(__x86_64__) || defined(_M_X64)
 #include <immintrin.h>
 #if defined(_MSC_VER)
 #include <intrin.h>
+#else
+#include <cpuid.h>
 #endif
 #define REALME_Q8MM_X86 1
 #endif
@@ -101,34 +115,67 @@ static inline float realme_q8_hsum(__m256 x) {
     return _mm_cvtss_f32(r);
 }
 
-// One weight row x (nb blocks) against NC columns. yq holds the columns'
-// blocks interleaved, block by block ([ib][c]); fy their scales as floats,
-// eight to a block ([ib][8]).
-template <int NC>
-REALME_Q8_FN
-static void realme_q8_row(const realme_q8_block * x, const realme_q8_block * yq,
-                          const float * fy, int64_t nb, float * out) {
-    __m256 acc[NC];
-    for (int c = 0; c < NC; ++c) acc[c] = _mm256_setzero_ps();
-    const __m256i ones = _mm256_set1_epi16(1);
-    for (int64_t ib = 0; ib < nb; ++ib) {
-        // Each lane: row scale x column scale, as GGML's scalar product.
-        const __m256 dv = _mm256_mul_ps(_mm256_set1_ps(realme_q8_h2f(x[ib].d)),
-                                        _mm256_loadu_ps(fy + 8 * ib));
-        const __m256i qx = _mm256_loadu_si256((const __m256i *) x[ib].qs);
-        const __m256i ax = _mm256_sign_epi8(qx, qx);
-        const realme_q8_block * yb = yq + ib * NC;
-        REALME_Q8_UNROLL
-        for (int c = 0; c < NC; ++c) {
-            const __m256i qy = _mm256_loadu_si256((const __m256i *) yb[c].qs);
-            const __m256i sy = _mm256_sign_epi8(qy, qx);
-            const __m256 q = _mm256_cvtepi32_ps(_mm256_madd_epi16(ones, _mm256_maddubs_epi16(ax, sy)));
-            const __m256 d = _mm256_permutevar8x32_ps(dv, _mm256_set1_epi32(c));
-            acc[c] = _mm256_fmadd_ps(d, q, acc[c]);
-        }
-    }
-    for (int c = 0; c < NC; ++c) out[c] = realme_q8_hsum(acc[c]);
+// AVX-VNNI (vpdpbusd): compiled where the compiler has it -- GCC 11, Clang
+// 12, or MSVC when the build found it (REALME_AVXVNNI) -- and used only where
+// the processor reports it (CPUID 7.1 EAX bit 4) and QWEN3_TTS_Q8_VNNI is not
+// 0. Otherwise the AVX2 kernels, exactly as before.
+#if defined(__AVXVNNI__) || defined(REALME_AVXVNNI) || \
+    (defined(__clang__) && __clang_major__ >= 12) || \
+    (defined(__GNUC__) && !defined(__clang__) && __GNUC__ >= 11)
+#define REALME_Q8_VNNI 1
+#if defined(__GNUC__) || defined(__clang__)
+#define REALME_Q8_VNNI_FN __attribute__((target("avx2,fma,f16c,avxvnni")))
+#else
+#define REALME_Q8_VNNI_FN
+#endif
+#endif
+
+static bool realme_q8_vnni_cpu() {
+#if REALME_Q8_VNNI
+    if (!realme_q8_cpu_ok()) return false;
+#if defined(_MSC_VER)
+    int r[4] = {0, 0, 0, 0};
+    __cpuid(r, 0);
+    if (r[0] < 7) return false;
+    __cpuidex(r, 7, 1);
+    return ((r[0] >> 4) & 1) != 0;
+#else
+    unsigned a = 0, b = 0, c = 0, d = 0;
+    if (__get_cpuid_max(0, nullptr) < 7) return false;
+    __cpuid_count(7, 1, a, b, c, d);
+    return ((a >> 4) & 1) != 0;
+#endif
+#else
+    return false;
+#endif
 }
+
+// The kernels to use, decided once: AVX-VNNI where available and allowed.
+static bool realme_q8_vnni_on() {
+    static const bool on = [] {
+        const char * v = std::getenv("QWEN3_TTS_Q8_VNNI");
+        if (v && v[0] == '0') return false;
+        return realme_q8_vnni_cpu();
+    }();
+    return on;
+}
+
+#define REALME_K_FN REALME_Q8_FN
+#define REALME_K_SUFFIX avx2
+#define REALME_K_DOT(ax, sy) _mm256_madd_epi16(_mm256_set1_epi16(1), _mm256_maddubs_epi16((ax), (sy)))
+#include "realme_q8_kernels.inc"
+#undef REALME_K_FN
+#undef REALME_K_SUFFIX
+#undef REALME_K_DOT
+#if REALME_Q8_VNNI
+#define REALME_K_FN REALME_Q8_VNNI_FN
+#define REALME_K_SUFFIX vnni
+#define REALME_K_DOT(ax, sy) _mm256_dpbusd_avx_epi32(_mm256_setzero_si256(), (ax), (sy))
+#include "realme_q8_kernels.inc"
+#undef REALME_K_FN
+#undef REALME_K_SUFFIX
+#undef REALME_K_DOT
+#endif
 
 #endif  // REALME_Q8MM_X86
 
@@ -137,6 +184,7 @@ static void realme_q8_row(const realme_q8_block * x, const realme_q8_block * yq,
 #define REALME_Q8_UNROLL
 
 static bool realme_q8_cpu_ok() { return true; }      // NEON is part of 64-bit ARM
+static bool realme_q8_vnni_on() { return false; }   // x86 only
 
 // Half to float: exact, as GGML's own conversion.
 static inline float realme_q8_h2f(ggml_fp16_t h) {
@@ -198,12 +246,29 @@ static void realme_q8_row(const realme_q8_block * x, const realme_q8_block * yq,
 typedef void (*realme_q8_row_fn)(const realme_q8_block *, const realme_q8_block *,
                                  const float *, int64_t, float *);
 static realme_q8_row_fn realme_q8_row_for(int nc) {
+#if REALME_Q8_VNNI
+    if (realme_q8_vnni_on()) switch (nc) {
+        case 1: return realme_q8_row_vnni<1>; case 2: return realme_q8_row_vnni<2>;
+        case 3: return realme_q8_row_vnni<3>; case 4: return realme_q8_row_vnni<4>;
+        case 5: return realme_q8_row_vnni<5>; case 6: return realme_q8_row_vnni<6>;
+        case 7: return realme_q8_row_vnni<7>; default: return realme_q8_row_vnni<8>;
+    }
+#endif
+#if REALME_Q8MM_X86
+    switch (nc) {
+        case 1: return realme_q8_row_avx2<1>; case 2: return realme_q8_row_avx2<2>;
+        case 3: return realme_q8_row_avx2<3>; case 4: return realme_q8_row_avx2<4>;
+        case 5: return realme_q8_row_avx2<5>; case 6: return realme_q8_row_avx2<6>;
+        case 7: return realme_q8_row_avx2<7>; default: return realme_q8_row_avx2<8>;
+    }
+#else
     switch (nc) {
         case 1: return realme_q8_row<1>; case 2: return realme_q8_row<2>;
         case 3: return realme_q8_row<3>; case 4: return realme_q8_row<4>;
         case 5: return realme_q8_row<5>; case 6: return realme_q8_row<6>;
         case 7: return realme_q8_row<7>; default: return realme_q8_row<8>;
     }
+#endif
 }
 
 // The columns of x (K x N, F32), quantized as GGML quantizes them for a
@@ -244,19 +309,24 @@ static void realme_q8mm_op(struct ggml_tensor * dst, int ith, int nth, void * /*
     // the same numbers in every thread.
     thread_local realme_q8_cols cols;
     cols.make((const float *) x->data, x->nb[1], K, N);
-    const int64_t per = (M + nth - 1) / nth;
-    const int64_t r0 = per * ith, r1 = std::min(M, r0 + per);
     float * out = (float *) dst->data;
-    float tmp[8];
-    for (int64_t i = r0; i < r1; ++i) {
-        const realme_q8_block * row = (const realme_q8_block *) ((const char *) w->data + i * w->nb[1]);
-        for (int64_t c0 = 0; c0 < N; c0 += 8) {
-            const int64_t nc = std::min<int64_t>(8, N - c0);
-            realme_q8_row_for((int) nc)(row, &cols.yq[(size_t) (c0 * nb)],
-                                        &cols.fy[(size_t) ((c0 / 8) * nb * 8)], nb, tmp);
-            for (int64_t c = 0; c < nc; ++c) out[(c0 + c) * M + i] = tmp[c];
+    auto rows = [&](int64_t r0, int64_t r1) {
+        float tmp[8];
+        for (int64_t i = r0; i < r1; ++i) {
+            const realme_q8_block * row = (const realme_q8_block *) ((const char *) w->data + i * w->nb[1]);
+            for (int64_t c0 = 0; c0 < N; c0 += 8) {
+                const int64_t nc = std::min<int64_t>(8, N - c0);
+                realme_q8_row_for((int) nc)(row, &cols.yq[(size_t) (c0 * nb)],
+                                            &cols.fy[(size_t) ((c0 / 8) * nb * 8)], nb, tmp);
+                for (int64_t c = 0; c < nc; ++c) out[(c0 + c) * M + i] = tmp[c];
+            }
         }
-    }
+    };
+    // Fast and slow cores (realme_share.inc): rows taken as threads are free.
+    if (realme_q8_share_on()) { realme_share_out(dst, nth, M, rows); return; }
+    const int64_t per = (M + nth - 1) / nth;
+    const int64_t r0 = per * ith;
+    rows(r0, std::min(M, r0 + per));
 }
 
 // The kernel against GGML's own dot product, every column count, once.
@@ -301,7 +371,8 @@ static bool realme_q8mm_on() {
         if (!realme_q8_cpu_ok()) return false;
         const bool ok = realme_q8mm_selfcheck();
         fprintf(stderr, "  [realme] 8-bit products for a pass: %s\n",
-                ok ? "on" : "off (did not match GGML's own; using GGML's)");
+                !ok ? "off (did not match GGML's own; using GGML's)"
+                    : realme_q8_vnni_on() ? "on (AVX-VNNI)" : "on");
         return ok;
     }();
     return on;
@@ -310,22 +381,11 @@ static bool realme_q8mm_on() {
 #endif
 }
 
-// w x cur for a pass: realme_q8mm for an 8-bit matrix and two or more
-// columns, else GGML's own product.
-static struct ggml_tensor * realme_mm(struct ggml_context * ctx, struct ggml_tensor * w,
-                                      struct ggml_tensor * cur) {
-#if REALME_Q8MM_ANY
-    if (w->type == GGML_TYPE_Q8_0 && cur->type == GGML_TYPE_F32 && w->ne[0] % 32 == 0
-            && w->ne[2] == 1 && w->ne[3] == 1 && cur->ne[2] == 1 && cur->ne[3] == 1
-            && cur->ne[1] >= 2 && cur->nb[0] == sizeof(float) && ggml_is_contiguous(w)
-            && w->buffer && ggml_backend_buffer_is_host(w->buffer) && realme_q8mm_on()) {
-        struct ggml_tensor * args[2] = { w, cur };
-        return ggml_custom_4d(ctx, GGML_TYPE_F32, w->ne[1], cur->ne[1], 1, 1, args, 2,
-                              realme_q8mm_op, GGML_N_TASKS_MAX, nullptr);
-    }
-#endif
-    return ggml_mul_mat(ctx, w, cur);
-}
+} // namespace qwen3_tts
+#include "realme_q8_compute.inc"
+#include "realme_sampling.inc"
+#include "realme_attention.inc"
+namespace qwen3_tts {
 
 struct realme_batch {
     struct seq {
@@ -337,18 +397,29 @@ struct realme_batch {
         std::vector<float> logits;   // talker logits for the next frame
         std::vector<float> hidden;   // talker hidden state for the next frame
         int32_t n_past = 0;
+        int32_t cache_limit = 0;
         int32_t trailing_len = 0;
         int32_t frame = 0;
         std::vector<int32_t> codes;  // frames x n_codebooks
         std::unordered_set<int32_t> cb0_seen;
         int32_t cb0 = 0;             // this frame's first code
         std::vector<int32_t> rest;   // this frame's codes 1..15
+        int32_t max_frames = 0;      // this sentence's own limit (0: the call's)
+        uint64_t uid = 0;            // this sentence, among all a process starts (kept talker graphs)
         bool done = false;
     };
+    static uint64_t next_uid() {
+        static std::atomic<uint64_t> n{0};
+        return ++n;
+    }
 
     static bool alloc_cache(TTSTransformer & t, tts_kv_cache & c, int n_layers,
                             int32_t n_ctx) {
         const auto & cfg = t.model_.config;
+        if (c.buffer && c.n_layers == n_layers && c.n_ctx >= n_ctx) {
+            c.n_used = 0;
+            return true;
+        }
         free_tts_kv_cache(c);
         c.n_ctx = n_ctx;
         c.n_used = 0;
@@ -368,6 +439,108 @@ struct realme_batch {
         return c.buffer != nullptr;
     }
 
+    // The code predictor's cache for a whole pass (QWEN3_TTS_CP_BATCH_ATTN=1):
+    // [head_dim, kv_heads, 16 positions, sentences] per layer. It holds one
+    // frame only, so it is reused frame after frame and only ever grows.
+    static bool cp_batch_attention_on() {
+        const char * v = std::getenv("QWEN3_TTS_CP_BATCH_ATTN");
+        return v && v[0] == '1';
+    }
+    static bool alloc_cp_shared(TTSTransformer & t, tts_kv_cache & c, int sentences) {
+        const auto & cfg = t.model_.config;
+        if (c.buffer && c.n_used >= sentences) return true;   // n_used: sentences it holds
+        free_tts_kv_cache(c);
+        const int n_layers = cfg.code_pred_layers;
+        c.n_ctx = 16;
+        c.n_used = sentences;
+        c.head_dim = cfg.head_dim;
+        c.n_kv_heads = cfg.n_key_value_heads;
+        c.n_layers = n_layers;
+        struct ggml_init_params p = { (size_t) n_layers * 2 * ggml_tensor_overhead(), nullptr, true };
+        c.ctx = ggml_init(p);
+        if (!c.ctx) return false;
+        c.k_cache.resize(n_layers);
+        c.v_cache.resize(n_layers);
+        for (int il = 0; il < n_layers; ++il) {
+            c.k_cache[il] = ggml_new_tensor_4d(c.ctx, GGML_TYPE_F16, cfg.head_dim, cfg.n_key_value_heads, 16, sentences);
+            c.v_cache[il] = ggml_new_tensor_4d(c.ctx, GGML_TYPE_F16, cfg.head_dim, cfg.n_key_value_heads, 16, sentences);
+        }
+        c.buffer = ggml_backend_alloc_ctx_tensors(c.ctx, t.state_.backend);
+        return c.buffer != nullptr;
+    }
+
+    // A sentence's own frame limit, from its length: QWEN3_TTS_FRAMES_PER_TOKEN
+    // frames (default 15) for each token of its prompt, plus 40 (3.2 s), and
+    // never more than the call's limit. Qwen3-TTS stops a sentence by
+    // choosing its end code; now and then it never does and talks on alone
+    // to the call's limit (4096 frames: 5.5 minutes, and a vocoder graph of
+    // about 12 GB). 15 frames a token is several times a slow reading pace,
+    // so a sentence that ends by itself never meets it and its codes are
+    // unchanged; one that runs on stops early, and the recorder, which sees
+    // a take far longer than its text, records it again. 0 turns it off.
+    static int32_t frame_limit(size_t prompt_tokens, int32_t max_len) {
+        const char * v = std::getenv("QWEN3_TTS_FRAMES_PER_TOKEN");
+        const long per = v ? std::strtol(v, nullptr, 10) : 15;
+        if (per <= 0) return max_len;
+        const int64_t limit = 40 + (int64_t) per * (int64_t) prompt_tokens;
+        return (int32_t) std::min<int64_t>(max_len, limit);
+    }
+
+    static bool grow_cache_on() {
+        const char * v = std::getenv("QWEN3_TTS_CACHE_GROW");
+        return !(v && v[0] == '0');
+    }
+
+    static int initial_cache(int prefill, int limit) {
+        const char * v = std::getenv("QWEN3_TTS_CACHE_INITIAL");
+        const long n = v ? std::strtol(v, nullptr, 10) : 128;
+        const int frames = n >= 1 && n <= 4096 ? (int) n : 128;
+        return grow_cache_on() ? std::min(limit, prefill + frames + 8) : limit;
+    }
+
+    // CPU batches only. Replace the allocation after every used byte has
+    // been copied; a failed allocation leaves the old cache intact.
+    static bool ensure_cache(TTSTransformer & t, seq & s, std::string & err) {
+        const int required = s.n_past + 1;
+        if (required <= s.cache.n_ctx) return true;
+        if (required > s.cache_limit) { err = "Context length exceeded"; return false; }
+        const int capacity = (int) std::min<int64_t>(s.cache_limit,
+            std::max<int64_t>(required, (int64_t) s.cache.n_ctx * 2));
+        tts_kv_cache next;
+        if (!alloc_cache(t, next, t.model_.config.n_layers, capacity)) {
+            free_tts_kv_cache(next);
+            err = "batch: not enough memory to grow sentence cache";
+            return false;
+        }
+        const size_t bytes = (size_t) s.n_past * s.cache.k_cache[0]->nb[2];
+        // CPU caches: one direct copy per tensor, no staging buffer.
+        const bool host = ggml_backend_buffer_is_host(s.cache.buffer) && ggml_backend_buffer_is_host(next.buffer);
+        std::vector<uint8_t> scratch;
+        if (!host) scratch.resize(std::max<size_t>(1, std::min<size_t>(bytes, 1024 * 1024)));
+        for (int layer = 0; layer < s.cache.n_layers; ++layer) {
+            for (int kv = 0; kv < 2; ++kv) {
+                auto * from = kv ? s.cache.v_cache[layer] : s.cache.k_cache[layer];
+                auto * to = kv ? next.v_cache[layer] : next.k_cache[layer];
+                if (host) {
+                    if (bytes) memcpy(to->data, from->data, bytes);
+                    continue;
+                }
+                for (size_t off = 0; off < bytes; off += scratch.size()) {
+                    const size_t n = std::min(scratch.size(), bytes - off);
+                    ggml_backend_tensor_get(from, scratch.data(), off, n);
+                    ggml_backend_tensor_set(to, scratch.data(), off, n);
+                }
+            }
+        }
+        std::swap(s.cache, next);
+        const char * trace = std::getenv("QWEN3_TTS_CACHE_TRACE");
+        if (trace && trace[0] == '1')
+            fprintf(stderr, "  [realme] sentence cache grew %d -> %d positions, preserved %d\n",
+                    next.n_ctx, s.cache.n_ctx, s.n_past);
+        free_tts_kv_cache(next);
+        return true;
+    }
+
     static struct ggml_tensor * f32w(struct ggml_context * ctx, struct ggml_tensor * w) {
         // As the patched single-sentence graphs: F32 and 8-bit weights are
         // multiplied as they are; only F16 needs F32 (its products overflow).
@@ -381,43 +554,11 @@ struct realme_batch {
                                        TTSTransformer & t, struct ggml_tensor * Qcur,
                                        struct ggml_tensor * Kcur, struct ggml_tensor * Vcur,
                                        struct ggml_tensor * k_cache, struct ggml_tensor * v_cache,
-                                       int n_tokens, int n_past, bool attend_cache) {
+                                       int n_tokens, int n_past, bool attend_cache,
+                                       realme_attention_moving * moving = nullptr) {
         const auto & cfg = t.model_.config;
-        const int n_head = cfg.n_attention_heads;
-        const int n_kv_head = cfg.n_key_value_heads;
-        const int head_dim = cfg.head_dim;
-        const float KQscale = 1.0f / sqrtf(float(head_dim));
-
-        struct ggml_tensor * k_view = ggml_view_3d(ctx0, k_cache, head_dim, n_kv_head, n_tokens,
-                                                   k_cache->nb[1], k_cache->nb[2], n_past * k_cache->nb[2]);
-        struct ggml_tensor * v_view = ggml_view_3d(ctx0, v_cache, head_dim, n_kv_head, n_tokens,
-                                                   v_cache->nb[1], v_cache->nb[2], n_past * v_cache->nb[2]);
-        ggml_build_forward_expand(gf, ggml_cpy(ctx0, Kcur, k_view));
-        ggml_build_forward_expand(gf, ggml_cpy(ctx0, Vcur, v_view));
-
-        struct ggml_tensor * K;
-        struct ggml_tensor * V;
-        if (attend_cache) {
-            const int n_kv = n_past + n_tokens;
-            K = ggml_view_3d(ctx0, k_cache, head_dim, n_kv_head, n_kv, k_cache->nb[1], k_cache->nb[2], 0);
-            V = ggml_view_3d(ctx0, v_cache, head_dim, n_kv_head, n_kv, v_cache->nb[1], v_cache->nb[2], 0);
-        } else {
-            // The code predictor's 2-token prefill attends to its own fresh
-            // K and V, as upstream's prefill graph does.
-            K = Kcur;
-            V = Vcur;
-        }
-        struct ggml_tensor * Q = ggml_permute(ctx0, Qcur, 0, 2, 1, 3);
-        K = ggml_permute(ctx0, K, 0, 2, 1, 3);
-        V = ggml_permute(ctx0, V, 0, 2, 1, 3);
-        struct ggml_tensor * KQ = ggml_mul_mat(ctx0, K, Q);
-        KQ = ggml_scale(ctx0, KQ, KQscale);
-        KQ = ggml_diag_mask_inf(ctx0, KQ, n_past);
-        KQ = ggml_soft_max(ctx0, KQ);
-        V = ggml_cont(ctx0, ggml_transpose(ctx0, V));
-        struct ggml_tensor * KQV = ggml_mul_mat(ctx0, V, KQ);
-        KQV = ggml_permute(ctx0, KQV, 0, 2, 1, 3);
-        return ggml_cont_2d(ctx0, KQV, n_head * head_dim, n_tokens);
+        return realme_attention_graph(ctx0,gf,Qcur,Kcur,Vcur,k_cache,v_cache,
+            cfg.n_attention_heads,cfg.n_key_value_heads,cfg.head_dim,n_tokens,n_past,attend_cache,moving);
     }
 
     // The layers, shared by both transformers. `cur` holds every sentence's
@@ -426,7 +567,9 @@ struct realme_batch {
                                        TTSTransformer & t, std::vector<transformer_layer> & ls,
                                        struct ggml_tensor * inpL, struct ggml_tensor * inp_pos,
                                        const std::vector<tts_kv_cache *> & caches,
-                                       const std::vector<int> & n_past, int tpb, bool attend_cache) {
+                                       const std::vector<int> & n_past, int tpb, bool attend_cache,
+                                       tts_kv_cache * shared = nullptr,
+                                       std::vector<std::vector<realme_attention_moving>> * moving = nullptr) {
         const auto & cfg = t.model_.config;
         const int n_head = cfg.n_attention_heads;
         const int n_kv_head = cfg.n_key_value_heads;
@@ -439,9 +582,10 @@ struct realme_batch {
             const auto & layer = ls[il];
             struct ggml_tensor * cur = ggml_rms_norm(ctx0, inpL, eps);
             cur = ggml_mul(ctx0, cur, layer.attn_norm);
-            struct ggml_tensor * Qcur = realme_mm(ctx0, layer.attn_q, cur);
-            struct ggml_tensor * Kcur = realme_mm(ctx0, layer.attn_k, cur);
-            struct ggml_tensor * Vcur = realme_mm(ctx0, layer.attn_v, cur);
+            auto qkv = realme_mm_group(ctx0, {layer.attn_q, layer.attn_k, layer.attn_v}, cur);
+            struct ggml_tensor * Qcur = qkv[0];
+            struct ggml_tensor * Kcur = qkv[1];
+            struct ggml_tensor * Vcur = qkv[2];
             Qcur = ggml_reshape_3d(ctx0, Qcur, head_dim, n_head, n_tok);
             Kcur = ggml_reshape_3d(ctx0, Kcur, head_dim, n_kv_head, n_tok);
             Vcur = ggml_reshape_3d(ctx0, Vcur, head_dim, n_kv_head, n_tok);
@@ -457,27 +601,36 @@ struct realme_batch {
                                  rope_theta, 1.0f, 0.0f, 1.0f, 0.0f, 0.0f);
             Kcur = ggml_rope_ext(ctx0, Kcur, inp_pos, nullptr, head_dim, GGML_ROPE_TYPE_NEOX, 0,
                                  rope_theta, 1.0f, 0.0f, 1.0f, 0.0f, 0.0f);
-            struct ggml_tensor * att = nullptr;
-            for (int b = 0; b < B; ++b) {
-                // This sentence's tokens, made contiguous so every op below
-                // sees the same layout as in the single-sentence graph.
-                struct ggml_tensor * q = ggml_cont(ctx0, ggml_view_3d(ctx0, Qcur, head_dim, n_head, tpb,
-                                         Qcur->nb[1], Qcur->nb[2], (size_t) b * tpb * Qcur->nb[2]));
-                struct ggml_tensor * k = ggml_cont(ctx0, ggml_view_3d(ctx0, Kcur, head_dim, n_kv_head, tpb,
-                                         Kcur->nb[1], Kcur->nb[2], (size_t) b * tpb * Kcur->nb[2]));
-                struct ggml_tensor * v = ggml_cont(ctx0, ggml_view_3d(ctx0, Vcur, head_dim, n_kv_head, tpb,
-                                         Vcur->nb[1], Vcur->nb[2], (size_t) b * tpb * Vcur->nb[2]));
-                struct ggml_tensor * o = attend(ctx0, gf, t, q, k, v, caches[b]->k_cache[il],
-                                                caches[b]->v_cache[il], tpb, n_past[b], attend_cache);
-                att = att ? ggml_concat(ctx0, att, o, 1) : o;
+            struct ggml_tensor * att=nullptr;
+            if (shared) {
+                // The code predictor: every sentence at the same step.
+                att = realme_attention_batched(ctx0, gf, Qcur, Kcur, Vcur,
+                    shared->k_cache[il], shared->v_cache[il], n_head, n_kv_head, head_dim,
+                    tpb, B, n_past[0], attend_cache);
             }
+            std::vector<ggml_tensor *> attention_parts;
+            const bool gather=B>1 && realme_cpu_enabled("QWEN3_TTS_ATTN_JOIN");
+            if (gather) attention_parts.reserve(B);
+            for (int b = 0; !shared && b < B; ++b) {
+                // A dense sentence slice can alias its immutable Q/K/V producer.
+                struct ggml_tensor * q = realme_attention_slice(ctx0,Qcur,head_dim,n_head,tpb,b);
+                struct ggml_tensor * k = realme_attention_slice(ctx0,Kcur,head_dim,n_kv_head,tpb,b);
+                struct ggml_tensor * v = realme_attention_slice(ctx0,Vcur,head_dim,n_kv_head,tpb,b);
+                struct ggml_tensor * o = attend(ctx0, gf, t, q, k, v, caches[b]->k_cache[il],
+                                                caches[b]->v_cache[il], tpb, n_past[b], attend_cache,
+                                                moving ? &(*moving)[b][il] : nullptr);
+                if (gather) attention_parts.push_back(o);
+                else att=att?ggml_concat(ctx0,att,o,1):o;
+            }
+            if (gather && !shared) att=realme_attention_join(ctx0,std::move(attention_parts));
             cur = realme_mm(ctx0, layer.attn_output, att);
             cur = ggml_add(ctx0, cur, inpL);
             struct ggml_tensor * inpFF = cur;
             cur = ggml_rms_norm(ctx0, inpFF, eps);
             cur = ggml_mul(ctx0, cur, layer.ffn_norm);
-            struct ggml_tensor * gate = realme_mm(ctx0, layer.ffn_gate, cur);
-            struct ggml_tensor * up = realme_mm(ctx0, layer.ffn_up, cur);
+            auto gate_up = realme_mm_group(ctx0, {layer.ffn_gate, layer.ffn_up}, cur);
+            struct ggml_tensor * gate = gate_up[0];
+            struct ggml_tensor * up = gate_up[1];
             gate = ggml_silu(ctx0, gate);
             cur = ggml_mul(ctx0, gate, up);
             cur = realme_mm(ctx0, f32w(ctx0, layer.ffn_down), cur);
@@ -495,17 +648,33 @@ struct realme_batch {
         struct ggml_tensor * logits = nullptr;
     };
 
-    static struct ggml_context * new_ctx(TTSTransformer & t) {
+    static struct ggml_context * new_ctx(TTSTransformer & t, std::vector<uint8_t> * meta = nullptr) {
         struct ggml_init_params p = { t.state_.compute_meta.size(), t.state_.compute_meta.data(), true };
+        if (meta) p = { meta->size(), meta->data(), true };
         return ggml_init(p);
     }
 
-    // One talker step for every sentence still speaking.
-    static graph talker_step(TTSTransformer & t, const std::vector<seq *> & act) {
+    // A predictor graph kept for reuse holds its tensors in a buffer of its
+    // own (not the shared compute_meta, which the next graph overwrites).
+    static constexpr int CP_REUSE_NODES = 2048;
+    static void own_meta(std::vector<uint8_t> * meta) {
+        if (meta) meta->assign(ggml_tensor_overhead() * CP_REUSE_NODES
+                               + ggml_graph_overhead_custom(CP_REUSE_NODES, false), 0);
+    }
+
+    // One talker step for every sentence still speaking. For a kept graph
+    // (`moving`): built in a buffer of its own, at each sentence's last cache
+    // position so that every intermediate has room for any step before it,
+    // and its attention recorded to be moved to the real position each step.
+    static graph talker_step(TTSTransformer & t, const std::vector<seq *> & act,
+                             std::vector<uint8_t> * meta = nullptr,
+                             std::vector<std::vector<realme_attention_moving>> * moving = nullptr) {
         const auto & cfg = t.model_.config;
         const int B = (int) act.size();
         graph g;
-        struct ggml_context * ctx0 = new_ctx(t);
+        if (meta) meta->assign(t.state_.compute_meta.size(), 0);
+        if (moving) moving->assign(B, std::vector<realme_attention_moving>(t.model_.layers.size()));
+        struct ggml_context * ctx0 = new_ctx(t, meta);
         g.gf = ggml_new_graph_custom(ctx0, QWEN3_TTS_MAX_NODES, false);
         g.inp = ggml_new_tensor_2d(ctx0, GGML_TYPE_F32, cfg.hidden_size, B);
         ggml_set_input(g.inp);
@@ -513,8 +682,9 @@ struct realme_batch {
         ggml_set_input(g.pos);
         std::vector<tts_kv_cache *> caches;
         std::vector<int> n_past;
-        for (auto * s : act) { caches.push_back(&s->cache); n_past.push_back(s->n_past); }
-        struct ggml_tensor * cur = layers(ctx0, g.gf, t, t.model_.layers, g.inp, g.pos, caches, n_past, 1, true);
+        for (auto * s : act) { caches.push_back(&s->cache); n_past.push_back(moving ? s->cache.n_ctx - 1 : s->n_past); }
+        struct ggml_tensor * cur = layers(ctx0, g.gf, t, t.model_.layers, g.inp, g.pos, caches, n_past, 1, true,
+                                          nullptr, moving);
         cur = ggml_rms_norm(ctx0, cur, cfg.rms_norm_eps);
         cur = ggml_mul(ctx0, cur, t.model_.output_norm);
         ggml_set_output(cur);
@@ -529,12 +699,14 @@ struct realme_batch {
 
     // The code predictor's 2-token prefill: [talker hidden, first code's
     // embedding] per sentence; logits from each sentence's second token.
-    static graph cp_prefill(TTSTransformer & t, const std::vector<seq *> & act) {
+    static graph cp_prefill(TTSTransformer & t, const std::vector<seq *> & act,
+                            tts_kv_cache * shared = nullptr, std::vector<uint8_t> * meta = nullptr) {
         const auto & cfg = t.model_.config;
         const int B = (int) act.size();
         graph g;
-        struct ggml_context * ctx0 = new_ctx(t);
-        g.gf = ggml_new_graph_custom(ctx0, QWEN3_TTS_MAX_NODES, false);
+        own_meta(meta);
+        struct ggml_context * ctx0 = new_ctx(t, meta);
+        g.gf = ggml_new_graph_custom(ctx0, meta ? CP_REUSE_NODES : QWEN3_TTS_MAX_NODES, false);
         g.inp = ggml_new_tensor_2d(ctx0, GGML_TYPE_F32, cfg.hidden_size, 2 * B);   // h0, e0, h1, e1, ...
         ggml_set_input(g.inp);
         g.pos = ggml_new_tensor_1d(ctx0, GGML_TYPE_I32, 2 * B);
@@ -542,7 +714,8 @@ struct realme_batch {
         std::vector<tts_kv_cache *> caches;
         std::vector<int> n_past(B, 0);
         for (auto * s : act) caches.push_back(&s->cp_cache);
-        struct ggml_tensor * cur = layers(ctx0, g.gf, t, t.model_.code_pred_layers, g.inp, g.pos, caches, n_past, 2, false);
+        struct ggml_tensor * cur = layers(ctx0, g.gf, t, t.model_.code_pred_layers, g.inp, g.pos, caches, n_past, 2, false,
+                                          shared);
         cur = ggml_rms_norm(ctx0, cur, cfg.rms_norm_eps);
         cur = ggml_mul(ctx0, cur, t.model_.code_pred_output_norm);
         struct ggml_tensor * last = ggml_cont(ctx0, ggml_view_2d(ctx0, cur, cfg.hidden_size, B,
@@ -555,12 +728,14 @@ struct realme_batch {
     }
 
     // One code predictor step (codebook `step`), every sentence at once.
-    static graph cp_step(TTSTransformer & t, const std::vector<seq *> & act, int step) {
+    static graph cp_step(TTSTransformer & t, const std::vector<seq *> & act, int step,
+                         tts_kv_cache * shared = nullptr, std::vector<uint8_t> * meta = nullptr) {
         const auto & cfg = t.model_.config;
         const int B = (int) act.size();
         graph g;
-        struct ggml_context * ctx0 = new_ctx(t);
-        g.gf = ggml_new_graph_custom(ctx0, QWEN3_TTS_MAX_NODES, false);
+        own_meta(meta);
+        struct ggml_context * ctx0 = new_ctx(t, meta);
+        g.gf = ggml_new_graph_custom(ctx0, meta ? CP_REUSE_NODES : QWEN3_TTS_MAX_NODES, false);
         g.inp = ggml_new_tensor_1d(ctx0, GGML_TYPE_I32, B);
         ggml_set_input(g.inp);
         g.pos = ggml_new_tensor_1d(ctx0, GGML_TYPE_I32, B);
@@ -570,7 +745,7 @@ struct realme_batch {
         std::vector<tts_kv_cache *> caches;
         std::vector<int> n_past(B, step + 1);
         for (auto * s : act) caches.push_back(&s->cp_cache);
-        cur = layers(ctx0, g.gf, t, t.model_.code_pred_layers, cur, g.pos, caches, n_past, 1, true);
+        cur = layers(ctx0, g.gf, t, t.model_.code_pred_layers, cur, g.pos, caches, n_past, 1, true, shared);
         cur = ggml_rms_norm(ctx0, cur, cfg.rms_norm_eps);
         cur = ggml_mul(ctx0, cur, t.model_.code_pred_output_norm);
         g.logits = realme_mm(ctx0, t.model_.code_pred_head[step], cur);
@@ -594,12 +769,7 @@ struct realme_batch {
         if (temperature <= 0.0f) return argmax_of(logits, vocab);
         for (int32_t i = 0; i < vocab; ++i) logits[i] /= temperature;
         if (top_k > 0 && top_k < vocab) {
-            std::vector<std::pair<float, int32_t>> scored(vocab);
-            for (int32_t i = 0; i < vocab; ++i) scored[i] = {logits[i], i};
-            std::partial_sort(scored.begin(), scored.begin() + top_k, scored.end(),
-                [](const std::pair<float, int32_t> & a, const std::pair<float, int32_t> & b) {
-                    return a.first > b.first; });
-            const float threshold = scored[top_k - 1].first;
+            const float threshold = realme_topk_threshold(logits, vocab, top_k, probs);
             for (int32_t i = 0; i < vocab; ++i) if (logits[i] < threshold) logits[i] = -INFINITY;
         }
         const float mx = *std::max_element(logits, logits + vocab);
@@ -619,12 +789,382 @@ struct realme_batch {
         return true;
     }
 
+    // A kept predictor graph runs on the backend directly (its allocator
+    // placed it); any other through the scheduler, as before.
+    static bool cp_compute(TTSTransformer & t, graph & g, bool kept, std::string & err, const char * what) {
+        if (!kept) return compute(t, g, err, what);
+        if (ggml_backend_graph_compute(t.state_.backend, g.gf) != GGML_STATUS_SUCCESS) {
+            err = std::string("batch: could not compute the ") + what;
+            return false;
+        }
+        return true;
+    }
+
     static bool compute(TTSTransformer & t, graph & g, std::string & err, const char * what) {
         if (ggml_backend_sched_graph_compute(t.state_.sched, g.gf) != GGML_STATUS_SUCCESS) {
             err = std::string("batch: could not compute the ") + what;
             ggml_backend_sched_reset(t.state_.sched);
             return false;
         }
+        return true;
+    }
+
+    // Where a pass spends its time (QWEN3_TTS_STAGE_TIMING=1): each mark()
+    // charges the time since the previous mark to one stage. Off, it costs a
+    // branch per mark.
+    struct stage_clock {
+        enum { BEGIN, FIRST_CODE, CP_BUILD, CP_COMPUTE, CP_SAMPLE, EMBED, GROW,
+               TALK_BUILD, TALK_COMPUTE, DECODE, HANDBACK, N };
+        double s[N] = {};
+        long long frames = 0, columns = 0, cp_nodes = 0, talk_nodes = 0, cp_graphs = 0, cp_built = 0, talk_built = 0;
+        bool on = false;
+        std::chrono::steady_clock::time_point last;
+        stage_clock() {
+            const char * v = std::getenv("QWEN3_TTS_STAGE_TIMING");
+            on = v && v[0] == '1';
+            last = std::chrono::steady_clock::now();
+        }
+        void mark(int k) {
+            if (!on) return;
+            const auto now = std::chrono::steady_clock::now();
+            s[k] += std::chrono::duration<double>(now - last).count();
+            last = now;
+        }
+        void report(const char * what) const {
+            if (!on) return;
+            static const char * names[N] = {"prompt", "first_code", "predictor_build", "predictor_compute",
+                "predictor_sample", "embeddings", "cache_growth", "talker_build", "talker_compute",
+                "vocoder", "hand_back"};
+            double total = 0;
+            for (double v : s) total += v;
+            fprintf(stderr, "  [realme] stages (%s): %.3f s, %lld frame steps, %lld sentence frames\n",
+                    what, total, frames, columns);
+            for (int k = 0; k < N; ++k)
+                if (s[k] > 0) fprintf(stderr, "  [realme]   %-18s %8.3f s %5.1f%%\n", names[k], s[k],
+                                      total > 0 ? 100.0 * s[k] / total : 0.0);
+            if (frames > 0)
+                fprintf(stderr, "  [realme]   graph nodes per frame step: predictor %.0f (%lld graphs, %lld built in all), "
+                                "talker %.0f (%lld built in all)\n",
+                        (double) cp_nodes / frames, cp_graphs / frames, cp_built, (double) talk_nodes / frames, talk_built);
+        }
+    };
+
+    // The code predictor's 15 graphs (prefill and 14 steps), built once for
+    // a pass width and kept, each with its own allocator, so a frame neither
+    // builds nor plans them again (QWEN3_TTS_CP_GRAPH_REUSE; on with the
+    // batched attention, =0 off). With the batched attention a predictor
+    // graph depends only on how many sentences there are and on the pass
+    // cache, not on which sentences: the same graph, the same operations,
+    // the same numbers. A new width or cache builds them again.
+    struct cp_graphs {
+        struct slot { std::vector<uint8_t> meta; graph g; ggml_gallocr_t alloc = nullptr; };
+        int B = 0;
+        ggml_backend_buffer_t cache = nullptr;
+        std::vector<slot> slots;
+        void clear() {
+            for (auto & s : slots) if (s.alloc) ggml_gallocr_free(s.alloc);
+            slots.clear();
+            B = 0; cache = nullptr;
+        }
+        ~cp_graphs() { clear(); }
+    };
+    static bool cp_graph_reuse_on() {
+        const char * v = std::getenv("QWEN3_TTS_CP_GRAPH_REUSE");
+        return !(v && v[0] == '0');
+    }
+    // Graph k (0: prefill) for these sentences, built and allocated on first use.
+    static graph * cp_reused(TTSTransformer & t, const std::vector<seq *> & act, int k,
+                             tts_kv_cache * shared, cp_graphs & kept, bool & built, std::string & err) {
+        const int B = (int) act.size();
+        if (kept.B != B || kept.cache != shared->buffer) {
+            kept.clear();
+            kept.B = B; kept.cache = shared->buffer;
+            kept.slots.resize(15);
+        }
+        auto & s = kept.slots[k];
+        built = !s.alloc;
+        if (!s.alloc) {
+            s.g = k == 0 ? cp_prefill(t, act, shared, &s.meta) : cp_step(t, act, k, shared, &s.meta);
+            s.alloc = ggml_gallocr_new(ggml_backend_get_default_buffer_type(t.state_.backend));
+            if (!s.alloc || !ggml_gallocr_alloc_graph(s.alloc, s.g.gf)) {
+                err = "batch: could not allocate a kept code predictor graph";
+                kept.clear();
+                return nullptr;
+            }
+        }
+        return &s.g;
+    }
+
+    // The talker's graph, kept from step to step while the same sentences
+    // speak from the same caches (QWEN3_TTS_TALK_GRAPH_REUSE; on with the
+    // batched predictor attention, as the kept predictor graphs, =0 off).
+    // A talker step's graph differs from the previous one only in where each
+    // sentence's attention reads and writes its cache: one position further
+    // on. Built once at the caches' full length, it is moved on each step
+    // (realme_attention_move) and computed: the same ops on the same numbers.
+    // Another sentence or a grown cache builds it again.
+    struct talk_graph {
+        std::vector<uint8_t> meta;
+        graph g;
+        ggml_gallocr_t alloc = nullptr;
+        std::vector<std::pair<uint64_t, ggml_backend_buffer_t>> key;   // per sentence: uid, cache
+        std::vector<std::vector<realme_attention_moving>> moving;    // [sentence][layer]
+        void clear() {
+            if (alloc) ggml_gallocr_free(alloc);
+            alloc = nullptr; g = graph{}; key.clear(); moving.clear();
+        }
+        ~talk_graph() { clear(); }
+    };
+    static bool talk_graph_reuse_on() {
+        const char * v = std::getenv("QWEN3_TTS_TALK_GRAPH_REUSE");
+        if (v && v[0] == '0') return false;
+        if (v && v[0] == '1') return true;
+        return cp_batch_attention_on();
+    }
+    // The kept graph for these sentences, moved to their positions; built and
+    // allocated when they (or their caches) are not the ones it was built for.
+    static graph * talk_reused(TTSTransformer & t, const std::vector<seq *> & act, talk_graph & kept,
+                               bool & built, std::string & err) {
+        std::vector<std::pair<uint64_t, ggml_backend_buffer_t>> key;
+        for (auto * s : act) key.emplace_back(s->uid, s->cache.buffer);
+        built = !kept.alloc || kept.key != key;
+        if (built) {
+            kept.clear();
+            kept.g = talker_step(t, act, &kept.meta, &kept.moving);
+            kept.alloc = ggml_gallocr_new(ggml_backend_get_default_buffer_type(t.state_.backend));
+            if (!kept.alloc || !ggml_gallocr_alloc_graph(kept.alloc, kept.g.gf)) {
+                err = "batch: could not allocate a kept talker graph";
+                kept.clear();
+                return nullptr;
+            }
+            kept.key = std::move(key);
+        }
+        for (size_t b = 0; b < act.size(); ++b)
+            for (auto & m : kept.moving[b]) realme_attention_move(m, act[b]->n_past, 1);
+        return &kept.g;
+    }
+
+    // Owns the code predictor's pass cache and kept graphs, and the kept
+    // talker graph; frees them however the pass ends (graphs first: they
+    // refer to the caches).
+    struct cp_shared_cache {
+        tts_kv_cache c;
+        cp_graphs graphs;
+        talk_graph talk;
+        ~cp_shared_cache() { talk.clear(); graphs.clear(); free_tts_kv_cache(c); }
+    };
+
+    // The mean of a code predictor embedding table (2048 rows), made once
+    // per table: what stands in the talker's input for a codebook not
+    // predicted (QWEN3_TTS_CP_STEPS below 15, QWEN3_TTS_CP_FILL=mean).
+    static const std::vector<float> * cp_mean_embedding(TTSTransformer & t, int table, std::string & err) {
+        static std::mutex m;
+        // Keyed by the table and its bytes' address: a model loaded again
+        // (perhaps at the same address) makes its means again.
+        static std::map<std::pair<const ggml_tensor *, const void *>, std::vector<float>> means;
+        const auto & cfg = t.model_.config;
+        const ggml_tensor * w = t.model_.code_pred_embd[table];
+        const auto key = std::make_pair(w, (const void *) w->data);
+        std::lock_guard<std::mutex> lock(m);
+        auto it = means.find(key);
+        if (it != means.end()) return &it->second;
+        const int H = cfg.hidden_size;
+        std::vector<double> sum((size_t) H, 0.0);
+        std::vector<float> row((size_t) H);
+        for (int32_t code = 0; code < cfg.code_pred_vocab_size; ++code) {
+            if (!t.lookup_single_embedding_row(t.model_.code_pred_embd[table], code, row.data())) {
+                err = t.get_error();
+                return nullptr;
+            }
+            for (int h = 0; h < H; ++h) sum[(size_t) h] += row[(size_t) h];
+        }
+        std::vector<float> mean((size_t) H);
+        for (int h = 0; h < H; ++h) mean[(size_t) h] = (float) (sum[(size_t) h] / cfg.code_pred_vocab_size);
+        return &(means[key] = std::move(mean));
+    }
+
+    // Codes 1..15 for every sentence in `step` (each has this frame's first
+    // code), then the frame is kept and the talker runs once for those still
+    // speaking. QWEN3_TTS_CP_STEPS=K (realme_codebooks.inc) stops the
+    // predictor after codebook K: an experiment, lossy, off by default. Shared by the fixed pass and the stream, so both compute
+    // exactly the same steps; each sentence uses its own frame count.
+    static bool frame_rest(TTSTransformer & t, const std::vector<seq *> & step, int32_t max_len,
+                           float temperature, int32_t top_k, realme_batch_scratch & scratch,
+                           std::vector<float> & probs, std::vector<float> & row,
+                           std::vector<float> & cb0_embd, std::vector<float> & lg,
+                           cp_shared_cache & cp_shared, stage_clock & clk, std::string & err) {
+        const auto & cfg = t.model_.config;
+        const int H = cfg.hidden_size;
+        const int B = (int) step.size();
+        const int cp_k = realme_cp_steps();      // codebooks 1..cp_k predicted (15: all)
+        clk.frames++;
+        clk.columns += B;
+        tts_kv_cache * shared = nullptr;
+        if (cp_batch_attention_on()) {
+            // A cache that must grow is replaced: kept graphs refer to the old one.
+            if (!cp_shared.c.buffer || cp_shared.c.n_used < B) cp_shared.graphs.clear();
+            if (!alloc_cp_shared(t, cp_shared.c, B)) {
+                err = "batch: not enough memory for the code predictor's pass cache";
+                return false;
+            }
+            shared = &cp_shared.c;
+        }
+        const bool reuse = shared && cp_graph_reuse_on();
+        {
+            // The embeddings first, as upstream does: for a quantized
+            // embedding table the lookup runs a graph of its own on the
+            // same scheduler, which must not be holding this one yet.
+            auto & in = scratch.reset(scratch.in, (size_t) H * 2 * B);
+            auto & pos = scratch.reset(scratch.pos, 2 * B);
+            for (int b = 0; b < B; ++b) {
+                if (!t.lookup_single_embedding_row(t.model_.codec_embd, step[b]->cb0, cb0_embd.data())) {
+                    err = t.get_error(); return false;
+                }
+                memcpy(in.data() + (size_t) (2 * b) * H, step[b]->hidden.data(), H * sizeof(float));
+                memcpy(in.data() + (size_t) (2 * b + 1) * H, cb0_embd.data(), H * sizeof(float));
+                pos[2 * b] = 0;
+                pos[2 * b + 1] = 1;
+            }
+            clk.mark(stage_clock::EMBED);
+            graph fresh;
+            graph * g = nullptr;
+            if (reuse) {
+                bool built = false;
+                if (!(g = cp_reused(t, step, 0, shared, cp_shared.graphs, built, err))) return false;
+                clk.cp_built += built;
+            } else {
+                fresh = cp_prefill(t, step, shared);
+                if (!run(t, fresh, err, "code predictor prefill")) return false;
+                g = &fresh;
+                clk.cp_built++;
+            }
+            clk.cp_nodes += ggml_graph_n_nodes(g->gf);
+            clk.cp_graphs++;
+            ggml_backend_tensor_set(g->inp, in.data(), 0, in.size() * sizeof(float));
+            ggml_backend_tensor_set(g->pos, pos.data(), 0, pos.size() * sizeof(int32_t));
+            clk.mark(stage_clock::CP_BUILD);
+            if (!cp_compute(t, *g, reuse, err, "code predictor prefill")) return false;
+            lg.resize((size_t) cfg.code_pred_vocab_size * B);
+            ggml_backend_tensor_get(g->logits, lg.data(), 0, lg.size() * sizeof(float));
+            if (!reuse) ggml_backend_sched_reset(t.state_.sched);
+            clk.mark(stage_clock::CP_COMPUTE);
+        }
+        for (int b = 0; b < B; ++b) {
+            step[b]->rest.assign(15, 0);
+            step[b]->rest[0] = sample(lg.data() + (size_t) b * cfg.code_pred_vocab_size,
+                                      cfg.code_pred_vocab_size, temperature, top_k, t.rng_, probs);
+        }
+        clk.mark(stage_clock::CP_SAMPLE);
+        for (int k = 1; k < cp_k; ++k) {
+            graph fresh;
+            graph * g = nullptr;
+            if (reuse) {
+                bool built = false;
+                if (!(g = cp_reused(t, step, k, shared, cp_shared.graphs, built, err))) return false;
+                clk.cp_built += built;
+            } else {
+                fresh = cp_step(t, step, k, shared);
+                if (!run(t, fresh, err, "code predictor step")) return false;
+                g = &fresh;
+                clk.cp_built++;
+            }
+            clk.cp_nodes += ggml_graph_n_nodes(g->gf);
+            clk.cp_graphs++;
+            auto & code = scratch.reset(scratch.code, B);
+            auto & cpos = scratch.reset(scratch.cpos, B, k + 1);
+            for (int b = 0; b < B; ++b) code[b] = step[b]->rest[k - 1];
+            ggml_backend_tensor_set(g->inp, code.data(), 0, B * sizeof(int32_t));
+            ggml_backend_tensor_set(g->pos, cpos.data(), 0, B * sizeof(int32_t));
+            clk.mark(stage_clock::CP_BUILD);
+            if (!cp_compute(t, *g, reuse, err, "code predictor step")) return false;
+            ggml_backend_tensor_get(g->logits, lg.data(), 0, (size_t) cfg.code_pred_vocab_size * B * sizeof(float));
+            if (!reuse) ggml_backend_sched_reset(t.state_.sched);
+            clk.mark(stage_clock::CP_COMPUTE);
+            for (int b = 0; b < B; ++b)
+                step[b]->rest[k] = sample(lg.data() + (size_t) b * cfg.code_pred_vocab_size,
+                                          cfg.code_pred_vocab_size, temperature, top_k, t.rng_, probs);
+            clk.mark(stage_clock::CP_SAMPLE);
+        }
+
+        // Keep the frame; each sentence's next talker input, from its own
+        // frame count.
+        std::vector<seq *> talk;
+        auto & step_in = scratch.reset(scratch.step_in, 0);
+        for (auto * s : step) {
+            const int frame = s->frame;
+            s->codes.push_back(s->cb0);
+            for (int cb = 1; cb < cfg.n_codebooks; ++cb) s->codes.push_back(s->rest[cb - 1]);
+            s->frame = frame + 1;
+            const int32_t limit = s->max_frames > 0 ? std::min(max_len, s->max_frames) : max_len;
+            if (frame + 1 >= limit) { s->done = true; continue; }
+            auto & ev = scratch.reset(scratch.embedding, H);
+            if (!t.lookup_single_embedding_row(t.model_.codec_embd, s->cb0, row.data())) {
+                err = t.get_error(); return false;
+            }
+            for (int h = 0; h < H; ++h) ev[h] = row[h];
+            for (int cb = 1; cb < cfg.n_codebooks; ++cb) {
+                if (cb > cp_k) {
+                    // Not predicted: its mean embedding, or nothing.
+                    if (!realme_cp_fill_mean()) continue;
+                    const auto * mean = cp_mean_embedding(t, cb - 1, err);
+                    if (!mean) return false;
+                    for (int h = 0; h < H; ++h) ev[h] += (*mean)[(size_t) h];
+                    continue;
+                }
+                if (!t.lookup_single_embedding_row(t.model_.code_pred_embd[cb - 1], s->rest[cb - 1], row.data())) {
+                    err = t.get_error(); return false;
+                }
+                for (int h = 0; h < H; ++h) ev[h] += row[h];
+            }
+            const float * tr = (frame < s->trailing_len) ? s->trailing.data() + (size_t) frame * H
+                                                         : s->pad_embd.data();
+            for (int h = 0; h < H; ++h) ev[h] += tr[h];
+            step_in.insert(step_in.end(), ev.begin(), ev.end());
+            talk.push_back(s);
+        }
+        clk.mark(stage_clock::EMBED);
+        if (talk.empty()) return true;
+
+        // The talker, all sentences at once.
+        const int N = (int) talk.size();
+        for (auto * s : talk) {
+            if (!ensure_cache(t, *s, err)) return false;
+        }
+        clk.mark(stage_clock::GROW);
+        const bool talk_kept = talk_graph_reuse_on();
+        graph fresh_talk;
+        graph * tg = nullptr;
+        if (talk_kept) {
+            bool built = false;
+            if (!(tg = talk_reused(t, talk, cp_shared.talk, built, err))) return false;
+            clk.talk_built += built;
+        } else {
+            fresh_talk = talker_step(t, talk);
+            if (!run(t, fresh_talk, err, "talker step")) return false;
+            tg = &fresh_talk;
+            clk.talk_built++;
+        }
+        graph & g = *tg;
+        clk.talk_nodes += ggml_graph_n_nodes(g.gf);
+        auto & tpos = scratch.reset(scratch.pos, N);
+        for (int b = 0; b < N; ++b) tpos[b] = talk[b]->n_past;
+        ggml_backend_tensor_set(g.inp, step_in.data(), 0, step_in.size() * sizeof(float));
+        ggml_backend_tensor_set(g.pos, tpos.data(), 0, N * sizeof(int32_t));
+        clk.mark(stage_clock::TALK_BUILD);
+        if (!cp_compute(t, g, talk_kept, err, "talker step")) return false;
+        auto & hid = scratch.reset(scratch.hidden, (size_t) H * N);
+        auto & lgt = scratch.reset(scratch.logits, (size_t) cfg.codec_vocab_size * N);
+        ggml_backend_tensor_get(g.hidden, hid.data(), 0, hid.size() * sizeof(float));
+        ggml_backend_tensor_get(g.logits, lgt.data(), 0, lgt.size() * sizeof(float));
+        if (!talk_kept) ggml_backend_sched_reset(t.state_.sched);
+        for (int b = 0; b < N; ++b) {
+            auto * s = talk[b];
+            s->hidden.assign(hid.begin() + (size_t) b * H, hid.begin() + (size_t) (b + 1) * H);
+            s->logits.assign(lgt.begin() + (size_t) b * cfg.codec_vocab_size,
+                             lgt.begin() + (size_t) (b + 1) * cfg.codec_vocab_size);
+            s->n_past++;
+        }
+        clk.mark(stage_clock::TALK_COMPUTE);
         return true;
     }
 
@@ -659,7 +1199,10 @@ struct realme_batch {
             }
             const int32_t prefill_len = (int32_t) (prefill.size() / H);
             s.trailing_len = (int32_t) (s.trailing.size() / H);
-            if (!alloc_cache(t, s.cache, cfg.n_layers, prefill_len + max_len + 8) ||
+            s.cache_limit = prefill_len + max_len + 8;
+            s.max_frames = frame_limit(s.tokens.size(), max_len);
+            s.uid = next_uid();
+            if (!alloc_cache(t, s.cache, cfg.n_layers, initial_cache(prefill_len, s.cache_limit)) ||
                 !alloc_cache(t, s.cp_cache, cfg.code_pred_layers, 16)) {
                 err = "batch: not enough memory for another sentence's cache";
                 return false;
@@ -676,6 +1219,10 @@ struct realme_batch {
 
         const int32_t suppress_start = cfg.codec_vocab_size - 1024;
         std::vector<float> probs, row(H), cb0_embd(H), lg;
+        realme_batch_scratch scratch;
+        cp_shared_cache cp_shared;
+        stage_clock clk;
+        clk.mark(stage_clock::BEGIN);
 
         for (int frame = 0; frame < max_len; ++frame) {
             // The first code of this frame, per sentence, exactly as generate().
@@ -700,102 +1247,12 @@ struct realme_batch {
                 act.push_back(&s);
             }
             if (act.empty()) break;
-            const int B = (int) act.size();
+            clk.mark(stage_clock::FIRST_CODE);
 
-            // Codes 1..15: the code predictor, all sentences at once.
-            {
-                // The embeddings first, as upstream does: for a quantized
-                // embedding table the lookup runs a graph of its own on the
-                // same scheduler, which must not be holding this one yet.
-                std::vector<float> in((size_t) H * 2 * B);
-                std::vector<int32_t> pos(2 * B);
-                for (int b = 0; b < B; ++b) {
-                    if (!t.lookup_single_embedding_row(t.model_.codec_embd, act[b]->cb0, cb0_embd.data())) {
-                        err = t.get_error(); return false;
-                    }
-                    memcpy(in.data() + (size_t) (2 * b) * H, act[b]->hidden.data(), H * sizeof(float));
-                    memcpy(in.data() + (size_t) (2 * b + 1) * H, cb0_embd.data(), H * sizeof(float));
-                    pos[2 * b] = 0;
-                    pos[2 * b + 1] = 1;
-                }
-                graph g = cp_prefill(t, act);
-                if (!run(t, g, err, "code predictor prefill")) return false;
-                ggml_backend_tensor_set(g.inp, in.data(), 0, in.size() * sizeof(float));
-                ggml_backend_tensor_set(g.pos, pos.data(), 0, pos.size() * sizeof(int32_t));
-                if (!compute(t, g, err, "code predictor prefill")) return false;
-                lg.resize((size_t) cfg.code_pred_vocab_size * B);
-                ggml_backend_tensor_get(g.logits, lg.data(), 0, lg.size() * sizeof(float));
-                ggml_backend_sched_reset(t.state_.sched);
-                for (int b = 0; b < B; ++b) {
-                    act[b]->rest.assign(15, 0);
-                    act[b]->rest[0] = sample(lg.data() + (size_t) b * cfg.code_pred_vocab_size,
-                                             cfg.code_pred_vocab_size, temperature, top_k, t.rng_, probs);
-                }
-            }
-            for (int step = 1; step < 15; ++step) {
-                graph g = cp_step(t, act, step);
-                if (!run(t, g, err, "code predictor step")) return false;
-                std::vector<int32_t> code(B), pos(B, step + 1);
-                for (int b = 0; b < B; ++b) code[b] = act[b]->rest[step - 1];
-                ggml_backend_tensor_set(g.inp, code.data(), 0, B * sizeof(int32_t));
-                ggml_backend_tensor_set(g.pos, pos.data(), 0, B * sizeof(int32_t));
-                if (!compute(t, g, err, "code predictor step")) return false;
-                ggml_backend_tensor_get(g.logits, lg.data(), 0, (size_t) cfg.code_pred_vocab_size * B * sizeof(float));
-                ggml_backend_sched_reset(t.state_.sched);
-                for (int b = 0; b < B; ++b)
-                    act[b]->rest[step] = sample(lg.data() + (size_t) b * cfg.code_pred_vocab_size,
-                                                cfg.code_pred_vocab_size, temperature, top_k, t.rng_, probs);
-            }
-
-            // Keep the frame; build each sentence's next talker input.
-            std::vector<seq *> next_act;
-            std::vector<float> step_in;
-            for (auto * s : act) {
-                s->codes.push_back(s->cb0);
-                for (int cb = 1; cb < cfg.n_codebooks; ++cb) s->codes.push_back(s->rest[cb - 1]);
-                s->frame = frame + 1;
-                if (frame + 1 >= max_len) { s->done = true; continue; }
-                std::vector<float> e(H, 0.0f);
-                if (!t.lookup_single_embedding_row(t.model_.codec_embd, s->cb0, row.data())) { err = t.get_error(); return false; }
-                for (int h = 0; h < H; ++h) e[h] = row[h];
-                for (int cb = 1; cb < cfg.n_codebooks; ++cb) {
-                    if (!t.lookup_single_embedding_row(t.model_.code_pred_embd[cb - 1], s->rest[cb - 1], row.data())) {
-                        err = t.get_error(); return false;
-                    }
-                    for (int h = 0; h < H; ++h) e[h] += row[h];
-                }
-                const float * tr = (frame < s->trailing_len) ? s->trailing.data() + (size_t) frame * H
-                                                             : s->pad_embd.data();
-                for (int h = 0; h < H; ++h) e[h] += tr[h];
-                step_in.insert(step_in.end(), e.begin(), e.end());
-                next_act.push_back(s);
-            }
-            if (next_act.empty()) break;
-
-            // The talker, all sentences at once.
-            const int N = (int) next_act.size();
-            for (auto * s : next_act) {
-                if (s->n_past + 1 > s->cache.n_ctx) { err = "Context length exceeded"; return false; }
-            }
-            graph g = talker_step(t, next_act);
-            if (!run(t, g, err, "talker step")) return false;
-            std::vector<int32_t> pos(N);
-            for (int b = 0; b < N; ++b) pos[b] = next_act[b]->n_past;
-            ggml_backend_tensor_set(g.inp, step_in.data(), 0, step_in.size() * sizeof(float));
-            ggml_backend_tensor_set(g.pos, pos.data(), 0, N * sizeof(int32_t));
-            if (!compute(t, g, err, "talker step")) return false;
-            std::vector<float> hid((size_t) H * N), lgt((size_t) cfg.codec_vocab_size * N);
-            ggml_backend_tensor_get(g.hidden, hid.data(), 0, hid.size() * sizeof(float));
-            ggml_backend_tensor_get(g.logits, lgt.data(), 0, lgt.size() * sizeof(float));
-            ggml_backend_sched_reset(t.state_.sched);
-            for (int b = 0; b < N; ++b) {
-                auto * s = next_act[b];
-                s->hidden.assign(hid.begin() + (size_t) b * H, hid.begin() + (size_t) (b + 1) * H);
-                s->logits.assign(lgt.begin() + (size_t) b * cfg.codec_vocab_size,
-                                 lgt.begin() + (size_t) (b + 1) * cfg.codec_vocab_size);
-                s->n_past++;
-            }
+            if (!frame_rest(t, act, max_len, temperature, top_k, scratch, probs, row, cb0_embd, lg,
+                            cp_shared, clk, err)) return false;
         }
+        clk.report("pass");
         for (auto & s : seqs) {
             free_tts_kv_cache(s.cache);
             free_tts_kv_cache(s.cp_cache);
@@ -818,6 +1275,80 @@ struct realme_batch {
         seq s;
     };
 
+    // Finished sentences decoded beside the pass (QWEN3_TTS_DECODE_ASYNC=1,
+    // with the vocoder on a CPU backend of its own): one worker turns codes
+    // into audio while the pass goes on. Audio is handed back on the
+    // caller's thread, in the order the sentences finished -- the same order
+    // and the same samples as decoding in the loop.
+    // The vocoder's thread count for one decode: lowered while a pass runs
+    // beside it, the full count when nothing else is computing. Set on the
+    // worker's own thread, just before that sentence's single vocoder graph.
+    static void decoder_threads_for(AudioTokenizerDecoder & d, int n) { if (n > 0) d.realme_set_threads(n); }
+    template<class Other> static void decoder_threads_for(Other &, int) {}
+
+    template<class Decoder>
+    struct decode_worker_t {
+        struct done_item { int64_t id; std::vector<float> audio; bool ok; std::string error; };
+        Decoder & dec;
+        const int nc;
+        const realme_cpu_options * options;
+        std::mutex m;
+        std::condition_variable cv;
+        struct job_item { int64_t id; std::vector<int32_t> codes; int threads; };
+        std::deque<job_item> jobs;
+        std::deque<done_item> ready;
+        bool stop = false, busy = false;
+        std::thread th;
+        decode_worker_t(Decoder & d, int n_codebooks)
+            : dec(d), nc(n_codebooks), options(realme_active_options) {
+            th = std::thread([this] { realme_active_options = options; loop(); });
+        }
+        ~decode_worker_t() {
+            { std::lock_guard<std::mutex> l(m); stop = true; }
+            cv.notify_all();
+            if (th.joinable()) th.join();
+        }
+        void loop() {
+            std::unique_lock<std::mutex> l(m);
+            while (true) {
+                cv.wait(l, [&] { return stop || !jobs.empty(); });
+                if (jobs.empty()) return;              // stop, nothing left
+                auto job = std::move(jobs.front());
+                jobs.pop_front();
+                busy = true;
+                l.unlock();
+                done_item d{job.id, {}, true, {}};
+                const int n_frames = (int) job.codes.size() / nc;
+                decoder_threads_for(dec, job.threads);
+                if (n_frames > 0 && !dec.decode(job.codes.data(), n_frames, d.audio)) {
+                    d.ok = false;
+                    d.error = "Failed to decode speech codes: " + dec.get_error();
+                }
+                l.lock();
+                busy = false;
+                ready.push_back(std::move(d));
+                cv.notify_all();
+            }
+        }
+        // threads: the vocoder's for this decode (0: as it is).
+        void push(int64_t id, std::vector<int32_t> && codes, int threads = 0) {
+            { std::lock_guard<std::mutex> l(m); jobs.push_back({id, std::move(codes), threads}); }
+            cv.notify_all();
+        }
+        // The next decoded sentence; with `wait`, blocks until one is ready
+        // or nothing is left. False: none (now, or at all).
+        bool take(done_item & out, bool wait) {
+            std::unique_lock<std::mutex> l(m);
+            if (wait) cv.wait(l, [&] { return !ready.empty() || (jobs.empty() && !busy); });
+            if (ready.empty()) return false;
+            out = std::move(ready.front());
+            ready.pop_front();
+            return true;
+        }
+    };
+
+    using decode_worker = decode_worker_t<AudioTokenizerDecoder>;
+
     // A sentence's prompt through the engine's own prefill, as generate().
     static bool begin(TTSTransformer & t, seq & s, const float * speaker_embd, int32_t max_len,
                       int32_t language_id, std::string & err) {
@@ -832,7 +1363,10 @@ struct realme_batch {
         }
         const int32_t prefill_len = (int32_t) (prefill.size() / H);
         s.trailing_len = (int32_t) (s.trailing.size() / H);
-        if (!alloc_cache(t, s.cache, cfg.n_layers, prefill_len + max_len + 8) ||
+        s.cache_limit = prefill_len + max_len + 8;
+        s.max_frames = frame_limit(s.tokens.size(), max_len);
+        s.uid = next_uid();
+        if (!alloc_cache(t, s.cache, cfg.n_layers, initial_cache(prefill_len, s.cache_limit)) ||
             !alloc_cache(t, s.cp_cache, cfg.code_pred_layers, 16)) {
             err = "batch: not enough memory for another sentence's cache";
             return false;
@@ -886,15 +1420,55 @@ struct realme_batch {
         t.clear_kv_cache();
 
         std::list<live> act;
+        std::vector<std::pair<tts_kv_cache, tts_kv_cache>> spare;
         auto release = [&]() {
             for (auto & l : act) { free_tts_kv_cache(l.s.cache); free_tts_kv_cache(l.s.cp_cache); }
+            for (auto & c : spare) { free_tts_kv_cache(c.first); free_tts_kv_cache(c.second); }
+            spare.clear();
             act.clear();
         };
         int64_t next_id = 0;
         bool more = true;
         std::vector<float> probs, row(H), cb0_embd(H), lg, audio;
+        realme_batch_scratch scratch;
+        cp_shared_cache cp_shared;
+        stage_clock clk;
+        const int nc = cfg.n_codebooks;
+        std::unique_ptr<decode_worker> worker;
+        const char * async_env = std::getenv("QWEN3_TTS_DECODE_ASYNC");
+        if (async_env && async_env[0] == '1' && e.audio_decoder_.realme_private_backend())
+            worker.reset(new decode_worker(e.audio_decoder_, nc));
+        // While it decodes beside the pass the vocoder uses its own, smaller
+        // thread count (QWEN3_TTS_DECODE_THREADS); a sentence decoded when no
+        // other sentence is speaking gets the engine's full count, so the
+        // last (often the longest) is not decoded on two threads while the
+        // rest of the computer waits. The engine's count again afterwards.
+        const char * nt = std::getenv("QWEN3_TTS_THREADS");
+        const int full_threads = nt && std::atoi(nt) > 0 ? std::atoi(nt) : GGML_DEFAULT_N_THREADS;
+        const char * dt = std::getenv("QWEN3_TTS_DECODE_THREADS");
+        const int beside_threads = dt && std::atoi(dt) > 0 ? std::atoi(dt) : 0;
+        struct decoder_threads {
+            AudioTokenizerDecoder & dec; bool set; int full;
+            ~decoder_threads() { if (set) dec.realme_set_threads(full); }
+        } restore{e.audio_decoder_, worker && beside_threads > 0, full_threads};
+        bool stopped = false;
+        // Hand back what the worker has decoded (all of it with `all`).
+        // False: a decode failed (err says why); `stopped`: done() said stop.
+        auto collect = [&](bool all) -> bool {
+            decode_worker::done_item d;
+            while (worker && !stopped && worker->take(d, all)) {
+                clk.mark(stage_clock::DECODE);
+                if (!d.ok) { err = d.error; return false; }
+                ++n_done;
+                if (!done(d.id, d.audio)) stopped = true;
+                clk.mark(stage_clock::HANDBACK);
+            }
+            return true;
+        };
 
         while (true) {
+            if (!collect(false)) { worker.reset(); release(); return false; }
+            if (stopped) { worker.reset(); release(); clk.report("stream"); return true; }
             // Fill the empty places.
             while (more && (int) act.size() < slots) {
                 std::string text;
@@ -903,10 +1477,21 @@ struct realme_batch {
                 if (got == 0) break;
                 act.push_back({next_id++, seq{}});
                 seq & s = act.back().s;
+                if (!spare.empty()) {
+                    std::swap(s.cache, spare.back().first);
+                    std::swap(s.cp_cache, spare.back().second);
+                    spare.pop_back();
+                    const char * trace = std::getenv("QWEN3_TTS_CACHE_TRACE");
+                    if (trace && trace[0] == '1')
+                        fprintf(stderr, "  [realme] sentence cache reused %d positions\n", s.cache.n_ctx);
+                }
                 s.tokens = e.tokenizer_.encode_for_tts(text);
-                if (s.tokens.empty()) { err = "Failed to tokenize text"; release(); return false; }
-                if (!begin(t, s, speaker_embd, max_len, params.language_id, err)) { release(); return false; }
+                if (s.tokens.empty()) { err = "Failed to tokenize text"; worker.reset(); release(); return false; }
+                if (!begin(t, s, speaker_embd, max_len, params.language_id, err)) {
+                    worker.reset(); release(); return false;
+                }
             }
+            clk.mark(stage_clock::BEGIN);
             if (act.empty()) break;
 
             // The first code of this frame, per sentence, as generate().
@@ -930,125 +1515,61 @@ struct realme_batch {
                 s.cb0_seen.insert(nx);
                 step.push_back(&s);
             }
-            const int B = (int) step.size();
-            if (B > 0) {
-                // Codes 1..15, all sentences at once.
-                std::vector<float> in((size_t) H * 2 * B);
-                std::vector<int32_t> pos(2 * B);
-                for (int b = 0; b < B; ++b) {
-                    if (!t.lookup_single_embedding_row(t.model_.codec_embd, step[b]->cb0, cb0_embd.data())) {
-                        err = t.get_error(); release(); return false;
-                    }
-                    memcpy(in.data() + (size_t) (2 * b) * H, step[b]->hidden.data(), H * sizeof(float));
-                    memcpy(in.data() + (size_t) (2 * b + 1) * H, cb0_embd.data(), H * sizeof(float));
-                    pos[2 * b] = 0;
-                    pos[2 * b + 1] = 1;
-                }
-                {
-                    graph g = cp_prefill(t, step);
-                    if (!run(t, g, err, "code predictor prefill")) { release(); return false; }
-                    ggml_backend_tensor_set(g.inp, in.data(), 0, in.size() * sizeof(float));
-                    ggml_backend_tensor_set(g.pos, pos.data(), 0, pos.size() * sizeof(int32_t));
-                    if (!compute(t, g, err, "code predictor prefill")) { release(); return false; }
-                    lg.resize((size_t) cfg.code_pred_vocab_size * B);
-                    ggml_backend_tensor_get(g.logits, lg.data(), 0, lg.size() * sizeof(float));
-                    ggml_backend_sched_reset(t.state_.sched);
-                }
-                for (int b = 0; b < B; ++b) {
-                    step[b]->rest.assign(15, 0);
-                    step[b]->rest[0] = sample(lg.data() + (size_t) b * cfg.code_pred_vocab_size,
-                                              cfg.code_pred_vocab_size, temperature, top_k, t.rng_, probs);
-                }
-                for (int k = 1; k < 15; ++k) {
-                    graph g = cp_step(t, step, k);
-                    if (!run(t, g, err, "code predictor step")) { release(); return false; }
-                    std::vector<int32_t> code(B), cpos(B, k + 1);
-                    for (int b = 0; b < B; ++b) code[b] = step[b]->rest[k - 1];
-                    ggml_backend_tensor_set(g.inp, code.data(), 0, B * sizeof(int32_t));
-                    ggml_backend_tensor_set(g.pos, cpos.data(), 0, B * sizeof(int32_t));
-                    if (!compute(t, g, err, "code predictor step")) { release(); return false; }
-                    ggml_backend_tensor_get(g.logits, lg.data(), 0, (size_t) cfg.code_pred_vocab_size * B * sizeof(float));
-                    ggml_backend_sched_reset(t.state_.sched);
-                    for (int b = 0; b < B; ++b)
-                        step[b]->rest[k] = sample(lg.data() + (size_t) b * cfg.code_pred_vocab_size,
-                                                  cfg.code_pred_vocab_size, temperature, top_k, t.rng_, probs);
-                }
-
-                // Keep the frame; each sentence's next talker input, from
-                // its own frame count.
-                std::vector<seq *> talk;
-                std::vector<float> step_in;
-                for (auto * s : step) {
-                    const int frame = s->frame;
-                    s->codes.push_back(s->cb0);
-                    for (int cb = 1; cb < cfg.n_codebooks; ++cb) s->codes.push_back(s->rest[cb - 1]);
-                    s->frame = frame + 1;
-                    if (frame + 1 >= max_len) { s->done = true; continue; }
-                    std::vector<float> ev(H, 0.0f);
-                    if (!t.lookup_single_embedding_row(t.model_.codec_embd, s->cb0, row.data())) {
-                        err = t.get_error(); release(); return false;
-                    }
-                    for (int h = 0; h < H; ++h) ev[h] = row[h];
-                    for (int cb = 1; cb < cfg.n_codebooks; ++cb) {
-                        if (!t.lookup_single_embedding_row(t.model_.code_pred_embd[cb - 1], s->rest[cb - 1], row.data())) {
-                            err = t.get_error(); release(); return false;
-                        }
-                        for (int h = 0; h < H; ++h) ev[h] += row[h];
-                    }
-                    const float * tr = (frame < s->trailing_len) ? s->trailing.data() + (size_t) frame * H
-                                                                 : s->pad_embd.data();
-                    for (int h = 0; h < H; ++h) ev[h] += tr[h];
-                    step_in.insert(step_in.end(), ev.begin(), ev.end());
-                    talk.push_back(s);
-                }
-                if (!talk.empty()) {
-                    const int N = (int) talk.size();
-                    for (auto * s : talk) {
-                        if (s->n_past + 1 > s->cache.n_ctx) { err = "Context length exceeded"; release(); return false; }
-                    }
-                    graph g = talker_step(t, talk);
-                    if (!run(t, g, err, "talker step")) { release(); return false; }
-                    std::vector<int32_t> tpos(N);
-                    for (int b = 0; b < N; ++b) tpos[b] = talk[b]->n_past;
-                    ggml_backend_tensor_set(g.inp, step_in.data(), 0, step_in.size() * sizeof(float));
-                    ggml_backend_tensor_set(g.pos, tpos.data(), 0, N * sizeof(int32_t));
-                    if (!compute(t, g, err, "talker step")) { release(); return false; }
-                    std::vector<float> hid((size_t) H * N), lgt((size_t) cfg.codec_vocab_size * N);
-                    ggml_backend_tensor_get(g.hidden, hid.data(), 0, hid.size() * sizeof(float));
-                    ggml_backend_tensor_get(g.logits, lgt.data(), 0, lgt.size() * sizeof(float));
-                    ggml_backend_sched_reset(t.state_.sched);
-                    for (int b = 0; b < N; ++b) {
-                        auto * s = talk[b];
-                        s->hidden.assign(hid.begin() + (size_t) b * H, hid.begin() + (size_t) (b + 1) * H);
-                        s->logits.assign(lgt.begin() + (size_t) b * cfg.codec_vocab_size,
-                                         lgt.begin() + (size_t) (b + 1) * cfg.codec_vocab_size);
-                        s->n_past++;
-                    }
-                }
+            clk.mark(stage_clock::FIRST_CODE);
+            if (!step.empty() && !frame_rest(t, step, max_len, temperature, top_k, scratch, probs, row,
+                                             cb0_embd, lg, cp_shared, clk, err)) {
+                worker.reset(); release(); return false;
             }
 
-            // Hand back the finished ones, freeing their places.
-            const int nc = cfg.n_codebooks;
+            // Hand back the finished ones, freeing their places (or pass
+            // them to the worker, which decodes beside the next steps).
             for (auto it = act.begin(); it != act.end();) {
                 if (!it->s.done) { ++it; continue; }
-                free_tts_kv_cache(it->s.cache);
-                free_tts_kv_cache(it->s.cp_cache);
+                const int64_t id = it->id;
+                if (worker) {
+                    // Alone: no other sentence left in the pass after this one.
+                    const bool alone = act.size() == 1;
+                    worker->push(id, std::move(it->s.codes),
+                                 beside_threads > 0 ? (alone ? full_threads : beside_threads) : 0);
+                    if (grow_cache_on() && more) {
+                        spare.emplace_back();
+                        std::swap(it->s.cache, spare.back().first);
+                        std::swap(it->s.cp_cache, spare.back().second);
+                    } else {
+                        free_tts_kv_cache(it->s.cache);
+                        free_tts_kv_cache(it->s.cp_cache);
+                    }
+                    it = act.erase(it);
+                    continue;
+                }
                 const int n_frames = (int) it->s.codes.size() / nc;
                 audio.clear();
                 if (n_frames > 0 && !e.audio_decoder_.decode(it->s.codes.data(), n_frames, audio)) {
                     err = "Failed to decode speech codes: " + e.audio_decoder_.get_error();
-                    act.erase(it);
                     release();
                     return false;
                 }
-                const int64_t id = it->id;
+                clk.mark(stage_clock::DECODE);
+                if (grow_cache_on() && more) {
+                    spare.emplace_back();
+                    std::swap(it->s.cache, spare.back().first);
+                    std::swap(it->s.cp_cache, spare.back().second);
+                } else {
+                    free_tts_kv_cache(it->s.cache);
+                    free_tts_kv_cache(it->s.cp_cache);
+                }
                 it = act.erase(it);
                 ++n_done;
-                if (!done(id, audio)) { release(); return true; }
+                if (!done(id, audio)) { release(); clk.report("stream"); return true; }
+                clk.mark(stage_clock::HANDBACK);
             }
         }
+        // The last decodes, then the rest is freed.
+        const bool ok = collect(true);
+        worker.reset();
         release();
-        return true;
+        clk.report("stream");
+        return ok;
     }
 
 #ifndef REALME_BATCH_NO_API
@@ -1105,7 +1626,10 @@ int32_t qwen3_tts_synthesize_batch_with_embedding(
         Qwen3Tts * tts, const char ** texts, int32_t n,
         const float * embedding, int32_t embedding_size,
         const Qwen3TtsParams * params, Qwen3TtsAudio ** out) {
-    if (!tts || !texts || n <= 0 || !embedding || embedding_size <= 0 || !out) return -1;
+    if (!tts || !texts || n <= 0 || !out) return -1;
+    qwen3_tts::realme_call_scope scope(tts->cpu_runtime);
+    if (!scope.acquired) return -2;
+    if (!tts->engine.validate_speaker_embedding(embedding, embedding_size, tts->last_error)) return -1;
     std::vector<std::string> ts;
     for (int32_t i = 0; i < n; ++i) {
         if (!texts[i]) return -1;
@@ -1149,7 +1673,10 @@ typedef int32_t (*qwen3_tts_done_fn)(void * user, int32_t index, const float * s
 int32_t qwen3_tts_synthesize_stream_with_embedding(
         Qwen3Tts * tts, int32_t slots, qwen3_tts_next_fn next, qwen3_tts_done_fn done, void * user,
         const float * embedding, int32_t embedding_size, const Qwen3TtsParams * params) {
-    if (!tts || slots <= 0 || !next || !done || !embedding || embedding_size <= 0) return -1;
+    if (!tts || slots <= 0 || !next || !done) return -1;
+    qwen3_tts::realme_call_scope scope(tts->cpu_runtime);
+    if (!scope.acquired) return -2;
+    if (!tts->engine.validate_speaker_embedding(embedding, embedding_size, tts->last_error)) return -1;
     std::string err;
     int64_t n_done = 0;
     bool ok;

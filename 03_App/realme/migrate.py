@@ -35,15 +35,7 @@ DROP_CODE = ("/realme/engines/ov/", "/realme/engines/knnvc/")
 #: The developer's own launchers and the scripts only they run. A package for
 #: a colleague leaves them out so 00_Windows holds only what a colleague uses;
 #: a package for your own next machine keeps them.
-DEV_ONLY = ("00_Windows/8_Expressive_Experiment.bat",
-            "00_Windows/9_Archive_Old_Docs.bat",
-            "00_Windows/_Make_GitHub_Package.bat",
-            "00_Windows/_Bench_Parallel.bat",
-            "00_Windows/_Engine_Timing.bat",
-            "00_Windows/_Engine_Speedup_Check.bat",
-            "00_Windows/_Bench_Batch.bat",
-            "00_Windows/_Engine_Check_8bit.bat",
-            "00_Windows/_Engine_Check_Vocoder.bat",
+DEV_ONLY = ("00_Windows/_Make_GitHub_Package.bat",
             "00_Windows/_Make_qwen3cpp_Release.bat",
             "03_App/explore_expressive.py")
 
@@ -98,7 +90,9 @@ def _qwen3cpp_keep(rel: Path) -> bool:
     package, so shipping the build tree as well would be 60 MB of duplicate.
     """
     parts = rel.parts
-    if parts and parts[0] == "models":
+    # The 8-bit pair too: the local voice (realme-rev-qwen3-tts) reads it as
+    # it is, so the new machine needs only to build the engine.
+    if parts and parts[0] in ("models", "models_q8"):
         return rel.suffix == ".gguf"
     if parts and parts[0] == "build":
         return rel.suffix.lower() in {".exe", ".dll", ".so", ".dylib"}
@@ -196,14 +190,15 @@ def plan(groups: dict) -> dict:
 
 README = """# RealMe on this machine
 
-Everything is here: the code, ffmpeg, the three draft voices, the C++ engine with its
-binaries and weights, the test scripts, and the enrolled voice. Nothing to
-download and nothing to compile (the local engine travels unless the package was
-made with `--no-qwen`; its 8-bit model does not, and the first recording makes
-it again in a minute or two). The engine's source travels too
-(`03_App\\realme\\engines\\qwen3cpp_realme`, RealMe's revised engine, which
-every rebuild compiles; `qwen3cpp` beside it is the original, kept as the
-record), so `_Rebuild_Voice_Engine.bat` works on the new machine.
+Everything is here: the code, ffmpeg, the three draft voices, the voice
+model files, the test scripts, and the enrolled voice. Nothing to download.
+One thing to compile: the local voice (realme-rev-qwen3-tts) is built for
+each processor, so run `00_Windows\\_Rebuild_Voice_Engine.bat` once on the new
+machine (5-10 minutes; Visual Studio Build Tools, "Desktop development with
+C++"). Its source travels (`03_App\\realme\\engines\\qwen3cpp_realme`;
+`qwen3cpp` beside it is the original, kept as the record), and so do the
+model files it reads (`tools\\qwen3cpp\\models_q8`), unless the package was
+made with `--no-qwen`.
 
 The only thing this package cannot bring is Python itself.
 
@@ -311,35 +306,37 @@ def readme_fresh(include_qwen: bool = False) -> str:
 _ENGINE_ROW = {
     False: ("| **Not included in this package: the free local voice clone** | "
             "`qwen3cpp`, about 2.2 GB -- see *The free local voice clone* below. |"),
-    True: ("| **The free local voice clone** | `qwen3cpp`, ready to run: your "
-           "cloned voice made on this computer, nothing uploaded, nothing to pay. |"),
+    True: ("| **The free local voice clone** | `realme-rev-qwen3-tts`, its model files "
+           "included: your cloned voice made on this computer, nothing uploaded, "
+           "nothing to pay. Built for your processor once (see below). |"),
 }
 _ENGINE_STEP = {
     False: """## The free local voice clone
 
 Gemini clones your voice at Google: the clip it is cloned from, and every
 sentence it speaks, go to Google, at about a dollar an hour of lecture. The
-free local voice clone, `qwen3cpp`, records at no cost and nothing leaves your
+free local voice clone, `realme-rev-qwen3-tts`, records at no cost and nothing leaves your
 computer, faster than real time on a 6-core PC (an hour of lecture in about
 three quarters of an hour; longer on a smaller laptop). This package does not carry it: build it with
 `00_Windows\\3_Get_Voice_Engine.bat` (it needs Visual Studio Build Tools,
 *Desktop development with C++*, and about 6 GB of disk; START_HERE.md section
 12 has the steps), or ask Xinhua Yu, the RealMe developer, for a package that
-carries it ready to run. Then choose `qwen3cpp` under **Twin Setup -> Voice
-for lectures**, or for one render in the Lecture tab's **Recording** menu.
+carries its model files. Then choose *your voice (free local clone)* under
+**Twin Setup -> Voice for lectures**, or for one render in the Lecture tab's
+**Recording** menu.
 
 """,
     True: """## The free local voice clone
 
-This package also carries `qwen3cpp`, the free local voice clone, ready to
-run. It clones your voice on this computer, with the network unplugged,
-nothing uploaded and nothing to pay, faster than real time on a 6-core PC
-(an hour of lecture in about three quarters of an hour; longer on a smaller
-laptop). The faster 8-bit
-copy of its model is made from the one included the first time it records
-(a minute or two). Choose
-`qwen3cpp` under **Twin Setup -> Voice for lectures** to make it the default,
-or pick it for one render in the Lecture tab's **Recording** menu.
+This package also carries the model files of `realme-rev-qwen3-tts`, the
+free local voice clone. It clones your voice on this computer, with the
+network unplugged, nothing uploaded and nothing to pay, faster than real
+time on a 6-core PC (longer on a smaller laptop). It is compiled for each
+processor: run `00_Windows\\_Rebuild_Voice_Engine.bat` once (5-10 minutes; it
+needs Visual Studio Build Tools, *Desktop development with C++*). Then
+choose *your voice (free local clone)* under **Twin Setup -> Voice for
+lectures** to make it the default, or pick it for one render in the Lecture
+tab's **Recording** menu.
 
 """,
 }

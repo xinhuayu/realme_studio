@@ -557,6 +557,16 @@ class _LazyQwen3CppDll:
         return Qwen3DllTTS(*a, **kw)
 
 
+class _LazyRealmeRev:
+    is_voice_clone = True
+    is_placeholder = False
+    phoneme_syntax = None
+
+    def __new__(cls, *a, **kw):
+        from realme.adapters.tts_qwen3_rev import RealmeRevTTS
+        return RealmeRevTTS(*a, **kw)
+
+
 class _LazyQwen3Cpp:
     """Same deferral, for the C++ engine: an unbuilt binary must not stop the
     registry from importing, or `realme doctor` could never report on it."""
@@ -630,7 +640,11 @@ class _LazyGemini:
 #: is what a new profile gets. gemini-tts leads -- the better-sounding clone,
 #: and it needs no GPU -- with qwen3cpp behind it as the local one that costs
 #: nothing and works offline.
-DEVELOPED = ("gemini-tts", "qwen3cpp", "qwen3cpp-cli", "qwen3", "piper")
+#: Engines set up and offered here. The previous local engine ("qwen3cpp",
+#: the same source built the older way) stays in REGISTRY for the command line
+#: and as the maker of the model files, but is not offered: realme-rev-qwen3-tts
+#: is the local voice.
+DEVELOPED = ("gemini-tts", "realme-rev-qwen3-tts", "qwen3cpp-cli", "qwen3", "piper")
 
 #: Engines RealMe can drive but does not set up, with what each one needs.
 #:
@@ -639,6 +653,9 @@ DEVELOPED = ("gemini-tts", "qwen3cpp", "qwen3cpp-cli", "qwen3", "piper")
 #: half-installed torch stack or report a missing key for engines this project
 #: does not set up.
 NOT_DEVELOPED = {
+    "qwen3cpp": "the previous local engine, retired from the voice list "
+                "(realme-rev-qwen3-tts replaced it); still built by "
+                "_Rebuild_Voice_Engine.bat legacy, which also makes the model files",
     "elevenlabs": "a paid API; needs ELEVENLABS_API_KEY and a cloned voice id",
     "google_chirp3": "Chirp 3 Instant Custom Voice; allowlisted Google Cloud "
                      "project and ADC",
@@ -666,6 +683,7 @@ RETIRED = {
 REGISTRY = {
     "qwen3": _LazyQwen3,
     "qwen3cpp": _LazyQwen3CppDll,
+    "realme-rev-qwen3-tts": _LazyRealmeRev,
     "qwen3cpp-cli": _LazyQwen3Cpp,
     "piper": PiperTTS,
     "indextts": IndexTTSAdapter,

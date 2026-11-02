@@ -811,7 +811,16 @@ def _main(argv=None):
     # No `vc` action. Voice conversion (piper + kNN-VC / OpenVoice) is not
     # offered: the C++ engine clones directly, and the converters need a torch
     # stack at startup. Its installer module remains in the tree.
-    en.add_argument("action", choices=["status", "install", "retire", "cpp"])
+    en.add_argument("action", choices=["status", "install", "retire", "cpp", "rev"])
+    en.add_argument("--threads", type=int, default=None,
+                    help="For `rev`: threads for realme-rev-qwen3-tts on this "
+                         "computer (default: one per core, up to 16); remembered")
+    en.add_argument("--cp-steps", dest="cp_steps", type=int, default=None,
+                    choices=range(1, 16), metavar="1..15",
+                    help="For `rev`: code predictor steps a frame when "
+                         "recording in passes; 12 (the default, listened to) "
+                         "or 15 (exact, upstream's); a take that fails its "
+                         "check is recorded again with 15; remembered")
     en.add_argument("--portable", action="store_true",
                     help="For `cpp build`: shorthand for --target-cpu avx2. "
                          "Build a binary that runs on an older machine.")
@@ -2200,6 +2209,16 @@ def _main(argv=None):
                 print("  No install has been attempted yet.")
             print("\nRun:  realme engine install --from \"<your old folder>\"")
             return 1
+        if a.action == "rev":
+            # RealMe's own local voice, from this Studio's engine source.
+            from realme.engines.rev_build import studio_build
+            try:
+                studio_build(force=a.force, threads=a.threads, cp_steps=a.cp_steps)
+            except Exception as e:
+                sys.exit(f"\n{e}\n\nThe voice engine built before (if any) is still selected.")
+            print("\nRestart the Studio and choose Your voice (realme-rev-qwen3-tts) "
+                  "in Twin Setup.")
+            return 0
         if a.action == "cpp":
             from realme.engines import cpp as C
             if a.cpp_action == "status":

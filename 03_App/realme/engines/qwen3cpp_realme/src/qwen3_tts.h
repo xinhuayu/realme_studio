@@ -126,6 +126,9 @@ public:
                                           const float * embedding, int32_t embedding_size,
                                           const tts_params & params = tts_params());
 
+    bool validate_speaker_embedding(const float * embedding, int32_t size,
+                                    std::string & error) const;
+
     // Set progress callback
     void set_progress_callback(tts_progress_callback_t callback);
     

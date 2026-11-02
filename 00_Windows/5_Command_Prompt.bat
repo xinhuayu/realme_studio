@@ -12,6 +12,7 @@ echo.
 echo    realme setup            what is installed
 echo    realme studio           the web app
 echo    realme voice check my.wav
-echo    realme lecture deck.pdf -o .\out --tts espeak
+echo    realme lecture deck.pdf -o .\out --tts piper
+echo    realme engine rev       build the local voice for this computer
 echo.
 cmd /k

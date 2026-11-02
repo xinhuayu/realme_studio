@@ -219,6 +219,27 @@ def main() -> int:
                                             encoding="utf-8")
     check(not q.batch_built(), "a GPU build records one at a time (batches "
           "were checked on the CPU)")
+    q.backend = "cpu"
+    check(q.batch_built(), "an explicitly CPU runtime can batch a GPU-capable build")
+    q.backend = "cuda"
+    check(not q.batch_built(), "an explicitly GPU runtime cannot use CPU batches")
+    q.backend = "auto"
+    previous_backend = os.environ.get("QWEN3_TTS_BACKEND")
+    try:
+        os.environ["QWEN3_TTS_BACKEND"] = " "
+        check(not q.batch_built(), "a blank override leaves a GPU build in auto mode")
+        (q.home / "build_info.json").write_text('{"batch": true}', encoding="utf-8")
+        check(q.batch_built(), "a blank override leaves a CPU build eligible for batches")
+        (q.home / "build_info.json").write_text('{"batch": true, "gpu": "vulkan"}', encoding="utf-8")
+        os.environ["QWEN3_TTS_BACKEND"] = "cpu"
+        check(q.batch_built(), "auto respects the explicit CPU environment override")
+        q.backend = "cuda"
+        check(not q.batch_built(), "the adapter's explicit backend wins over the environment")
+    finally:
+        if previous_backend is None:
+            os.environ.pop("QWEN3_TTS_BACKEND", None)
+        else:
+            os.environ["QWEN3_TTS_BACKEND"] = previous_backend
 
     print("\nthe 8-bit model")
     from realme.adapters.base import AdapterUnavailable
@@ -649,6 +670,11 @@ def main() -> int:
           and (tree / "src" / cpp.BATCH_FILE).is_file(),
           "the classes befriend it and the C API includes it")
     check(not cpp.apply_batch_patch(tree), "patching twice changes nothing")
+    scratch_file = tree / "src" / "realme_batch_scratch.inc"
+    scratch_file.unlink()
+    check(not cpp.apply_batch_patch(tree) and scratch_file.read_bytes() ==
+          cpp.own_source("realme_batch_scratch.inc").read_bytes(),
+          "reapplying the batch patch restores its owned scratch helper")
     check(cpp.apply_quant_patch(tree) and not cpp.apply_quant_patch(tree)
           and '#include "realme_quant.inc"' in
           (tree / "src" / names[2]).read_text(encoding="utf-8")
@@ -659,9 +685,10 @@ def main() -> int:
     check(cpp.BATCH_FILE in inc and "qwen3_tts_synthesize_batch_with_embedding" in inc
           and BATCH_FN in inc, "and exports the function the adapter calls")
     import re as _re
-    check(inc.count("realme_mm(ctx0") == 10 and "QWEN3_TTS_Q8_BATCH" in inc
-          and "realme_q8mm_selfcheck()" in inc and "cur->ne[1] >= 2" in inc
-          and "ggml_backend_buffer_is_host(w->buffer)" in inc
+    compute = (tree / "src" / "realme_q8_compute.inc").read_text(encoding="utf-8")
+    check(inc.count("realme_mm(ctx0") == 5 and inc.count("realme_mm_group(ctx0") == 2
+          and "QWEN3_TTS_Q8_BATCH" in inc and "realme_q8mm_selfcheck()" in inc
+          and "x->ne[1]>=2" in compute and "ggml_backend_buffer_is_host(w->buffer)" in compute
           and not _re.search(r"ggml_mul_mat\(ctx0, (layer|t\.model_)", inc),
           "a pass's 8-bit products go through RealMe's multi-column kernel (two or "
           "more columns, checked against GGML's own at first use, off with "
@@ -881,7 +908,7 @@ def main() -> int:
           and (ig / cpp.CHANGES_FILE).is_file()
           and all((ig / "src" / n).is_file() for n in (
               cpp.BATCH_FILE, cpp.SNAKE_MARK, cpp.QUANT_MARK, cpp.VOC_MARK,
-              cpp.VOC2_MARK, cpp.VOC3_MARK))
+              cpp.VOC2_MARK, cpp.VOC3_MARK, "realme_batch_scratch.inc"))
           and cpp.FFN_MARK in (ig / "src" / "tts_transformer.cpp").read_text(encoding="utf-8")
           and cpp.NATIVE_MARK in (ig / "CMakeLists.txt").read_text(encoding="utf-8")
           and man.get("changes") == list(cpp.PATCHES),
@@ -936,7 +963,7 @@ def main() -> int:
         crlf = Path(_ISO) / "crlf"
         _sh.copytree(ig, crlf)
         cm2 = crlf / "CMakeLists.txt"
-        cm2.write_bytes(cm2.read_bytes().replace(b"\n", b"\r\n"))
+        cm2.write_bytes(cm2.read_bytes().replace(b"\r\n", b"\n").replace(b"\n", b"\r\n"))
         check(cpp.integrated_differs(crlf) == [],
               "the same source with Windows line endings is the same source")
     # Staging writes only what changed, so only that is rebuilt.

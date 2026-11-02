@@ -152,6 +152,9 @@ struct audio_decoder_model {
     std::map<const struct ggml_tensor *, struct ggml_tensor *> realme_f32;
     bool realme_on = false;   // this sentence is short enough for them
 
+    struct ggml_context * realme_lazy_ctx = nullptr;
+    ggml_backend_buffer_t realme_lazy_buffer = nullptr;
+
     // RealMe (QWEN3_TTS_VOCODER_F32=2): the decoder stage's convolution
     // weights in 32 bits, laid out for the channel-by-channel signal
     struct ggml_context * realme2_ctx = nullptr;
@@ -177,6 +180,10 @@ struct audio_decoder_state {
 // Decodes discrete audio codes to waveform
 class AudioTokenizerDecoder {
 public:
+    // RealMe: true when it decodes on a CPU backend of its own, whose
+    // thread count realme_set_threads changes (no effect otherwise).
+    bool realme_private_backend() const { return realme_private_backend_; }
+    void realme_set_threads(int n);
     AudioTokenizerDecoder();
     ~AudioTokenizerDecoder();
     
@@ -249,6 +256,7 @@ private:
     
     audio_decoder_model model_;
     audio_decoder_state state_;
+    bool realme_private_backend_ = false;
     std::string error_msg_;
     
     // Temporary storage for codes input

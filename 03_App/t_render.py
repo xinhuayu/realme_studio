@@ -450,8 +450,9 @@ def main():
         check(json.loads((d / "profile.json").read_text(encoding="utf-8"))
               ["adapters"].get("gemini_model") is None,
               "and the file on disk is rewritten without it")
-        check(ad["tts"] == "qwen3cpp",
-              "while the rest of the profile is untouched")
+        check(ad["tts"] == "realme-rev-qwen3-tts" and ad["draft_tts"] == "piper",
+              "while the rest of the profile is untouched (the retired local "
+              "engine moves to the new local voice)")
 
     print("words written in capitals")
     from realme.text.acronyms import expand as _expand, READ_AS_WORDS, SAY_AS

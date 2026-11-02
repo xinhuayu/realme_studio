@@ -39,6 +39,7 @@
 
 #include <algorithm>
 #include <climits>
+#include <cstring>
 #include <cstdint>
 #include <cstdlib>
 #include <vector>
@@ -83,16 +84,25 @@ static struct ggml_tensor * realme_voc_f32(const audio_decoder_model & m,
     return it == m.realme_f32.end() ? nullptr : it->second;
 }
 
-// Make the copies, once, at load. conv1d weights keep their shape
+static bool realme_vocoder_lazy() {
+    const char * flag = std::getenv("QWEN3_TTS_VOCODER_LAZY");
+    return !(flag && flag[0] == '0');
+}
+
+// Keep packed mode-3 weights alone; make the older layout only on fallback.
+// conv1d weights keep their shape
 // (K, Cin, Cout); transposed-conv weights (K, Cout, Cin) are laid out as
 // (Cin, K*Cout), the left-hand matrix of the multiply.
-static void realme_vocoder_prepare(audio_decoder_model & m, ggml_backend_t backend) {
+static bool realme_vocoder_prepare(audio_decoder_model & m, ggml_backend_t backend, bool fallback = false) {
     if (!realme_vocoder_f32_wanted() || !backend || !ggml_backend_is_cpu(backend)) {
-        return;
+        return true;
     }
+    if (fallback && (!realme_vocoder_lazy() || !m.realme_buffer || !m.realme3_buffer)) return true;
     std::vector<struct ggml_tensor *> conv, convt;
-    auto want = [](struct ggml_tensor * w) {
-        return w && w->type == GGML_TYPE_F16 && ggml_is_contiguous(w);
+    auto want = [&](struct ggml_tensor * w) {
+        return w && w->type == GGML_TYPE_F16 && ggml_is_contiguous(w)
+            && !m.realme_f32.count(w)
+            && (fallback || !realme_vocoder_lazy() || !m.realme3_w.count(w));
     };
     for (auto * w : {m.pre_conv_w, m.dec0_conv_w, m.dec6_conv_w}) {
         if (want(w)) conv.push_back(w);
@@ -107,27 +117,32 @@ static void realme_vocoder_prepare(audio_decoder_model & m, ggml_backend_t backe
     for (auto & u : m.upsample) {
         if (want(u.conv_w)) convt.push_back(u.conv_w);
     }
-    if (conv.empty() && convt.empty()) return;
+    if (conv.empty() && convt.empty()) return true;
+
+    auto & ctx = fallback ? m.realme_lazy_ctx : m.realme_ctx;
+    auto & buffer = fallback ? m.realme_lazy_buffer : m.realme_buffer;
+    if (ctx) return false;
 
     struct ggml_init_params p = { ggml_tensor_overhead() * (conv.size() + convt.size() + 4),
                                   nullptr, true };
-    m.realme_ctx = ggml_init(p);
-    if (!m.realme_ctx) return;
+    ctx = ggml_init(p);
+    if (!ctx) return !fallback;
     std::vector<std::pair<struct ggml_tensor *, struct ggml_tensor *>> made;
     for (auto * w : conv) {
-        made.push_back({w, ggml_new_tensor_3d(m.realme_ctx, GGML_TYPE_F32,
+        made.push_back({w, ggml_new_tensor_3d(ctx, GGML_TYPE_F32,
                                               w->ne[0], w->ne[1], w->ne[2])});
     }
     for (auto * w : convt) {
-        made.push_back({w, ggml_new_tensor_2d(m.realme_ctx, GGML_TYPE_F32,
+        made.push_back({w, ggml_new_tensor_2d(ctx, GGML_TYPE_F32,
                                               w->ne[2], w->ne[0] * w->ne[1])});
     }
-    m.realme_buffer = ggml_backend_alloc_ctx_tensors(m.realme_ctx, backend);
-    if (!m.realme_buffer) {
-        ggml_free(m.realme_ctx);
-        m.realme_ctx = nullptr;
-        fprintf(stderr, "  [realme] vocoder F32: no room for the copies, as upstream\n");
-        return;
+    buffer = ggml_backend_alloc_ctx_tensors(ctx, backend);
+    if (!buffer) {
+        ggml_free(ctx);
+        ctx = nullptr;
+        fprintf(stderr, "  [realme] vocoder F32: no room for %s\n",
+                fallback ? "fallback weights" : "the copies, as upstream");
+        return !fallback;
     }
     std::vector<ggml_fp16_t> raw;
     std::vector<float> f, g;
@@ -154,9 +169,10 @@ static void realme_vocoder_prepare(audio_decoder_model & m, ggml_backend_t backe
         }
         m.realme_f32[w] = c;
     }
-    fprintf(stderr, "  [realme] vocoder F32: on (%d convolutions, %.0f MB; tinyBLAS %s)\n",
-            (int) made.size(), ggml_backend_buffer_get_size(m.realme_buffer) / 1048576.0,
+    fprintf(stderr, "  [realme] vocoder F32%s: on (%d convolutions, %.0f MB; tinyBLAS %s)\n",
+            fallback ? " fallback" : "", (int) made.size(), ggml_backend_buffer_get_size(buffer) / 1048576.0,
             ggml_cpu_has_llamafile() ? "yes" : "no");
+    return true;
 }
 
 // conv1d with stride 1 and no padding (the graph pads first), as
@@ -242,6 +258,120 @@ static struct ggml_tensor * realme_conv_t(struct ggml_context * ctx, const audio
     return ggml_custom_4d(ctx, GGML_TYPE_F32, out, Co, 1, 1, args, bias ? 2 : 1,
                           realme_col2im, GGML_N_TASKS_MAX,
                           (void *) (uintptr_t) (((uintptr_t) crop << 16) | (uintptr_t) s));
+}
+
+
+// RealMe: a CPU backend of the vocoder's own (QWEN3_TTS_DECODE_ASYNC=1), so a
+// finished sentence can be decoded on another thread while the pass goes on.
+// The transformer and the vocoder otherwise share one CPU backend, whose work
+// buffer and thread pool allow one graph at a time. It has the engine's
+// thread count (QWEN3_TTS_THREADS), lowered to QWEN3_TTS_DECODE_THREADS only
+// while a stream decodes beside its pass; it uses GGML's per-graph threads
+// (no pool), which costs little for one graph a sentence.
+// Any other backend (a GPU) is kept as it was chosen.
+static bool realme_decode_async_wanted() {
+    const char * v = std::getenv("QWEN3_TTS_DECODE_ASYNC");
+    return v && v[0] == '1';
+}
+
+// QWEN3_TTS_VOCODER_BACKEND=gpu (RealMe): the vocoder on a graphics device of
+// its own -- the integrated GPU first (Intel Arc in a Core Ultra, AMD
+// Radeon, Apple), else a discrete one -- while the transformers stay on the
+// CPU (QWEN3_TTS_BACKEND=cpu, as RealMe's revised engine sets). Needs a GGML
+// built with a GPU backend (GGML_VULKAN=ON on Windows); without one, or with
+// no such device, the vocoder stays where it was, with a note. With
+// QWEN3_TTS_DECODE_ASYNC=1 a finished sentence is then decoded on the GPU
+// while the next frames are computed on the CPU: two devices, not two teams
+// of threads on the same cores. The GPU rounds differently, so the samples
+// differ slightly from the CPU's (as the 32-bit vocoder's did); the codes do
+// not change. Off unless set. The weights are loaded into host memory as
+// usual (RealMe sets QWEN3_TTS_BACKEND=cpu) and moved to the GPU once the
+// backend is chosen (realme_vocoder_weights_to): GGML's scheduler runs an op
+// where its weights are, so weights left in host memory would keep every op
+// on the CPU.
+static ggml_backend_t realme_vocoder_gpu() {
+    const char * v = std::getenv("QWEN3_TTS_VOCODER_BACKEND");
+    if (!v || (std::strcmp(v, "gpu") != 0 && std::strcmp(v, "igpu") != 0)) return nullptr;
+    ggml_backend_t b = ggml_backend_init_by_type(GGML_BACKEND_DEVICE_TYPE_IGPU, nullptr);
+    if (!b) b = ggml_backend_init_by_type(GGML_BACKEND_DEVICE_TYPE_GPU, nullptr);
+    ggml_backend_dev_t dev = b ? ggml_backend_get_device(b) : nullptr;
+    if (b) fprintf(stderr, "  [realme] vocoder: on %s (QWEN3_TTS_VOCODER_BACKEND=%s)\n",
+                   dev ? ggml_backend_dev_description(dev) : "a GPU", v);
+    else fprintf(stderr, "  [realme] vocoder: no GPU in this build or on this computer; "
+                         "QWEN3_TTS_VOCODER_BACKEND=%s ignored\n", v);
+    return b;
+}
+
+// The decoder's weights (all of model.ctx's tensors, codebooks already
+// normalised in host memory) moved into a buffer of `backend`, when that is
+// not the CPU and they are not there yet. Their bytes are copied as they are.
+static bool realme_vocoder_weights_to(audio_decoder_model & m, ggml_backend_t backend, std::string * error_msg) {
+    if (!backend || ggml_backend_is_cpu(backend) || !m.ctx || !m.buffer) return true;
+    if (!ggml_backend_buffer_is_host(m.buffer)) return true;
+    std::vector<std::pair<struct ggml_tensor *, std::vector<uint8_t>>> saved;
+    for (struct ggml_tensor * t = ggml_get_first_tensor(m.ctx); t; t = ggml_get_next_tensor(m.ctx, t)) {
+        if (!t->data) continue;
+        saved.emplace_back(t, std::vector<uint8_t>(ggml_nbytes(t)));
+        std::memcpy(saved.back().second.data(), t->data, ggml_nbytes(t));
+    }
+    ggml_backend_buffer_t moved = nullptr;
+    {
+        // Allocate first: on failure the host copy stays in use.
+        std::vector<void *> data;
+        std::vector<ggml_backend_buffer_t> bufs;
+        for (auto & st : saved) { data.push_back(st.first->data); bufs.push_back(st.first->buffer);
+                                  st.first->data = nullptr; st.first->buffer = nullptr; }
+        moved = ggml_backend_alloc_ctx_tensors(m.ctx, backend);
+        if (!moved) {
+            for (size_t i = 0; i < saved.size(); ++i) { saved[i].first->data = data[i]; saved[i].first->buffer = bufs[i]; }
+            if (error_msg) *error_msg = "vocoder: no room on the GPU for its weights";
+            fprintf(stderr, "  [realme] vocoder: no room on the GPU for its weights; it stays on the CPU\n");
+            return false;
+        }
+    }
+    for (auto & st : saved) ggml_backend_tensor_set(st.first, st.second.data(), 0, st.second.size());
+    ggml_backend_buffer_free(m.buffer);
+    m.buffer = moved;
+    fprintf(stderr, "  [realme] vocoder: weights moved to the GPU (%.0f MB)\n",
+            ggml_backend_buffer_get_size(moved) / 1048576.0);
+    return true;
+}
+
+// The decoder's CPU fallback backend (for ops the GPU lacks): the vocoder's
+// thread count, not GGML's default.
+static void realme_vocoder_fallback_threads(ggml_backend_t cpu) {
+    if (!cpu || !ggml_backend_is_cpu(cpu)) return;
+    const char * dt = std::getenv("QWEN3_TTS_DECODE_THREADS");
+    const char * nt = std::getenv("QWEN3_TTS_THREADS");
+    const int n = dt && std::atoi(dt) > 0 ? std::atoi(dt) : nt && std::atoi(nt) > 0 ? std::atoi(nt) : 0;
+    if (n > 0) ggml_backend_cpu_set_n_threads(cpu, n);
+}
+
+static ggml_backend_t realme_decoder_backend(std::string * error_msg, bool & own) {
+    own = false;
+    if (ggml_backend_t gpu = realme_vocoder_gpu()) {
+        own = true;                       // its own device: decoding can run beside the pass
+        if (error_msg) error_msg->clear();
+        return gpu;
+    }
+    ggml_backend_t shared = init_preferred_backend("AudioTokenizerDecoder", error_msg);
+    if (!shared || !realme_decode_async_wanted() || !ggml_backend_is_cpu(shared)) return shared;
+    ggml_backend_t mine = ggml_backend_cpu_init();
+    if (!mine) return shared;                 // shared backend: decoding stays in the loop
+    const char * nt = std::getenv("QWEN3_TTS_THREADS");
+    const int n = nt ? std::atoi(nt) : 0;
+    if (n > 0) ggml_backend_cpu_set_n_threads(mine, n);
+    release_preferred_backend(shared);
+    own = true;
+    fprintf(stderr, "  [realme] vocoder: own CPU backend, %d threads (QWEN3_TTS_DECODE_THREADS while beside a pass)\n",
+            n > 0 ? n : GGML_DEFAULT_N_THREADS);
+    return mine;
+}
+
+void AudioTokenizerDecoder::realme_set_threads(int n) {
+    if (!realme_private_backend_ || n <= 0) return;
+    if (state_.backend && ggml_backend_is_cpu(state_.backend)) ggml_backend_cpu_set_n_threads(state_.backend, n);
+    else if (state_.backend_cpu) ggml_backend_cpu_set_n_threads(state_.backend_cpu, n);   // a GPU's fallback
 }
 
 }  // namespace qwen3_tts

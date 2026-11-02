@@ -770,7 +770,7 @@ def section_voice_choice():
                           read=lambda _: (_ for _ in ()).throw(AssertionError("asked")),
                           interactive=True)
     chk("an existing local-clone user is left on the local clone",
-        got["choice"] == "local" and Profile(pr.root).data["adapters"]["tts"] == "qwen3cpp",
+        got["choice"] == "local" and Profile(pr.root).data["adapters"]["tts"] == "realme-rev-qwen3-tts",
         str(got))
     code, j, _ = run_json(["voice", "choose", "--choice", "none", "--json"])
     chk("realme voice choose --choice none works from the command line",
@@ -804,7 +804,7 @@ def section_plain_language():
         return f[:f.index("\n}\n")]
 
     print("\nP1. voices are named as a lecturer names them; values unchanged")
-    check("'gemini-tts': 'Gemini'" in ui and "'qwen3cpp': 'free local clone'" in ui,
+    check("'gemini-tts': 'Gemini'" in ui and "'realme-rev-qwen3-tts': 'free local clone'" in ui,
           "engine ids map to 'Gemini' and 'free local clone'")
     eo = fn_body("function engineOption(")
     check('value="${esc(k)}"' in eo and "Draft voice — no cloning" in eo,

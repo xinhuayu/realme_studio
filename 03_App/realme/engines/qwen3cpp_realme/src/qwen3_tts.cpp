@@ -292,6 +292,8 @@ tts_result Qwen3TTS::synthesize_with_voice(const std::string & text,
         fprintf(stderr, "Speaker embedding extracted: %zu floats\n", speaker_embedding.size());
     }
     
+    if (!validate_speaker_embedding(speaker_embedding.data(), (int32_t) speaker_embedding.size(),
+                                    result.error_msg)) return result;
     return synthesize_internal(text, speaker_embedding.data(), params, result);
 }
 
@@ -328,6 +330,22 @@ bool Qwen3TTS::extract_speaker_embedding(const float * ref_samples, int32_t n_re
     return true;
 }
 
+bool Qwen3TTS::validate_speaker_embedding(const float * embedding, int32_t size,
+                                         std::string & error) const {
+    if (!models_loaded_) {
+        error = "Models not loaded";
+        return false;
+    }
+    const int32_t expected = transformer_.get_config().hidden_size;
+    if (!embedding || size != expected || expected <= 0) {
+        error = "Invalid speaker embedding: expected " + std::to_string(expected)
+              + " floats, received " + std::to_string(size)
+              + (embedding ? "" : " (null buffer)");
+        return false;
+    }
+    return true;
+}
+
 tts_result Qwen3TTS::synthesize_with_embedding(const std::string & text,
                                                 const float * embedding, int32_t embedding_size,
                                                 const tts_params & params) {
@@ -338,10 +356,7 @@ tts_result Qwen3TTS::synthesize_with_embedding(const std::string & text,
         return result;
     }
 
-    if (embedding == nullptr || embedding_size <= 0) {
-        result.error_msg = "Invalid speaker embedding";
-        return result;
-    }
+    if (!validate_speaker_embedding(embedding, embedding_size, result.error_msg)) return result;
 
     return synthesize_internal(text, embedding, params, result);
 }

@@ -349,6 +349,9 @@ def main() -> int:
     check(PR.batch_for(BatchStub(), 5) == 5, "never more than there are sentences")
     data_home().mkdir(parents=True, exist_ok=True)
     (data_home() / BATCH_FILE).write_text('{"batch": 3}', encoding="utf-8")
+    # The model is named: otherwise it follows whatever 8-bit model files the
+    # computer running the tests happens to have.
+    os.environ["REALME_QWEN3CPP_QUANT"] = "f16"
     check(PR.batch_for(BatchStub(), 20) == 3, "measured, what was measured")
     os.environ["REALME_QWEN3CPP_QUANT"] = "q8_0"
     check(PR.batch_for(BatchStub(), 20) == 8,
@@ -357,7 +360,7 @@ def main() -> int:
     (data_home() / BATCH_FILE).write_text(
         '{"f16": {"batch": 2}, "q8_0": {"batch": 4}}', encoding="utf-8")
     check(PR.batch_for(BatchStub(), 20) == 4, "the 8-bit model's own measurement")
-    os.environ.pop("REALME_QWEN3CPP_QUANT")
+    os.environ["REALME_QWEN3CPP_QUANT"] = "f16"
     check(PR.batch_for(BatchStub(), 20) == 2, "and the 16-bit model's, kept beside it")
     os.environ["REALME_QWEN3CPP_QUANT"] = "q8_0"
     os.environ.pop("REALME_QWEN3CPP_QUANT")
@@ -372,6 +375,10 @@ def main() -> int:
     import realme.core.cpu as _cpu
     _cores = _cpu.physical_cores
     _cpu.physical_cores = lambda: 6      # one engine's worth of cores
+    # ... and 6 logical processors: an engine that does not say it applies
+    # its threads gets two engines on 8 or more (engines_for_machine).
+    _cpu_count = os.cpu_count
+    os.cpu_count = lambda: 6
     bproj, bm = project("batched")
     bwork = bproj / "_work"
     bledger = RenderLedger(bwork / "ledger.json")
@@ -497,6 +504,7 @@ def main() -> int:
     os.environ.pop(PR.BATCH_ENV, None)
     (data_home() / BATCH_FILE).unlink(missing_ok=True)
     _cpu.physical_cores = _cores
+    os.cpu_count = _cpu_count
 
     print("\nslide videos made while recording")
     import types
@@ -627,6 +635,46 @@ def main() -> int:
           and all("batch" not in c for c in calls()),
           "no copies, no passes: one sentence at a time, as before")
     os.environ.pop(PR.BATCH_ENV, None)
+
+    print("\nmemory for each sentence in a pass")
+    class Grows(BatchStub):
+        def cache_grows(self):
+            return True
+    fixed = PR.GB_PER_BATCH_SENTENCE
+    said = ("A fairly ordinary lecture sentence, with about twenty words in "
+            "it, said at the pace a lecturer normally speaks to a class.")
+    middle = " ".join(["word"] * 60)
+    g = PR.gb_per_sentence(Grows(), [said])
+    check(0.04 < g < 0.2, "a growing cache: an ordinary sentence needs a "
+          "fraction of the fixed figure", g)
+    check(g > 16e6 / 1e9 * 2, "and still well above the 16 MB measured", g)
+    check(PR.gb_per_sentence(BatchStub(), [said]) == fixed,
+          "caches that do not grow: the fixed figure")
+    check(PR.gb_per_sentence(Grows(), []) == fixed, "nothing to size it by")
+    check(PR.gb_per_sentence(Grows(), [" ".join(["word"] * 3000)]) == fixed,
+          "never more than the fixed figure")
+    check(PR.gb_per_sentence(Grows(), [said, middle])
+          == PR.gb_per_sentence(Grows(), [middle]) > g,
+          "the longest sentence decides")
+    check(PR.gb_per_sentence(Grows(), ["这是一个关于统计方法的普通句子，说得不快不慢。" * 3]) > 0.04,
+          "a sentence without spaces is sized by its characters")
+    check(PR.fit_memory(1, 8, fixed, 7.5) == (1, 5),
+          "7.5 GB free, fixed figure: 5 per pass", PR.fit_memory(1, 8, fixed, 7.5))
+    check(PR.fit_memory(1, 8, g, 7.5) == (1, 8),
+          "growing caches: all 8 fit", PR.fit_memory(1, 8, g, 7.5))
+    check(PR.fit_memory(2, 8, g, 7.5) == (1, 8), "fewer engines before fewer sentences")
+    check(PR.fit_memory(1, 8, g, None) == (1, 8), "free memory unknown: unchanged")
+    check(PR.fit_memory(1, 8, g, 3.0) == (1, 1), "too little: one at a time")
+    from realme.adapters import tts_qwen3_dll as DLL
+    d = Path(tempfile.mkdtemp(prefix="t_grow_"))
+    check(not DLL.cache_grows_at(d), "no build record: not known to grow")
+    (d / "build_info.json").write_text('{"batch": true}', encoding="utf-8")
+    check(not DLL.cache_grows_at(d), "an older build: does not grow")
+    (d / "build_info.json").write_text('{"batch": true, "cache_growth": true}', encoding="utf-8")
+    check(DLL.cache_grows_at(d), "a build that grows its caches")
+    os.environ["QWEN3_TTS_CACHE_GROW"] = "0"
+    check(not DLL.cache_grows_at(d), "unless growth is turned off")
+    os.environ.pop("QWEN3_TTS_CACHE_GROW")
 
     print("\nfalling back to one engine")
     check(PR.workers_for(NoCopy(), 10) == 1, "an engine that is not safe to copy")

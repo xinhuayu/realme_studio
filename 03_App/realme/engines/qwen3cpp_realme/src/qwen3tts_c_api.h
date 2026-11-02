@@ -97,6 +97,15 @@ Qwen3TtsAudio* qwen3_tts_synthesize_with_embedding(
     int32_t embedding_size,
     const Qwen3TtsParams* params);
 
+// RealMe per-engine CPU runtime controls
+// Bits: 1 top-k selection, 2 shared Q8 prep, 4 grouped products, 32 direct embeddings,
+// 64 row cache, 512 adaptive matrix tasks, 2048 dense attention views, 4096 attention
+// gather, 8192 redundant-mask elision. Retired with the packed layouts and the
+// vocabulary table (accepted, no effect): 8, 16, 128, 256, 1024, 16384, 32768,
+// 65536, 131072, 262144, 524288, 1048576, 2097152. mask=0 restores environment.
+// Returns 0, -1 invalid arguments, -2 busy; call between synthesis calls.
+int32_t qwen3_tts_set_cpu_options(Qwen3Tts * tts, uint32_t mask, uint32_t enabled);
+
 /* Get last error message (or empty string) */
 const char* qwen3_tts_get_error(const Qwen3Tts* tts);
 

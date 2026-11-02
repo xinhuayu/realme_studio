@@ -54,6 +54,12 @@ namespace qwen3_tts {
 
 static int realme_v3_isa();
 static bool realme_v3_generic();
+static bool realme_v3q_asked();
+static int realme_v3q_mode();
+static int realme_v3q_isa();
+static size_t realme_v3q_bytes(int64_t ntap, int64_t Cin, int64_t N);
+template <typename F>
+static void realme_v3q_pack(uint8_t * out, int64_t ntap, int64_t Cin, int64_t N, F get);
 
 // QWEN3_TTS_VOCODER_F32=3 asked for. It runs where there is a tile for the
 // processor (AVX2, NEON); elsewhere the decoder stage is built as with 2,
@@ -156,13 +162,29 @@ static void realme_voc3_prepare(audio_decoder_model & m, ggml_backend_t backend)
     struct ggml_tensor * last = (f16(m.dec6_conv_w) && m.dec6_conv_w->ne[2] == 1) ? m.dec6_conv_w : nullptr;
     if (conv.empty() || !last) return;
     const size_t n_t = conv.size() + tconv.size() + 1;
-    struct ggml_init_params p = { ggml_tensor_overhead() * (n_t + 4), nullptr, true };
+    const bool q8 = realme_v3q_asked();
+    struct ggml_init_params p = { ggml_tensor_overhead() * (2 * n_t + 4), nullptr, true };
     m.realme3_ctx = ggml_init(p);
     if (!m.realme3_ctx) return;
     std::vector<std::pair<struct ggml_tensor *, struct ggml_tensor *>> made;
     for (auto * w : conv) made.push_back({w, ggml_new_tensor_1d(m.realme3_ctx, GGML_TYPE_F32, ggml_nelements(w))});
     for (auto * w : tconv) made.push_back({w, ggml_new_tensor_1d(m.realme3_ctx, GGML_TYPE_F32, ggml_nelements(w))});
     made.push_back({last, ggml_new_tensor_1d(m.realme3_ctx, GGML_TYPE_F32, ggml_nelements(last))});
+    // QWEN3_TTS_VOCODER_Q8=1: the 8-bit weights too, each found under its
+    // 32-bit packing (realme_voc3_q).
+    std::vector<std::pair<struct ggml_tensor *, struct ggml_tensor *>> made8;
+    if (q8) {
+        // Input channels in fours (the integer tile's groups); any other
+        // convolution keeps its 32-bit weights.
+        for (auto * w : conv)
+            if (w->ne[1] % 4 == 0)
+                made8.push_back({w, ggml_new_tensor_1d(m.realme3_ctx, GGML_TYPE_I8,
+                    (int64_t) realme_v3q_bytes(w->ne[0], w->ne[1], w->ne[2]))});
+        for (auto * w : tconv)
+            if (w->ne[2] % 4 == 0)
+                made8.push_back({w, ggml_new_tensor_1d(m.realme3_ctx, GGML_TYPE_I8,
+                    (int64_t) (w->ne[0] / 2 * realme_v3q_bytes(2, w->ne[2], w->ne[1])))});
+    }
     m.realme3_buffer = ggml_backend_alloc_ctx_tensors(m.realme3_ctx, backend);
     if (!m.realme3_buffer) {
         ggml_free(m.realme3_ctx);
@@ -208,16 +230,50 @@ static void realme_voc3_prepare(audio_decoder_model & m, ggml_backend_t backend)
         }
         ggml_backend_tensor_set(wc.second, all.data(), 0, (size_t) n * sizeof(float));
         m.realme3_w[w] = wc.second;
+        for (auto & w8 : made8) {
+            if (w8.first != w) continue;
+            std::vector<uint8_t> blob((size_t) ggml_nbytes(w8.second));
+            if (!is_t) {
+                const int64_t K = w->ne[0], Ci = w->ne[1], Co = w->ne[2];
+                realme_v3q_pack(blob.data(), K, Ci, Co, [&](int64_t tp, int64_t ci, int64_t co) {
+                    return f[(size_t) (tp + K * ci + K * Ci * co)];
+                });
+            } else {
+                // Phase j: tap 0 is kernel position j + s, tap 1 position j (as above).
+                const int64_t K = w->ne[0], Co = w->ne[1], Ci = w->ne[2], s = K / 2;
+                const size_t per = realme_v3q_bytes(2, Ci, Co);
+                for (int64_t j = 0; j < s; ++j)
+                    realme_v3q_pack(blob.data() + (size_t) j * per, 2, Ci, Co, [&](int64_t tp, int64_t ci, int64_t co) {
+                        const int64_t k = tp == 0 ? j + s : j;
+                        return f[(size_t) (k + K * co + K * Co * ci)];
+                    });
+            }
+            ggml_backend_tensor_set(w8.second, blob.data(), 0, blob.size());
+            m.realme3_w[wc.second] = w8.second;
+        }
     }
     fprintf(stderr, "  [realme] vocoder 3: on (%d convolutions, %.0f MB; %s kernel)\n",
             (int) made.size(), ggml_backend_buffer_get_size(m.realme3_buffer) / 1048576.0,
             realme_v3_isa_name());
+    if (q8)
+        fprintf(stderr, "  [realme] vocoder 3: 8-bit convolutions, %d-bit input (QWEN3_TTS_VOCODER_Q8; experimental, "
+                        "changes the sound slightly), %d of them, %s%s\n", realme_v3q_mode(), (int) made8.size(),
+                realme_v3q_isa() == 3 ? "AVX-VNNI" : realme_v3q_isa() == 2 ? "AVX2" : "plain C++",
+                realme_v3q_isa() == 2 && realme_v3q_mode() == 8 ? " (no faster than 32 bits without AVX-VNNI; =7 is)" : "");
 }
 
 static struct ggml_tensor * realme_voc3_w(const audio_decoder_model & m, const struct ggml_tensor * w) {
     if (!w) return nullptr;
     auto it = m.realme3_w.find(w);
     return it == m.realme3_w.end() ? nullptr : it->second;
+}
+
+// The weights a convolution op reads: the 8-bit ones where they were made
+// (QWEN3_TTS_VOCODER_Q8=1), else the 32-bit packing.
+static struct ggml_tensor * realme_voc3_pk(const audio_decoder_model & m, const struct ggml_tensor * w) {
+    struct ggml_tensor * f = realme_voc3_w(m, w);
+    struct ggml_tensor * q = f ? realme_voc3_w(m, f) : nullptr;
+    return q ? q : f;
 }
 
 // ---------------------------------------------------------------- the kernel
@@ -386,6 +442,281 @@ static void realme_v3_gemm(int64_t M, const float * const * row, int64_t tapstri
     }
 }
 
+
+// ---------------------------------------------------------------- 8 bits
+//
+// QWEN3_TTS_VOCODER_Q8=1 (experimental; changes the sound slightly, so for a
+// listening test before any lecture): the decoder stage's convolutions in
+// 8-bit integers. Each output channel's weights for each tap are rounded to
+// 8 bits with a scale of their own (absmax / 127); each input time step is
+// rounded to 8 bits with a scale of its own (absmax / 127) when it enters a
+// convolution. The products are integers, summed exactly -- AVX2 as GGML's
+// 8-bit dot product does (vpsignb, vpmaddubsw, vpmaddwd), AVX-VNNI with
+// vpdpbusd on the input offset by 128 and the offset taken off again -- the
+// same integers either way, then one multiply per tap brings them back to
+// floats. So the numbers are the same on every processor with this switch;
+// they are not the 32-bit kernel's. On a synthetic vocoder (random weights,
+// which magnify any rounding through 30 layers) the result is about 23 dB
+// above its difference from the 32-bit one, and the whole vocoder 1.6 times
+// as fast with AVX-VNNI -- but no faster with AVX2 alone, whose 8-bit
+// product needs the sign steps.
+//
+// QWEN3_TTS_VOCODER_Q8=7: the input in 7 bits (-63..63) instead, which AVX2
+// multiplies without the sign steps (a pair of 7-bit x 8-bit products cannot
+// saturate): about 1.25 times as fast with AVX2 alone, 1.6 with AVX-VNNI,
+// and about 4 dB further from the 32-bit vocoder (19 dB there). Again the
+// same numbers on every processor. The final one-channel
+// convolution, the snakes and biases stay in 32 bits. Read at load: set it
+// before Studio (or the engine) starts.
+
+#if REALME_SNAKE_X86 && (defined(__AVXVNNI__) || defined(REALME_AVXVNNI) || \
+    (defined(__clang__) && __clang_major__ >= 12) || (defined(__GNUC__) && !defined(__clang__) && __GNUC__ >= 11))
+#define REALME_V3Q_VNNI 1
+#if defined(__GNUC__) || defined(__clang__)
+#define REALME_V3Q_VNNI_FN __attribute__((target("avx2,fma,avxvnni")))
+#else
+#define REALME_V3Q_VNNI_FN
+#endif
+#endif
+
+// 0 off, 8 (QWEN3_TTS_VOCODER_Q8=1 or 8), 7 (=7). Decided once.
+static int realme_v3q_mode() {
+    static const int mode = [] {
+        const char * v = std::getenv("QWEN3_TTS_VOCODER_Q8");
+        if (!v) return 0;
+        if (v[0] == '1' || v[0] == '8') return 8;
+        if (v[0] == '7') return 7;
+        return 0;
+    }();
+    return mode;
+}
+static bool realme_v3q_asked() { return realme_v3q_mode() != 0; }
+
+// 0 plain C++, 2 AVX2, 3 AVX-VNNI (QWEN3_TTS_Q8_VNNI=0 keeps AVX2).
+static int realme_v3q_isa() {
+    static const int isa = [] {
+        if (realme_v3_isa() != 2) return 0;
+#if REALME_V3Q_VNNI
+        const char * v = std::getenv("QWEN3_TTS_Q8_VNNI");
+        if (!(v && v[0] == '0')) {
+#if defined(_MSC_VER)
+            int r[4];
+            __cpuid(r, 0);
+            if (r[0] >= 7) { __cpuidex(r, 7, 1); if ((r[0] >> 4) & 1) return 3; }
+#else
+            if (__builtin_cpu_supports("avxvnni")) return 3;
+#endif
+        }
+#endif
+        return 2;
+    }();
+    return isa;
+}
+
+// One tap of one 16-channel panel: Cin/4 groups of 16 channels x 4 int8
+// weights (channel j's four consecutive input channels together), then 16
+// float scales, then 16 int32 sums of the 8-bit weights.
+static size_t realme_v3q_tap_bytes(int64_t Cin) {
+    return (size_t) Cin * REALME_V3_NR + REALME_V3_NR * (sizeof(float) + sizeof(int32_t));
+}
+static size_t realme_v3q_bytes(int64_t ntap, int64_t Cin, int64_t N) {
+    return (size_t) (N / REALME_V3_NR) * (size_t) ntap * realme_v3q_tap_bytes(Cin);
+}
+
+// get(tp, ci, n): the weight of tap tp, input channel ci, output channel n.
+template <typename F>
+static void realme_v3q_pack(uint8_t * out, int64_t ntap, int64_t Cin, int64_t N, F get) {
+    const size_t tb = realme_v3q_tap_bytes(Cin);
+    for (int64_t p = 0; p < N / REALME_V3_NR; ++p)
+        for (int64_t tp = 0; tp < ntap; ++tp) {
+            uint8_t * base = out + (size_t) (p * ntap + tp) * tb;
+            int8_t * q = reinterpret_cast<int8_t *>(base);
+            float * sc = reinterpret_cast<float *>(base + Cin * REALME_V3_NR);
+            int32_t * sum = reinterpret_cast<int32_t *>(sc + REALME_V3_NR);
+            for (int64_t j = 0; j < REALME_V3_NR; ++j) {
+                const int64_t n = p * REALME_V3_NR + j;
+                float amax = 0.0f;
+                for (int64_t ci = 0; ci < Cin; ++ci) amax = std::max(amax, std::fabs(get(tp, ci, n)));
+                const float scale = amax > 0.0f ? amax / 127.0f : 0.0f;
+                int32_t total = 0;
+                for (int64_t ci = 0; ci < Cin; ++ci) {
+                    int v = scale > 0.0f ? (int) std::nearbyint(get(tp, ci, n) / scale) : 0;
+                    v = std::max(-127, std::min(127, v));
+                    q[((ci / 4) * REALME_V3_NR + j) * 4 + ci % 4] = (int8_t) v;
+                    total += v;
+                }
+                sc[j] = scale;
+                sum[j] = total;
+            }
+        }
+}
+
+// One time step with its scale: 8 bits (-127..127, as signed bytes), or in
+// mode 7, 7 bits stored plus 64 (1..127, 64 is zero).
+static void realme_v3q_row(const float * x, int64_t C, uint8_t * q, float * s) {
+    const bool seven = realme_v3q_mode() == 7;
+    const float top = seven ? 63.0f : 127.0f;
+    float amax = 0.0f;
+    for (int64_t c = 0; c < C; ++c) amax = std::max(amax, std::fabs(x[c]));
+    if (!(amax > 0.0f) || !std::isfinite(amax)) {
+        std::memset(q, seven ? 64 : 0, (size_t) C);
+        *s = 0.0f;
+        return;
+    }
+    const float inv = top / amax;
+    const int lim = (int) top;
+    for (int64_t c = 0; c < C; ++c) {
+        int v = (int) std::nearbyint(x[c] * inv);
+        v = std::max(-lim, std::min(lim, v));
+        q[c] = seven ? (uint8_t) (v + 64) : (uint8_t) (int8_t) v;
+    }
+    *s = amax / top;
+}
+
+// mr (<= 6) rows x 16 channels: acc[r][j] = sum over i < nq of the four
+// signed bytes a[r][4i..4i+3] times channel j's four weights in group i,
+// plus realme_v3q_offset() times channel j's weight sum (the VNNI tile's
+// offset input). Exact.
+typedef void (*realme_v3q_tile_fn)(const uint8_t * const *, const int8_t *, int64_t, int32_t (*)[16], int);
+
+static void realme_v3q_tile_c(const uint8_t * const * a, const int8_t * b, int64_t nq,
+                              int32_t (*acc)[16], int mr) {
+    for (int r = 0; r < mr; ++r)
+        for (int j = 0; j < REALME_V3_NR; ++j) {
+            int32_t t = 0;
+            const bool seven = realme_v3q_mode() == 7;      // stored with its +64
+            for (int64_t i = 0; i < nq; ++i)
+                for (int k = 0; k < 4; ++k)
+                    t += (seven ? (int32_t) a[r][4 * i + k] : (int32_t) (int8_t) a[r][4 * i + k])
+                       * (int32_t) b[(i * REALME_V3_NR + j) * 4 + k];
+            acc[r][j] = t;
+        }
+}
+
+#if REALME_SNAKE_X86
+#define REALME_V3Q_TILE_BODY(DOT)                                                                  \
+    __m256i c00, c01, c10, c11, c20, c21, c30, c31, c40, c41, c50, c51;                          \
+    c00 = c01 = c10 = c11 = c20 = c21 = c30 = c31 = c40 = c41 = c50 = c51 = _mm256_setzero_si256(); \
+    const __m256i xor80 = _mm256_set1_epi8((char) 0x80);                                          \
+    const uint8_t * a0 = a[0], * a1 = a[mr > 1 ? 1 : 0], * a2 = a[mr > 2 ? 2 : 0],               \
+                  * a3 = a[mr > 3 ? 3 : 0], * a4 = a[mr > 4 ? 4 : 0], * a5 = a[mr > 5 ? 5 : 0];   \
+    for (int64_t i = 0; i < nq; ++i) {                                                           \
+        const __m256i b0 = _mm256_loadu_si256((const __m256i *) (b + 64 * i));                    \
+        const __m256i b1 = _mm256_loadu_si256((const __m256i *) (b + 64 * i + 32));               \
+        int32_t w;                                                                               \
+        __m256i v;                                                                               \
+        (void) xor80;                                                                            \
+        std::memcpy(&w, a0 + 4 * i, 4); v = _mm256_set1_epi32(w); c00 = DOT(c00, v, b0); c01 = DOT(c01, v, b1); \
+        std::memcpy(&w, a1 + 4 * i, 4); v = _mm256_set1_epi32(w); c10 = DOT(c10, v, b0); c11 = DOT(c11, v, b1); \
+        std::memcpy(&w, a2 + 4 * i, 4); v = _mm256_set1_epi32(w); c20 = DOT(c20, v, b0); c21 = DOT(c21, v, b1); \
+        std::memcpy(&w, a3 + 4 * i, 4); v = _mm256_set1_epi32(w); c30 = DOT(c30, v, b0); c31 = DOT(c31, v, b1); \
+        std::memcpy(&w, a4 + 4 * i, 4); v = _mm256_set1_epi32(w); c40 = DOT(c40, v, b0); c41 = DOT(c41, v, b1); \
+        std::memcpy(&w, a5 + 4 * i, 4); v = _mm256_set1_epi32(w); c50 = DOT(c50, v, b0); c51 = DOT(c51, v, b1); \
+    }                                                                                            \
+    _mm256_storeu_si256((__m256i *) acc[0], c00); _mm256_storeu_si256((__m256i *) (acc[0] + 8), c01); \
+    if (mr > 1) { _mm256_storeu_si256((__m256i *) acc[1], c10); _mm256_storeu_si256((__m256i *) (acc[1] + 8), c11); } \
+    if (mr > 2) { _mm256_storeu_si256((__m256i *) acc[2], c20); _mm256_storeu_si256((__m256i *) (acc[2] + 8), c21); } \
+    if (mr > 3) { _mm256_storeu_si256((__m256i *) acc[3], c30); _mm256_storeu_si256((__m256i *) (acc[3] + 8), c31); } \
+    if (mr > 4) { _mm256_storeu_si256((__m256i *) acc[4], c40); _mm256_storeu_si256((__m256i *) (acc[4] + 8), c41); } \
+    if (mr > 5) { _mm256_storeu_si256((__m256i *) acc[5], c50); _mm256_storeu_si256((__m256i *) (acc[5] + 8), c51); }
+
+// AVX2: |a| times b with a's sign, as GGML's ggml_vec_dot_q8_0_q8_0.
+#define REALME_V3Q_DOT_AVX2(c, a, b) _mm256_add_epi32((c), _mm256_madd_epi16(                 \
+    _mm256_maddubs_epi16(_mm256_sign_epi8((a), (a)), _mm256_sign_epi8((b), (a))), _mm256_set1_epi16(1)))
+REALME_AVX2_FN
+static void realme_v3q_tile_avx2(const uint8_t * const * a, const int8_t * b, int64_t nq,
+                                 int32_t (*acc)[16], int mr) {
+    REALME_V3Q_TILE_BODY(REALME_V3Q_DOT_AVX2)
+}
+// Mode 7: the stored input (1..127) is already unsigned.
+#define REALME_V3Q_DOT_AVX2_7(c, a, b) _mm256_add_epi32((c), _mm256_madd_epi16(_mm256_maddubs_epi16((a), (b)), _mm256_set1_epi16(1)))
+REALME_AVX2_FN
+static void realme_v3q_tile_avx2_7(const uint8_t * const * a, const int8_t * b, int64_t nq,
+                                   int32_t (*acc)[16], int mr) {
+    REALME_V3Q_TILE_BODY(REALME_V3Q_DOT_AVX2_7)
+}
+#if REALME_V3Q_VNNI
+// AVX-VNNI: a + 128 (unsigned) times b; the 128 x weight sum is taken off after.
+#define REALME_V3Q_DOT_VNNI(c, a, b) _mm256_dpbusd_avx_epi32((c), _mm256_xor_si256((a), xor80), (b))
+REALME_V3Q_VNNI_FN
+static void realme_v3q_tile_vnni(const uint8_t * const * a, const int8_t * b, int64_t nq,
+                                 int32_t (*acc)[16], int mr) {
+    REALME_V3Q_TILE_BODY(REALME_V3Q_DOT_VNNI)
+}
+#define REALME_V3Q_DOT_VNNI_7(c, a, b) _mm256_dpbusd_avx_epi32((c), (a), (b))
+REALME_V3Q_VNNI_FN
+static void realme_v3q_tile_vnni_7(const uint8_t * const * a, const int8_t * b, int64_t nq,
+                                   int32_t (*acc)[16], int mr) {
+    REALME_V3Q_TILE_BODY(REALME_V3Q_DOT_VNNI_7)
+}
+#endif
+#endif
+
+// What the tile adds per unit of weight sum: mode 7 stores the input plus
+// 64; in mode 8 the VNNI tile adds 128 to it; the others add nothing.
+static int32_t realme_v3q_offset() {
+    if (realme_v3q_mode() == 7) return 64;
+    return realme_v3q_isa() == 3 ? 128 : 0;
+}
+
+static realme_v3q_tile_fn realme_v3q_tile() {
+    const bool seven = realme_v3q_mode() == 7;
+#if REALME_SNAKE_X86
+#if REALME_V3Q_VNNI
+    if (realme_v3q_isa() == 3) return seven ? realme_v3q_tile_vnni_7 : realme_v3q_tile_vnni;
+#endif
+    if (realme_v3q_isa() == 2) return seven ? realme_v3q_tile_avx2_7 : realme_v3q_tile_avx2;
+#endif
+    (void) seven;
+    return realme_v3q_tile_c;
+}
+
+// M (<= MC) output rows from quantized input rows Q (Cin bytes each, scales
+// S): out row r (N channels, at c + r*N) = sum over taps tp of
+// scale(weights) x S[r + tp*d] x (integer product), the integer product
+// taken against row r + tp*d. Taps in order.
+REALME_NO_CONTRACT
+static void realme_v3q_gemm(int64_t M, const uint8_t * Q, const float * S, int64_t Cin, int64_t d,
+                            int ntap, const uint8_t * blob, int64_t N, float * c) {
+    const size_t tb = realme_v3q_tap_bytes(Cin);
+    const int64_t nq = Cin / 4;
+    const realme_v3q_tile_fn tile = realme_v3q_tile();
+    const int32_t off = realme_v3q_offset();
+    int32_t acc[REALME_V3_MR][16];
+    const uint8_t * a[REALME_V3_MR];
+    for (int64_t p = 0; p < N / REALME_V3_NR; ++p)
+        for (int tp = 0; tp < ntap; ++tp) {
+            const uint8_t * base = blob + (size_t) (p * ntap + tp) * tb;
+            const int8_t * b = reinterpret_cast<const int8_t *>(base);
+            const float * sc = reinterpret_cast<const float *>(base + Cin * REALME_V3_NR);
+            const int32_t * sum = reinterpret_cast<const int32_t *>(sc + REALME_V3_NR);
+            for (int64_t r0 = 0; r0 < M; r0 += REALME_V3_MR) {
+                const int mr = (int) std::min<int64_t>(REALME_V3_MR, M - r0);
+                for (int r = 0; r < REALME_V3_MR; ++r) a[r] = Q + (r0 + (r < mr ? r : 0) + tp * d) * Cin;
+                tile(a, b, nq, acc, mr);
+                for (int r = 0; r < mr; ++r) {
+                    float * cr = c + (r0 + r) * N + p * REALME_V3_NR;
+                    const float sa = S[r0 + r + tp * d];
+                    for (int j = 0; j < REALME_V3_NR; ++j) {
+                        const float v = (sc[j] * sa) * (float) (acc[r][j] - off * sum[j]);
+                        cr[j] = tp == 0 ? v : cr[j] + v;
+                    }
+                }
+            }
+        }
+}
+
+// Rows [first, first + n) of x (C channels) into the thread's 8-bit rows.
+struct realme_v3q_rows { std::vector<uint8_t> q; std::vector<float> s; };
+static realme_v3q_rows & realme_v3q_quantize(int slot, const float * x, int64_t first, int64_t n, int64_t C) {
+    thread_local realme_v3q_rows buf[2];
+    auto & r = buf[slot];
+    if (r.q.size() < (size_t) (n * C)) r.q.resize((size_t) (n * C));
+    if (r.s.size() < (size_t) n) r.s.resize((size_t) n);
+    for (int64_t k = 0; k < n; ++k) realme_v3q_row(x + (first + k) * C, C, r.q.data() + k * C, r.s.data() + k);
+    return r;
+}
+
 // ---------------------------------------------------------------- epilogues
 
 // out = v + ib * sin(a * v)^2, channel by channel (a, ib per channel), with
@@ -533,11 +864,19 @@ static void realme_v3_op(struct ggml_tensor * dst, int ith, int nth, void * ud) 
         const float * al = (flags & REALME_V3_SNAKE) ? (const float *) dst->src[3]->data : nullptr;
         const float * ib = (flags & REALME_V3_SNAKE) ? (const float *) dst->src[4]->data : nullptr;
         float * cb = realme_v3_scratch(0, (size_t) (REALME_V3_MC * C)).data();
+        const bool q8 = dst->src[1]->type == GGML_TYPE_I8;
         const int64_t mc = realme_v3_mc(L, nth), chunks = (L + mc - 1) / mc;
         for (int64_t ch = ith; ch < chunks; ch += nth) {
             const int64_t t0 = ch * mc, M = std::min<int64_t>(mc, L - t0);
-            for (int64_t r = 0; r < M; ++r) row[r] = xin + (t0 + r + pin - (taps - 1) * d) * Cin;
-            realme_v3_gemm(M, row, d * Cin, (int) taps, Cin, pk, C, cb);
+            if (q8) {
+                const int64_t first = t0 + pin - (taps - 1) * d;
+                auto & qr = realme_v3q_quantize(0, xin, first, M + (taps - 1) * d, Cin);
+                realme_v3q_gemm(M, qr.q.data(), qr.s.data(), Cin, d, (int) taps,
+                                (const uint8_t *) dst->src[1]->data, C, cb);
+            } else {
+                for (int64_t r = 0; r < M; ++r) row[r] = xin + (t0 + r + pin - (taps - 1) * d) * Cin;
+                realme_v3_gemm(M, row, d * Cin, (int) taps, Cin, pk, C, cb);
+            }
             for (int64_t r = 0; r < M; ++r) {
                 float * v = cb + r * C;
                 realme_v3_bias(v, bias, nullptr, C);
@@ -556,11 +895,18 @@ static void realme_v3_op(struct ggml_tensor * dst, int ith, int nth, void * ud) 
         const int64_t Li = L / s;                                  // input rows used: Li + 1
         float * cb = realme_v3_scratch(0, (size_t) (REALME_V3_MC * C)).data();
         const int64_t mc = realme_v3_mc(Li * s, nth), chunks = (Li + mc - 1) / mc;
+        const bool q8 = dst->src[1]->type == GGML_TYPE_I8;
         for (int64_t w = ith; w < chunks * s; w += nth) {
             const int64_t j = w % s, ch = w / s;
             const int64_t i0 = ch * mc, M = std::min<int64_t>(mc, Li - i0);
-            for (int64_t r = 0; r < M; ++r) row[r] = xin + (i0 + r) * Cin;
-            realme_v3_gemm(M, row, Cin, 2, Cin, pk + j * 2 * Cin * C, C, cb);
+            if (q8) {
+                auto & qr = realme_v3q_quantize(0, xin, i0, M + 1, Cin);
+                realme_v3q_gemm(M, qr.q.data(), qr.s.data(), Cin, 1, 2,
+                                (const uint8_t *) dst->src[1]->data + (size_t) j * realme_v3q_bytes(2, Cin, C), C, cb);
+            } else {
+                for (int64_t r = 0; r < M; ++r) row[r] = xin + (i0 + r) * Cin;
+                realme_v3_gemm(M, row, Cin, 2, Cin, pk + j * 2 * Cin * C, C, cb);
+            }
             for (int64_t r = 0; r < M; ++r) {
                 float * v = cb + r * C;
                 realme_v3_bias(v, bias, nullptr, C);
@@ -584,17 +930,30 @@ static void realme_v3_op(struct ggml_tensor * dst, int ith, int nth, void * ud) 
         float * z1 = realme_v3_scratch(0, (size_t) (REALME_V3_MC * C)).data();
         float * y2 = realme_v3_scratch(1, (size_t) (REALME_V3_MC * C)).data();
         float * z2 = realme_v3_scratch(2, (size_t) (REALME_V3_MC * C)).data();
+        const bool q1 = dst->src[1]->type == GGML_TYPE_I8, q2 = dst->src[5]->type == GGML_TYPE_I8;
         const int64_t mc = realme_v3_mc(L, nth), chunks = (L + mc - 1) / mc;
         for (int64_t ch = ith; ch < chunks; ch += nth) {
             const int64_t t0 = ch * mc, M = std::min<int64_t>(mc, L - t0);
-            for (int64_t r = 0; r < M; ++r) row[r] = ys + (t0 + r + pin - (taps - 1) * d) * C;
-            realme_v3_gemm(M, row, d * C, (int) taps, C, p1, C, z1);
+            if (q1) {
+                const int64_t first = t0 + pin - (taps - 1) * d;
+                auto & qr = realme_v3q_quantize(0, ys, first, M + (taps - 1) * d, C);
+                realme_v3q_gemm(M, qr.q.data(), qr.s.data(), C, d, (int) taps,
+                                (const uint8_t *) dst->src[1]->data, C, z1);
+            } else {
+                for (int64_t r = 0; r < M; ++r) row[r] = ys + (t0 + r + pin - (taps - 1) * d) * C;
+                realme_v3_gemm(M, row, d * C, (int) taps, C, p1, C, z1);
+            }
             for (int64_t r = 0; r < M; ++r) {
                 realme_v3_bias(z1 + r * C, b1, nullptr, C);
                 realme_v3_snake(z1 + r * C, a2, i2, y2 + r * C, C, own);
             }
-            for (int64_t r = 0; r < M; ++r) row[r] = y2 + r * C;
-            realme_v3_gemm(M, row, 0, 1, C, p2, C, z2);
+            if (q2) {
+                auto & qr = realme_v3q_quantize(1, y2, 0, M, C);
+                realme_v3q_gemm(M, qr.q.data(), qr.s.data(), C, 0, 1, (const uint8_t *) dst->src[5]->data, C, z2);
+            } else {
+                for (int64_t r = 0; r < M; ++r) row[r] = y2 + r * C;
+                realme_v3_gemm(M, row, 0, 1, C, p2, C, z2);
+            }
             for (int64_t r = 0; r < M; ++r) {
                 float * v = z2 + r * C;
                 realme_v3_bias(v, b2, xs + (t0 + r) * C, C);
@@ -661,7 +1020,7 @@ static struct ggml_tensor * realme_voc3_back(struct ggml_context * ctx, const au
     // dec0, its bias and the first block's snake: the first transposed
     // convolution's input.
     {
-        struct ggml_tensor * args[5] = { Y, w0, m.dec0_conv_b,
+        struct ggml_tensor * args[5] = { Y, realme_voc3_pk(m, m.dec0_conv_w), m.dec0_conv_b,
                                          realme_v3_exp(ctx, m.dec_blocks[0].snake_alpha, false),
                                          realme_v3_exp(ctx, m.dec_blocks[0].snake_beta, true) };
         x = ggml_custom_4d(ctx, GGML_TYPE_F32, C1, L, 1, 1, args, 5, realme_v3_op, GGML_N_TASKS_MAX,
@@ -674,7 +1033,7 @@ static struct ggml_tensor * realme_voc3_back(struct ggml_context * ctx, const au
         // The transposed convolution, its bias, and the first unit's snake.
         const residual_block & r0 = b.res[0];
         int64_t pad = (r0.conv1_w->ne[0] - 1) * r0.dilation;
-        struct ggml_tensor * targs[5] = { x, realme_voc3_w(m, b.conv_t_w), b.conv_t_b,
+        struct ggml_tensor * targs[5] = { x, realme_voc3_pk(m, b.conv_t_w), b.conv_t_b,
                                           realme_v3_exp(ctx, r0.act1_alpha, false),
                                           realme_v3_exp(ctx, r0.act1_beta, true) };
         x = ggml_custom_4d(ctx, GGML_TYPE_F32, Co, 2 * Lo + pad, 1, 1, targs, 5, realme_v3_op,
@@ -704,10 +1063,10 @@ static struct ggml_tensor * realme_voc3_back(struct ggml_context * ctx, const au
                 na = m.dec5_snake_alpha; nb = m.dec5_snake_beta;
                 pout = m.dec6_conv_w->ne[0] - 1;
             }
-            struct ggml_tensor * uargs[9] = { x, realme_voc3_w(m, r.conv1_w), r.conv1_b,
+            struct ggml_tensor * uargs[9] = { x, realme_voc3_pk(m, r.conv1_w), r.conv1_b,
                                               realme_v3_exp(ctx, r.act2_alpha, false),
                                               realme_v3_exp(ctx, r.act2_beta, true),
-                                              realme_voc3_w(m, r.conv2_w), r.conv2_b,
+                                              realme_voc3_pk(m, r.conv2_w), r.conv2_b,
                                               realme_v3_exp(ctx, na, false), realme_v3_exp(ctx, nb, true) };
             const int64_t rows = (flags & REALME_V3_XOUT) ? 2 * L + pout : L + pout;
             x = ggml_custom_4d(ctx, GGML_TYPE_F32, Co, rows, 1, 1, uargs, 9, realme_v3_op, GGML_N_TASKS_MAX,

@@ -1,7 +1,8 @@
 # Giving RealMe to a colleague
 
 How to build a package for a colleague, what they need, and what to check
-before you send it. The package carries its own instructions for the
+before you send it. (The voice engine's development notes moved to DESIGN.md
+and `_Archive/engine_development_2026-11/`.) The package carries its own instructions for the
 recipient — `README_MIGRATION.md`, inside the zip.
 
 ---
@@ -9,8 +10,8 @@ recipient — `README_MIGRATION.md`, inside the zip.
 ## 1. Build the package
 
 Double-click **`00_Windows\_Make_Package_For_Others.bat`**. It runs the checks,
-asks whether to include the free local voice clone (`qwen3cpp`, default
-**yes**), shows what the package will hold, and writes `RealMe_Package.zip`.
+asks whether to include the free local voice clone (`realme-rev-qwen3-tts`
+with its model files, default **yes**), shows what the package will hold, and writes `RealMe_Package.zip`.
 
 The same from a Command Prompt opened by `5_Command_Prompt.bat`:
 
@@ -41,7 +42,7 @@ refused outright.
 | **ffmpeg** | `ffmpeg.exe` and `ffprobe.exe` |
 | **Draft voices** | Amy, Ryan and Cori — the three the Studio offers |
 | **The guide** | `RealMe_Guide_v4.pdf`, `RealMe_Guide_v4.pptx` and `RealMe_Guide_notes_v4.txt`, plus the guide video once you have rendered it |
-| **qwen3cpp** | the free local clone, ready to run (about 2.2 GB): the built engine and the 16-bit model; the faster 8-bit model is made from it the first time it records. Left out with `--no-qwen` |
+| **The free local clone** | ready to run (about 3 GB): the model files (16- and 8-bit) and a portable build of the engine in `tools\qwen3cpp\build`, which `realme-rev-qwen3-tts` uses until `_Rebuild_Voice_Engine.bat` builds one for their processor (that needs Visual Studio Build Tools, and is faster). Left out with `--no-qwen` |
 
 With the local clone the package is about 2.5 GB; without it, a few hundred
 MB. The Python libraries are
@@ -108,9 +109,12 @@ read.
 
 ## 4. The local clone in the package
 
-It is RealMe's revised engine (see DESIGN.md), as your own `_Rebuild_Voice_Engine.bat`
-last built it. Build it for a portable processor target before packaging, so
-it runs on their computer:
+The package carries the engine as `_Rebuild_Voice_Engine.bat legacy` last
+built it in `tools\qwen3cpp`: their `realme-rev-qwen3-tts` voice runs on that
+build until they build one for their own processor with
+`_Rebuild_Voice_Engine.bat` (Visual Studio Build Tools needed; faster). Build
+it for a portable processor target before packaging, so it runs on their
+computer:
 
 ```
 realme engine cpp --cpp-action build --force --target-cpu avx2

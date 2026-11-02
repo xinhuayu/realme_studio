@@ -1,6 +1,6 @@
 @echo off
 REM ===================================================================
-REM  Builds the free local voice clone (qwen3cpp): your cloned voice made
+REM  Builds the free local voice clone (realme-rev-qwen3-tts): your cloned voice made
 REM  on this computer, nothing sent out, nothing to pay -- about real time
 REM  on a 6-core PC. It is one of RealMe's two cloned voices (Gemini is
 REM  the other, and the default); RealMe packages usually carry it ready to
@@ -8,8 +8,8 @@ REM  run, and this builds it where one did not.
 REM
 REM  What it does: downloads the Qwen3-TTS weights (~2.5 GB), converts them
 REM  to GGUF, builds RealMe's revised qwen3-tts.cpp from the source inside
-REM  RealMe (every speed change applied), and makes the 8-bit model the
-REM  lectures use. Needs Visual Studio 2022 Build Tools with "Desktop
+REM  RealMe, makes the 8-bit model the lectures use, then builds the voice
+REM  engine itself (realme-rev-qwen3-tts) for this processor. Needs Visual Studio 2022 Build Tools with "Desktop
 REM  development with C++", and about 6 GB of disk.
 REM
 REM  Two heavy pieces, deliberately not stored in the repository:
@@ -123,7 +123,17 @@ if not "!RC!"=="0" (
   echo   A RealMe package built with the local clone ^(the usual kind^)
   echo   carries it ready to run, with nothing to build.
 )
-if "!RC!"=="0" echo  To use it: Studio - Twin Setup - Voice for lectures - qwen3cpp.
+if "!RC!"=="0" (
+  REM  RealMe's own local voice, built for this processor from the model
+  REM  files just made. The engine built above stays only as their maker.
+  echo  Building the local voice engine for this processor ^(realme-rev-qwen3-tts^)...
+  "!R!" engine rev
+  if not "!ERRORLEVEL!"=="0" (
+    echo  It did not build; see above. 00_Windows\_Rebuild_Voice_Engine.bat tries again.
+  ) else (
+    echo  To use it: Studio - Twin Setup - Voice for lectures - your voice ^(free local clone^).
+  )
+)
 echo.
 pause
 exit /b 0

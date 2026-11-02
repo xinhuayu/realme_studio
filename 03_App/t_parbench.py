@@ -74,9 +74,16 @@ def main() -> int:
     check(PB.can_start("selftest", None) == "", "the stand-in can start")
     why = PB.can_start("no-such-engine", None)
     check(bool(why), "one that cannot says why before anything is timed", why)
-    r = PB.main("no-such-engine", [("A sentence.", 1.0)] * 2, [(1, 1), (2, 1)],
-                repeat=1, outdir=Path(_ISO) / "nobench", reference=None,
-                log=lambda *_: None)
+    # Free memory as if plentiful: on a computer with little free, every
+    # layout would be skipped for memory before the engine is even tried.
+    _free = PB.available_memory_gb
+    PB.available_memory_gb = lambda: 64.0
+    try:
+        r = PB.main("no-such-engine", [("A sentence.", 1.0)] * 2, [(1, 1), (2, 1)],
+                    repeat=1, outdir=Path(_ISO) / "nobench", reference=None,
+                    log=lambda *_: None)
+    finally:
+        PB.available_memory_gb = _free
     check(r["layouts"] == [] and r["verdict"]["best"] is None,
           "and a run that cannot start one engine stops instead of trying "
           "every layout", r["verdict"])

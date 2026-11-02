@@ -1,5 +1,5 @@
 {
-  "made": "2026-10-30",
+  "made": "2026-11-01",
   "from": "engines/qwen3cpp (the original, unchanged)",
   "ggml_commit": "3af5f5760e19a96427f5f7a93b79cbdf3d4b265b",
   "changes": [
@@ -14,7 +14,17 @@
     "apply_path_patch",
     "apply_vocoder_patch",
     "apply_vocoder2_patch",
-    "apply_vocoder3_patch"
+    "apply_vocoder3_patch",
+    "apply_text_mmap_patch",
+    "apply_vocoder_storage_patch",
+    "apply_embedding_validation_patch",
+    "apply_weight_mmap_patch",
+    "apply_cpu_compute_patch",
+    "apply_cpu_runtime_patch",
+    "apply_embedding_access_patch",
+    "apply_decode_async_patch",
+    "apply_codebooks_patch",
+    "apply_vocoder_gpu_patch"
   ],
   "ggml_overlay": {
     "src/ggml-cpu/ggml-cpu.c": {

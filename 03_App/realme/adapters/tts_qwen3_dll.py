@@ -123,6 +123,9 @@ def _bind(lib: ctypes.CDLL) -> None:
             "build.") from None
     lib.qwen3_tts_default_params.argtypes = [POINTER(Params)]
     lib.qwen3_tts_default_params.restype = None
+    if hasattr(lib, "qwen3_tts_set_cpu_options"):
+        lib.qwen3_tts_set_cpu_options.argtypes = [c_void_p, ctypes.c_uint32, ctypes.c_uint32]
+        lib.qwen3_tts_set_cpu_options.restype = c_int32
     lib.qwen3_tts_create.argtypes = [c_char_p, c_int32]
     lib.qwen3_tts_create.restype = c_void_p
     lib.qwen3_tts_is_loaded.argtypes = [c_void_p]
@@ -325,24 +328,139 @@ def vocoder_setting() -> str:
     return "mixed"
 
 
-def batch_built_at(home: Path) -> bool:
-    """Was the engine in `home` built with the batch entry point, for the
-    CPU? Read from its build record, so asking does not load the model."""
+def batch_built_at(home: Path, backend: str = "auto") -> bool:
+    """Does this build support batches for the requested CPU runtime?
+    Read its build record without loading the model."""
     import json
     try:
         info = json.loads((Path(home) / "build_info.json").read_text(encoding="utf-8"))
     except Exception:
         return False
-    # Batches were checked on the CPU backend only; a GPU build records
-    # one sentence at a time.
-    return bool(info.get("batch")) and (info.get("gpu") or "off") in (
-        "off", "none", "cpu", "")
+    requested = (backend or "auto").strip().lower() or "auto"
+    if requested == "auto":
+        requested = os.environ.get("QWEN3_TTS_BACKEND", "auto").strip().lower() or "auto"
+    # A GPU-capable DLL can run the same checked CPU batch implementation.
+    cpu = requested == "cpu" or (requested == "auto" and
+        (info.get("gpu") or "off") in ("off", "none", "cpu", ""))
+    return bool(info.get("batch")) and cpu
 
 
 def batch_default(quant: str | None = None) -> int:
     """Sentences per pass with nothing set: measured here, else DEFAULT_BATCH."""
     q = quant or quant_setting()
     return batch_measured().get(q) or DEFAULT_BATCH.get(q, 1)
+
+
+#: A take that runs on past its text. Qwen3-TTS ends a sentence by choosing
+#: an end code; once in a while it never does and goes on talking, alone,
+#: until a frame limit stops it. Such a take is recognised by its length: more
+#: than RUNAWAY_FACTOR times what the text would take at a slow pace.
+RUNAWAY_FACTOR = 2.0
+RUNAWAY_ENV = "REALME_RUNAWAY_CHECK"
+
+
+def seconds_slow(text: str) -> float:
+    """How long a sentence takes said slowly: 1.5 words, 10 characters or
+    3 CJK characters a second, whichever is longest, plus 2 s."""
+    words = len(text.split())
+    wide = sum(1 for ch in text if ord(ch) >= 0x2E80)
+    return max(words / 1.5, len(text) / 10.0, wide / 3.0) + 2.0
+
+
+def ran_on(text: str, seconds: float) -> bool:
+    """Is a take of `seconds` (as the engine made it, before any pace
+    change) far too long for `text`? Off with REALME_RUNAWAY_CHECK=0."""
+    if os.environ.get(RUNAWAY_ENV, "").strip() == "0":
+        return False
+    return seconds > RUNAWAY_FACTOR * seconds_slow(text)
+
+
+#: A quick check of each take recorded in a pass or a stream, before it is
+#: kept: the samples are already in memory, and the check takes about a
+#: millisecond a sentence. A take that fails is not kept; the recording loop
+#: records that sentence again on its own, in order -- and a sentence on its
+#: own always takes the engine's full path (all 15 predictor steps, whatever
+#: QWEN3_TTS_CP_STEPS says), so this is also the fallback for a faster
+#: setting. The limits are wide: each catches a take that is plainly broken,
+#: never one that is merely different. Off with REALME_TAKE_CHECK=0 (the
+#: run-on check stays, with its own switch).
+TAKE_CHECK_ENV = "REALME_TAKE_CHECK"
+#: Shorter than this fraction of the text said fast: words were skipped.
+SHORT_FRACTION = 0.4
+#: A silence longer than this, seconds, between the first and last sound.
+STALL_SECONDS = 2.0
+#: Less than this fraction of the take has any sound.
+QUIET_FRACTION = 0.25
+#: More than this fraction of samples at full scale.
+CLIP_FRACTION = 0.002
+
+
+def seconds_fast(text: str) -> float:
+    """How long a sentence takes said fast: 4 words, 22 characters or 7 CJK
+    characters a second, whichever is longest."""
+    words = len(text.split())
+    wide = sum(1 for ch in text if ord(ch) >= 0x2E80)
+    return max(words / 4.0, len(text) / 22.0, wide / 7.0)
+
+
+def take_problem(text: str, samples, n_samples: int, rate: int) -> str | None:
+    """Why a take (float samples as the engine made them) should be recorded
+    again, or None. The run-on check first, then, unless REALME_TAKE_CHECK=0:
+    unusable samples, too short for its words, mostly silent, a long silence
+    inside, clipped."""
+    rate = int(rate or SAMPLE_RATE)
+    said = n_samples / float(rate)
+    if n_samples <= 0:
+        return "the engine returned no audio"
+    if ran_on(text, said):
+        return f"it ran on past its text ({said:.0f} s for {len(text.split())} words)"
+    if os.environ.get(TAKE_CHECK_ENV, "").strip() == "0":
+        return None
+    import numpy as np
+    x = np.ctypeslib.as_array(samples, shape=(int(n_samples),)) if not isinstance(samples, np.ndarray) \
+        else samples[:n_samples]
+    if not np.isfinite(x).all():
+        return "the take has invalid samples"
+    if len(text.split()) >= 4 and said < SHORT_FRACTION * seconds_fast(text):
+        return f"it is too short for its text ({said:.1f} s for {len(text.split())} words)"
+    hop = max(1, rate // 50)                       # 20 ms frames
+    frames = len(x) // hop
+    if frames >= 5:
+        rms = np.sqrt(np.mean(np.square(x[:frames * hop].astype(np.float64).reshape(frames, hop)), axis=1))
+        loud = rms > max(rms.max() * 0.01, 1e-4)  # within 40 dB of the loudest
+        if loud.mean() < QUIET_FRACTION:
+            return f"it is mostly silent ({loud.mean():.0%} has sound)"
+        on = np.flatnonzero(loud)
+        gaps = np.diff(on) - 1
+        if gaps.size and gaps.max() * hop / rate > STALL_SECONDS:
+            return f"it stops for {gaps.max() * hop / rate:.1f} s in the middle"
+    clipped = float(np.mean(np.abs(x) >= 0.999))
+    if clipped > CLIP_FRACTION:
+        return f"it is clipped ({clipped:.1%} of samples at full scale)"
+    return None
+
+
+def frame_cap(text: str, max_tokens: int) -> int:
+    """A single sentence's frame limit: a quarter above the run-on threshold
+    (12.5 frames a second) plus 40, never more than `max_tokens`. A sentence
+    that ends by itself never meets it; one that runs on stops there instead
+    of at 4096 frames (5.5 minutes, and about 12 GB in the vocoder)."""
+    if os.environ.get(RUNAWAY_ENV, "").strip() == "0":
+        return max_tokens
+    return int(min(max_tokens, 12.5 * 1.25 * RUNAWAY_FACTOR * seconds_slow(text) + 40))
+
+
+def cache_grows_at(home: Path) -> bool:
+    """Was this build made with growing sentence caches, and are they on
+    (QWEN3_TTS_CACHE_GROW=0 turns them off)?"""
+    import json
+    if os.environ.get("QWEN3_TTS_CACHE_GROW", "").strip() == "0":
+        return False
+    try:
+        info = json.loads((Path(home) / "build_info.json").read_text(encoding="utf-8"))
+    except Exception:
+        return False
+    return bool(info.get("cache_growth"))
 
 
 #: Several sentences in one pass (see engines/qwen3cpp_batch).
@@ -363,8 +481,38 @@ class StreamFailed(AdapterUnavailable):
 BATCH_FILE = "qwen3_batch.json"
 
 
+def _engine_call(method):
+    """Serialize environment-sensitive native calls, including engine switches."""
+    from functools import wraps
+    @wraps(method)
+    def call(self, *args, **kwargs):
+        with _ENGINE_CALL_LOCK:
+            settings = self._engine_environment()
+            previous = {key: os.environ.get(key) for key in settings}
+            try:
+                for key, value in settings.items():
+                    if value is None:
+                        os.environ.pop(key, None)
+                    else:
+                        os.environ[key] = str(value)
+                return method(self, *args, **kwargs)
+            finally:
+                for key, value in previous.items():
+                    if value is None:
+                        os.environ.pop(key, None)
+                    else:
+                        os.environ[key] = value
+    return call
+
+
+from threading import RLock
+_ENGINE_CALL_LOCK = RLock()
+
+
 class Qwen3DllTTS(BaseTTS):
     name = "qwen3-tts-cpp (in-process)"
+    log_name = "qwen3cpp"
+    fingerprint_name = "qwen3cpp-dll"
     is_voice_clone = True
     #: `synthesize(voice=...)` really does switch the reference per call.
     #: The register wrapper checks this rather than assuming every cloning
@@ -438,7 +586,16 @@ class Qwen3DllTTS(BaseTTS):
             self._default("repetition_penalty")
             if repetition_penalty is None else repetition_penalty)
         self.max_tokens, self.language = int(max_tokens), language
-        self.backend = (backend or "auto").lower()
+        self.backend = (backend or "auto").strip().lower() or "auto"
+        raw_seed = os.environ.get("QWEN3_TTS_SEED", "")
+        self.seed = None
+        if raw_seed.isascii() and raw_seed.isdecimal():
+            try:
+                value = int(raw_seed)
+                if value <= 0xffffffff:
+                    self.seed = value
+            except ValueError:
+                pass
         self._lib = None
         self._handle = None
         self._embedding = None
@@ -493,8 +650,10 @@ class Qwen3DllTTS(BaseTTS):
             ref = f"{self.reference_wav.name}:{h}"
         # Every setting that changes the audio, or the render ledger serves a
         # take made with different ones.
-        fp = (f"qwen3cpp-dll:{ref}:t{self.temperature:g}:k{self.top_k}"
+        fp = (f"{self.fingerprint_name}:{ref}:t{self.temperature:g}:k{self.top_k}"
               f":p{self.top_p:g}:r{self.repetition_penalty:g}")
+        if self.temperature > 0 and getattr(self, "seed", None) is not None:
+            fp += f":s{self.seed}"
         # The 8-bit model is a different model: its takes key differently,
         # and the 16-bit ones are still there if it is switched back.
         if self._quant() == "q8_0":
@@ -511,14 +670,40 @@ class Qwen3DllTTS(BaseTTS):
         return fp
 
     # ------------------------------------------------------------- lifecycle
+    def _engine_environment(self):
+        return {}
+
+    def _library_path(self):
+        return library_path(self.home)
+
+    def set_cpu_options(self, mask: int = 0, enabled: int = 0) -> None:
+        """Next-call overrides: bits 1..8192; see CPU_FEATURES.json for each control.
+
+        mask=0 restores environment settings. Call between synthesis calls;
+        a busy engine rejects the change. Storage/mmap choices need a reload.
+        """
+        if not isinstance(mask, int) or not isinstance(enabled, int) or mask < 0 or enabled < 0 \
+                or mask & ~4194303 or enabled & ~mask:
+            raise ValueError("Invalid CPU option mask/enabled bits")
+        self._load()
+        if not hasattr(self._lib, "qwen3_tts_set_cpu_options"):
+            raise RuntimeError("Rebuild the local engine for runtime CPU controls")
+        code = self._lib.qwen3_tts_set_cpu_options(self._handle, mask, enabled)
+        if code:
+            raise RuntimeError("CPU options rejected: engine busy" if code == -2 else "Invalid CPU options")
+
+    @_engine_call
     def _load(self) -> None:
         if self._lib is not None:
             return
-        lib_path = library_path(self.home)
+        lib_path = self._library_path()
         if not lib_path.is_file():
             raise AdapterUnavailable(
                 f"The C++ shared library is not there: {lib_path}\n"
                 f"    Build it:  realme engine cpp")
+        from realme.engines.rev_build import check_loaded_pair
+        try:check_loaded_pair(lib_path.parent)
+        except RuntimeError as error:raise AdapterUnavailable(str(error)) from error
         apply_vocoder_defaults(self.home)   # before the engine reads them
         if os.name == "nt":
             # ggml.dll and friends sit beside it and are NOT on PATH. Without
@@ -538,10 +723,18 @@ class Qwen3DllTTS(BaseTTS):
         # so it is set before the library is loaded. Older engine builds
         # ignore QWEN3_TTS_THREADS.
         os.environ["QWEN3_TTS_THREADS"] = str(self.threads)
+        if getattr(self, "seed", None) is None:
+            os.environ.pop("QWEN3_TTS_SEED", None)
+        else:
+            os.environ["QWEN3_TTS_SEED"] = str(self.seed)
         if self.backend and self.backend != "auto":
             os.environ["QWEN3_TTS_BACKEND"] = self.backend
-        elif self._built_gpu() == "cuda":
-            os.environ["QWEN3_TTS_BACKEND"] = "cuda"
+        else:
+            requested = os.environ.get("QWEN3_TTS_BACKEND", "").strip().lower()
+            if not requested and self._built_gpu() == "cuda":
+                requested = "cuda"
+            if requested:
+                os.environ["QWEN3_TTS_BACKEND"] = requested
         try:
             self._lib = ctypes.CDLL(str(lib_path))
         except OSError as e:
@@ -594,12 +787,13 @@ class Qwen3DllTTS(BaseTTS):
         return d
 
     def check(self) -> None:
-        """The library binds and the weights are converted -- nothing loaded.
+        """The library files and converted weights exist -- nothing loaded.
 
         Everything `preflight` does except `qwen3_tts_create`, which is the
         expensive part and the only part a status check does not need.
         """
-        self._load()
+        if self._lib is None and not self._library_path().is_file():
+            raise AdapterUnavailable(f'The C++ shared library is not there: {self._library_path()}')
         try:
             self._models_dir()
         except AdapterUnavailable:
@@ -609,6 +803,7 @@ class Qwen3DllTTS(BaseTTS):
                     and (self.home / "models" / "qwen3-tts-0.6b-f16.gguf").is_file()):
                 raise
 
+    @_engine_call
     def preflight(self) -> None:
         self._load()
         models = self._models_dir(make=True)
@@ -619,7 +814,7 @@ class Qwen3DllTTS(BaseTTS):
             import sys as _sys, time as _t
             built = self._built_gpu()
             asked = os.environ.get("QWEN3_TTS_BACKEND", "auto")
-            print(f"  [qwen3cpp] loading the model into memory (once) "
+            print(f"  [{self.log_name}] loading the model into memory (once) "
                   f"[built for: {built}, backend: {asked}] ...",
                   file=_sys.stderr, flush=True)
             t0 = _t.perf_counter()
@@ -645,7 +840,7 @@ class Qwen3DllTTS(BaseTTS):
                        f"        a {built.upper()} build that crashes on load "
                        f"is usually the driver, not the model\n"
                        if built not in ("off", "?", "") else "")) from e
-            print(f"  [qwen3cpp] loaded in {_t.perf_counter() - t0:.1f}s; "
+            print(f"  [{self.log_name}] loaded in {_t.perf_counter() - t0:.1f}s; "
                   f"it stays open for every later utterance",
                   file=_sys.stderr, flush=True)
             if not handle:
@@ -670,12 +865,13 @@ class Qwen3DllTTS(BaseTTS):
             # setting that did not take, and rendered as English it sounds
             # like the engine mispronouncing rather than like a wrong code.
             import sys as _sys
-            print(f"  [qwen3cpp] no voice for language {code!r}; using English."
+            print(f"  [{self.log_name}] no voice for language {code!r}; using English."
                   f" Supported: {', '.join(sorted(LANGUAGE_IDS))}",
                   file=_sys.stderr, flush=True)
         p.language_id = LANGUAGE_IDS.get(code, 2050)
         return p
 
+    @_engine_call
     def _speaker_embedding(self, ref: Path):
         """
         Extract once, reuse for every utterance.
@@ -717,7 +913,7 @@ class Qwen3DllTTS(BaseTTS):
         if n <= 0:
             # The fallback re-encodes the reference clip on EVERY utterance,
             # which nearly halves throughput, so say so.
-            print(f"  [qwen3cpp] the speaker encoder would not return an "
+            print(f"  [{self.log_name}] the speaker encoder would not return an "
                   f"embedding (returned {n}) -- falling back to re-encoding "
                   f"{ref.name} on every utterance, which is much slower",
                   file=_sys.stderr, flush=True)
@@ -726,7 +922,7 @@ class Qwen3DllTTS(BaseTTS):
         self._embedding_for = key
         self._embeddings[key] = (buf, n)
         self._embedding_to_disk(ref, buf, n)
-        print(f"  [qwen3cpp] speaker embedding from {ref.name}: "
+        print(f"  [{self.log_name}] speaker embedding from {ref.name}: "
               f"{n} floats in {took:.1f}s (kept on disk; later runs reuse it)",
               file=_sys.stderr, flush=True)
         return self._embedding
@@ -765,7 +961,7 @@ class Qwen3DllTTS(BaseTTS):
             for i, v in enumerate(a):
                 buf[i] = v
             import sys as _sys
-            print(f"  [qwen3cpp] speaker embedding for {ref.name} read from "
+            print(f"  [{self.log_name}] speaker embedding for {ref.name} read from "
                   f"disk ({n} floats); the encoder did not have to run",
                   file=_sys.stderr, flush=True)
             return (buf, n)
@@ -783,7 +979,7 @@ class Qwen3DllTTS(BaseTTS):
             tmp.replace(p)
         except OSError as e:
             import sys as _sys
-            print(f"  [qwen3cpp] could not keep the speaker embedding "
+            print(f"  [{self.log_name}] could not keep the speaker embedding "
                   f"({e}); it will be recomputed next time",
                   file=_sys.stderr, flush=True)
 
@@ -859,10 +1055,13 @@ class Qwen3DllTTS(BaseTTS):
             w.setframerate(rate)
             w.writeframes(bytes(pcm))
 
+    @_engine_call
     def synthesize(self, text, out_wav, voice=None, pace=1.0, language=None):
         self.preflight()
         out_wav = Path(out_wav)
         params = self._params(language)
+        params.max_audio_tokens = frame_cap(text, int(params.max_audio_tokens))
+        self._last_runaway = None
         ref = Path(voice) if voice else self.reference_wav
         # `voice=` is a path from a caller that may never have seen the
         # factory. Convert here too: one function, and every route through it.
@@ -900,6 +1099,9 @@ class Qwen3DllTTS(BaseTTS):
                 raise AdapterUnavailable(
                     f"Synthesis failed: {err or 'no detail from the engine'}")
             self._write_wav(audio, out_wav)
+            said = audio.contents.n_samples / float(audio.contents.sample_rate or SAMPLE_RATE)
+            if ran_on(text, said):
+                self._last_runaway = said
         finally:
             if audio:
                 self._lib.qwen3_tts_free_audio(audio)
@@ -909,12 +1111,34 @@ class Qwen3DllTTS(BaseTTS):
         probe(out_wav)
         return out_wav
 
+    def last_runaway(self) -> float | None:
+        """Seconds of the LAST single take if it ran on past its text (see
+        `ran_on`), else None. Cleared as it is read."""
+        said, self._last_runaway = getattr(self, "_last_runaway", None), None
+        return said
+
+    def runaway_take(self, out_wav) -> str | None:
+        """Why a take from `synthesize_batch` is to be recorded again (it ran
+        on past its text, or failed `take_problem`), else None. Cleared as
+        it is read."""
+        return getattr(self, "_runaway_paths", {}).pop(str(Path(out_wav)), None)
+
     # ------------------------------------------------------------- batches
     def batch_built(self) -> bool:
         """Was this engine built with the batch entry point? Read from its
         build record, so asking does not load the model."""
-        return batch_built_at(self.home)
+        return batch_built_at(self.home, self.backend)
 
+    def cache_grows(self) -> bool:
+        """Do this engine's sentence caches grow as a sentence is said,
+        rather than start at the longest allowed? Read from the build record
+        beside the library actually loaded (RealMe rev keeps its own)."""
+        folder = getattr(self, "library_directory", None)
+        if not (folder and (Path(folder) / "build_info.json").is_file()):
+            folder = self.home
+        return cache_grows_at(folder)
+
+    @_engine_call
     def synthesize_batch(self, items, voice=None) -> list:
         """Several sentences in one pass: `items` are (text, out_wav, pace,
         language) and each lands where `synthesize` would have put it.
@@ -959,8 +1183,14 @@ class Qwen3DllTTS(BaseTTS):
                     "utf-8", "replace")
                 raise AdapterUnavailable(
                     f"Batch synthesis failed: {err or 'no detail from the engine'}")
-            for i, (_, o, _, _) in enumerate(items):
+            if not hasattr(self, "_runaway_paths"):
+                self._runaway_paths = {}
+            for i, (t, o, _, _) in enumerate(items):
                 self._write_wav(audio[i], o)
+                a = audio[i].contents
+                problem = take_problem(t, a.samples, a.n_samples, a.sample_rate)
+                if problem:
+                    self._runaway_paths[str(o)] = problem
         finally:
             for i in range(k):
                 if audio[i]:
@@ -979,6 +1209,7 @@ class Qwen3DllTTS(BaseTTS):
             return False
         return getattr(self._lib, STREAM_FN, None) is not None
 
+    @_engine_call
     def synthesize_stream(self, next_item, on_done, slots: int, voice=None) -> None:
         """Record sentences up to `slots` at a time, each finished sentence
         handing its place to the next. `next_item()` gives the next (text,
@@ -1052,6 +1283,13 @@ class Qwen3DllTTS(BaseTTS):
                     if n_samples <= 0:
                         on_done(it, "The engine returned no audio")
                         return 1
+                    problem = take_problem(it[0], samples, n_samples, rate)
+                    if problem:
+                        # Not kept: it is recorded again on its own, in
+                        # order (all predictor steps), where a second run-on
+                        # is split into smaller pieces.
+                        on_done(it, problem)
+                        return 1
                     a = Audio()
                     a.samples, a.n_samples, a.sample_rate = samples, n_samples, rate
                     self._write_wav(ctypes.pointer(a), it[1])
@@ -1074,6 +1312,7 @@ class Qwen3DllTTS(BaseTTS):
                 raise StreamFailed(f"Stream stopped: {err or 'no detail from the engine'}",
                                    pending + carry)
 
+    @_engine_call
     def close(self) -> None:
         if self._handle and self._lib:
             self._lib.qwen3_tts_destroy(self._handle)

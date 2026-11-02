@@ -1,5 +1,56 @@
 # RealMe's changes to qwen3-tts.cpp
 
+## CPU attention copy controls
+
+Optional bits 2048/4096/8192 select contiguous sentence views, ordered F32 gather,
+and single-query causal-mask elision when no future key exists. All default off.
+Matrix/softmax arithmetic and persistent V-cache layout are unchanged. Gather
+uses at most GGML_MAX_SRC-1 operands per custom node; strided/unsupported inputs
+retain legacy concat. The production attention core is an owned testable helper.
+Current mask is 16383; there are still 19 upstream-derived patches. Native tests
+add 2,100 exact attention comparisons and 64 copy/mask cases. See root
+`CPU_ATTENTION_HANDOFF.md` for boundaries, copy accounting, short voice evidence,
+portability and the read-only weight-compressibility survey. No runtime weight
+codec or full lecture test is introduced.
+
+## Predictor scale storage and CPU matrix scheduling
+
+Optional runtime bits 256/512/1024 select predictor-only F32 scales, shape-based
+custom-product task requests, and aligned four-row worker boundaries. All default
+off. All 247 current Q8 matrices are consumed; retaining expanded scales only for
+50 predictor matrices reduces array storage from 69,206,016 to 13,762,560 bytes.
+Packed/original model bytes are unchanged. Task policy uses bounded proxy work
+and existing GGML thread limits; alignment preserves per-matrix tile pairs.
+No timing gain is claimed. Owned helpers plus `cpp.py` remain reproducible with
+19 upstream-derived patches; current runtime mask is 2047. See root
+`CPU_SCHEDULE_HANDOFF.md` for tests, portability and optional batch comparisons.
+
+## CPU embedding access/cache and four-row packed kernel
+
+Three optional exact-output controls add runtime bits 32/64/128: direct CPU
+embedding-row access, an 8 MiB converted-row payload cache with bounded metadata,
+and four-row products using existing RMQ8PK1 two-row tiles. All default off.
+The row owner resets on model unload; cache misses can retain the original
+backend copy independently of direct access. Four-row work never crosses worker
+or matrix boundaries and uses two-row tails. Original GGUF/cache bytes stay
+unchanged. `cpp.py` patch 19 reproduces embedding header/CPP changes; rebuild
+all affected libraries because the internal TTSTransformer layout changes.
+See root `CPU_EMBEDDING_TILES_HANDOFF.md` and `CPU_FEATURES.json` for controls,
+portability, test records, and optional short timing/quality batches.
+
+## Incremental CPU runtime controls and exact packed scales
+
+`realme_runtime.inc` provides per-engine call snapshots and busy rejection.
+`qwen3_tts_set_cpu_options` overrides five compute flags between calls: top-k,
+shared preparation, grouped products, packed weights, and optional exact F32
+packed scales. Scale expansion retains additional private memory and removes
+repeated half conversions; default off, no speed claim. Original GGUF/RMQ8PK1
+files stay unchanged. C API edits are reproducible patch 18 in `cpp.py`.
+Native checks now cover 2,880 tensor combinations plus sampler/RNG cases.
+See root `CPU_RUNTIME_HANDOFF.md`, `CPU_FEATURES.json`, and
+`03_App/check_cpu_matrix.py` for incremental/pair/factorial plans, portability,
+accuracy evidence and pending hardware checks. Full lectures remain deferred.
+
 **qwen3-tts.cpp** by predict-woo (https://github.com/predict-woo/qwen3-tts.cpp,
 MIT) runs Qwen3-TTS voice cloning in C++ on the **GGML** tensor library
 (https://github.com/ggml-org/ggml, MIT, the ggml authors). RealMe Studio uses
@@ -7,7 +58,7 @@ it as its local voice engine, and changed it to run about six and a half
 times as fast on an ordinary CPU (three times one sentence at a time) with
 the same sound. This file lists every change, the
 switch that turns it off, and how it was checked. The base is upstream commit
-`b3ba14077cf1` with GGML `3af5f5760e19`. The Qwen3-TTS weights are the Qwen
+`b3ba14277cf1` with GGML `3af5f5760e19`. The Qwen3-TTS weights are the Qwen
 team's and carry their own licence; nothing here changes them.
 
 In RealMe Studio the changes are made once, in RealMe's engine source
@@ -17,6 +68,63 @@ built only when asked for by name. The standalone release,
 realme-qwen3-tts.cpp, is that same source.
 
 ## Results
+
+### CPU preparation, grouped projections, and RMQ8PK1
+
+The owned sampling helper selects the top-k cutoff without sorting score/index
+pairs, with `QWEN3_TTS_TOPK_SELECT=0` preserving the legacy path. All three
+single-transformer sampling sites and the batch sampler use it. Optional
+`QWEN3_TTS_SEED` supports reproducible sampled checks and is reflected in the
+adapter's sampled-voice fingerprint.
+
+Opt-in `QWEN3_TTS_Q8_PREP=1` shares prepared input columns through a GGML dependency;
+`QWEN3_TTS_Q8_GROUP=1` groups Q/K/V and gate/up products into contiguous output
+views. `QWEN3_TTS_Q8_PACK=1` uses a validated, read-only RMQ8PK1 derived file with
+two-row integer tiles and original half-scale bits. Originals are never rewritten.
+The packed CPU kernel retains per-block arithmetic/reduction order and includes
+singleton batch tails; unsupported/cache-failure paths retain original kernels.
+The internal model gains a shared owner, so native consumers must rebuild.
+See root `CPU_COMPUTE_HANDOFF.md` for the 1,440 tensor tests, seeded sampler/short
+voice checks, format/rollback details, memory tradeoff, and remaining validation.
+
+### Opt-in read-only transformer weight mapping
+
+`QWEN3_TTS_WEIGHT_MMAP=1` extends the existing CPU text map to every tensor in
+the loaded transformer context. Original GGUF values/types/layouts are used
+without conversion or repacking. This can reduce private committed weight
+storage and allow OS file-page sharing, while retaining hot-weight computation
+and bandwidth costs. The default remains text-only mapping. Native Q8/F16 checks
+compare every mapped byte, protection, lifetime, and fallback; bounded short
+waveform comparisons are recorded in root `WEIGHT_MMAP_HANDOFF.md`.
+`apply_weight_mmap_patch` reproduces the mapped-tensor copy skip and handles
+GGML's expected null allocation when all tensors already have backing storage.
+No full lecture or speed gain is claimed.
+
+### Reuse CPU generation scratch vectors
+
+`realme_batch.inc` now uses the owned `realme_batch_scratch.inc` helper to retain
+input, position, index, embedding-sum, hidden-state, and logit vector capacity
+within one fixed batch or streaming call. Every reset restores the previous
+fresh-vector initialization; model operations and graph scheduling are unchanged.
+`QWEN3_TTS_SCRATCH_REUSE=0` disables this capacity reuse. A model-free native
+check verifies matching bytes during shrink/refill, zero allocations after
+warming tested shapes, and call-local cleanup/ownership. No speed or waveform
+claim is made; later comparisons are optional. Root `SCRATCH_REUSE_HANDOFF.md`
+records the implementation, memory tradeoff, rollback snapshot, and cross-checks.
+
+### Speaker embedding bounds and CPU runtime routing
+
+Embedding synthesis now rejects buffers whose declared length differs from the
+loaded model's hidden size, before reading speaker data. This covers single,
+reference-encoder, batch, and stream synthesis. The idempotent
+`apply_embedding_validation_patch` reproduces the upstream-file edits.
+The adapter permits CPU batches on a GPU-capable build when CPU is explicitly
+selected, and preserves an explicit environment backend override in auto mode.
+Valid-input arithmetic and weights are unchanged. XPS checks: 21 guard-page
+boundary rejections, 142 batch checks, patch reproduction/idempotence/drift checks.
+New comparative timing, listening, lecture stress, and NUC installation are
+deferred. See root `CPU_TESTING_HANDOFF.md` and optional
+`03_App/check_lecture_cpu.py` for staged, recorded runs.
 
 On a small PC with a 6-core, 12-thread laptop processor (Intel i7-10710U, 15 W; 64 GB DDR4-2667; AVX2 build, no GPU), a real cloned voice;
 seconds of work per second of speech (1.0 is real time):
@@ -47,6 +155,9 @@ the four not told apart in listening.
 
 | Change | Files | Sound | Switch |
 |---|---|---|---|
+| **Lazy mode-3 fallback weights.** Prepare the packed decoder weights first, retain only the three earlier regular F32 convolutions, and prepare the missing older F32 layout only if the packed decoder is rejected. A failed fallback allocation returns a clear error and can be retried. | `realme_vocoder.inc`, generated edits in `audio_tokenizer_decoder.{h,cpp}` | identical float samples in modes 0–3, frame-cap and shape fallback, short input, low-memory mode, and allocation failure/retry; see `VOCODER_STORAGE_HANDOFF.md` | `QWEN3_TTS_VOCODER_LAZY=0` retains eager copies |
+| **Read-only mapped text embeddings on CPU.** The F16 vocabulary table stays in the existing GGUF and is paged in on demand. GGML wraps its original bytes instead of making a private table and a full-size read buffer. Mapping failures and other backends use the copying loader. | `realme_text_mmap.inc`, generated edits in `tts_transformer.{h,cpp}` | every table byte checked against the file; identical greedy float samples against the cache-enabled engine; see `TEXT_MMAP_HANDOFF.md` in RealMe for measurements and limits | `QWEN3_TTS_TEXT_MMAP=0` selects copying |
+| **Growing and reused sentence caches.** CPU batches start with the prompt plus 128 audio positions and the existing allowance, grow by copying the used F16 key and value prefixes before the next graph is built, and keep the original generation limit. Refilled streams reuse completed slots' allocations within the stream; all sentence state is reset. Single-sentence allocation is unchanged. The recorder's memory guard stays conservative for long sentences. | `realme_batch.inc` | identical float samples in forced growth and refill checks against the prechange library; see `CACHE_GROWTH_HANDOFF.md` in RealMe for measurements and limits | `QWEN3_TTS_CACHE_GROW=0` restores eager allocation and no reuse; `QWEN3_TTS_CACHE_INITIAL` defaults to 128; `QWEN3_TTS_CACHE_TRACE=1` logs events |
 | **Thread count applied.** Upstream stores it and never passes it to the CPU backend, so everything ran on 4 threads. | `gguf_loader.cpp` | identical | `QWEN3_TTS_THREADS=N` |
 | **One pool of worker threads for the engine**, kept as long as its CPU backend (GGML otherwise makes one for every graph, about 16 per step of speech). With GGML built without OpenMP (`REALME_GGML_OPENMP=0` when RealMe builds it) the pool's threads are GGML's own, waiting at each barrier on an atomic counter instead of in the compiler's OpenMP runtime. Thread scheduling does not change the arithmetic: every output is computed whole by one thread. Which is faster depends on the machine and its compiler's OpenMP (on Windows, MSVC's), so it is measured there; OpenMP stays the default, as GGML's spinning threads slow down badly when other work shares the cores. | `gguf_loader.cpp` | identical | `QWEN3_TTS_POOL=0`; GGML's own threads: `-DGGML_OPENMP=OFF` |
 | **`ffn_down` converted to F32 once at load**, not inside every step's graph (33 layers, about 1,240 conversions per second of speech). 8-bit weights are multiplied as they are. Not in low-memory mode, which reloads the model per sentence. About 0.4 GB more memory. | `tts_transformer.{h,cpp}` | identical | `QWEN3_TTS_FFN_F32=0` turns it off |
@@ -141,3 +252,383 @@ the four not told apart in listening.
   broadcast, snake and vocoder changes switch themselves off; the `ffn_down`
   change stays on, using about 0.4 GB more GPU memory, and falls back to
   upstream's per-step conversion if that memory is not there.
+
+## Optional Q8 model-data experiments (2026-10-31)
+
+Q8 remains the production baseline. No trained Q8, F16 or F32 values are changed.
+New controls default off and retain the previous paths. The current opaque C API
+runtime mask is 1048575; all controls except profiling are enabled by 786431.
+Bits 16384/32768/65536 select native four-row RMQ8PK2 panels, predictor-only panel
+layout and read-only persisted predictor F32 scales. Bit 131072 selects an
+8MiB/64-entry whole-token-sequence text projection cache, bit 262144 enables
+packed-product counters, and bit 524288 selects resolved tensor-pointer dispatch.
+The environment suffixes are Q8_PANEL4, Q8_ROLE_LAYOUT, Q8_MAPPED_SCALES,
+TEXT_PROJECT_CACHE, Q8_PROFILE and Q8_INDEX, each prefixed by QWEN3_TTS_.
+
+RMQ8PK1 is unchanged. PK2 descriptors identify per-matrix row layout and kernel
+ABI; strict semantic source/payload checks and atomic publication are retained.
+Original GGUF files remain required for fallback. Packed consumers are currently
+x86 AVX2/FMA CPU code; other backends keep their original routes. Layout choices
+are experiments, not measured universal winners. Profiling reports summed worker
+time and logical payload visits, not elapsed time or hardware memory traffic.
+Current XPS evidence includes 14,400 exact new-format matrix comparisons and
+short greedy/seeded-sampled speech checks against the saved engine. Controlled
+timing, broader listening, NUC and ARM/GPU checks remain separate.
+
+## Complete CPU-native bundle, PK3 interleaving and complete vocabulary
+
+RMCPU001 is an opt-in mapped container with both original Q8/F16 GGUF model
+sections, PK2 and PK3 prepared layouts, full F32 projected text vocabulary and
+provenance. Transformer weights attach directly to mapped sections; encoder
+and decoder copy selected weights to existing backend buffers. Empty model
+directory and direct .rmcpu input checks require no extraction. CPU backend
+must be explicit; existing GPU/auto routes retain their defaults.
+
+PK3 physically interleaves Q/K/V and gate/up row panels in layer order with
+per-panel q/d/F32-scale offsets. Dot-product/FMA/reduction order is unchanged.
+Bit 1048576 (QWEN3_TTS_Q8_INTERLEAVE) selects this prepared route. Bit 2097152
+(QWEN3_TTS_TEXT_VOCAB) copies compatible rows from all 151,936 x 1,024 F32
+projected results. Default off; runtime mask 4194303. Vocabulary guards bind
+source, producer DLLs, CPU execution fingerprint, FP mode and settings. A
+guard failure uses the source projection graph. Original precision is kept.
+
+Model-bound mapping ownership, lazy per-section SHA256 validation, optional
+eager validation, busy-guarded offline asset APIs and atomic fresh conversion
+are recorded in CPU_NATIVE_BUNDLE_HANDOFF.md. Required source sections are
+validated before selection; corrupt optional assets retain source routes.
+The bundle is immutable for a loaded model's lifetime. Original GGUFs and old
+packs remain available; a direct invalid bundle has no implicit fallback dir.
+
+Final XPS validation: 23,040 exact PK2/PK3 matrix comparisons, seven short
+voice profiles, live switching, seeded sampling, public single synthesis,
+corrupt-data fallback, 5,115 vocabulary row comparisons, exact 1,024-value
+speaker embedding and eight Python check scripts. Source integration is
+reproducible through apply_cpu_bundle_patch (21 patches total). This is Windows
+x86 CPU validation, not a NUC/GPU/ARM result or controlled speedup claim.
+See CPU_NATIVE_BUNDLE_XPS_CHECKS.json and the frozen producer under
+_review/cpu_native_bundle/validated/. Full lectures and broad listening remain
+optional; the user's report has not been edited.
+
+## Stage timing, batched predictor attention, decoding beside the pass (2026-11-01)
+
+Added by Claude after reviewing the CPU work above. All three are off by
+default; with them off the engine computes exactly what it did.
+
+One frame routine. The fixed pass (`generate`) and the stream each carried a
+copy of the per-frame code: the code predictor's 15 runs, keeping the frame,
+and the talker step. Both now call `frame_rest`, so a change to one frame is
+made once. Each sentence uses its own frame count, as the stream already did;
+in the fixed pass that count equals the shared one. Greedy codes from the
+refactored engine equal the previous engine's code for code (1, 4, 8 and 16
+sentences, including a sentence cache growing from 146 to 238 positions).
+
+Stage timing (QWEN3_TTS_STAGE_TIMING=1). Each pass or stream reports where
+its time went: prompt, first code, predictor graph building and computing,
+sampling, embeddings, cache growth, talker building and computing, vocoder
+and hand-back, with graph nodes per frame step. Off, each mark is one branch.
+On a synthetic model with the real shapes (random weights, two threads) the
+code predictor took 64-71% of generation and the talker 26-34%; graph building
+was 2-3%. The predictor's graphs had about 2,100 nodes each at 16 sentences,
+almost all of them per-sentence attention.
+
+Batched code predictor attention (QWEN3_TTS_CP_BATCH_ATTN=1). The predictor's
+sentences all stand at the same step of the same frame and its cache holds
+one frame only, so one cache of [head_dim, kv_heads, 16, sentences] per layer
+serves the pass, and each layer's attention is one set of operations for all
+sentences (`realme_attention_batched`) instead of one per sentence. The ops
+are those of `realme_attention_graph`, applied slice by slice in GGML's third
+and fourth dimensions, so the numbers are the same: codes identical for 1, 2,
+5 and 16 sentences (test_cp_batch_attention). Predictor nodes per frame step
+fell from 31,640 to 3,440 at 16 sentences; on two threads a 16-sentence pass
+took 4-6% less time in alternating runs, while at two to four sentences the
+difference was within run-to-run noise. The saving is
+the per-node work and thread synchronisation, which grows with threads, so a
+six-core machine may gain more; that is for its own measurement.
+
+Decoding beside the pass (QWEN3_TTS_DECODE_ASYNC=1). In the stream a finished
+sentence was decoded inside the loop while every other sentence waited. With
+the switch on, the vocoder takes a CPU backend of its own
+(`apply_decode_async_patch`, `realme_decoder_backend`) with the engine's
+thread count, and one worker thread decodes finished sentences while the pass
+continues; during that stream the vocoder uses QWEN3_TTS_DECODE_THREADS
+threads when set, and the engine's count again afterwards. Audio is still handed back on the
+caller's thread, in the order sentences finished, with the decoder's own
+samples. The transformer and vocoder otherwise share one CPU backend, which
+runs one graph at a time, so the switch must be set when the engine loads; if
+the vocoder has no backend of its own the stream decodes in the loop as
+before. Whether overlap gains anything depends on idle cores: the two pools
+can compete for the same cores. test_decode_worker checks order, samples,
+empty sentences, a failure reported in place and joining with work queued
+(also under ThreadSanitizer); identical audio on the real model is part of
+run_cpu_combinations.py.
+
+Smaller changes. Cache growth copies CPU caches with one memcpy per tensor
+instead of through a 1 MiB staging buffer (test_cache_growth). SHA-256 has a
+portable implementation where the Windows provider is absent (NIST vectors and
+301 lengths against hashlib, test_sha256); the bundle is still mapped only on
+Windows, so this lets its format checks run elsewhere, not the bundle itself.
+
+Measuring them together. run_cpu_combinations.py runs every combination of
+the batched predictor attention, decoding beside the pass, the talker's
+ordered attention gather (runtime option 4096) and two pass widths, each
+twice in a shuffled and then reversed order; requires identical greedy audio
+from every run; estimates each switch's effect and each pair's interaction
+from all runs; and confirms the fastest combination against the current
+setting in alternating pairs (each at least 3% faster). It changes no
+setting; it prints the RealMeStudio/.env lines for a final lecture render.
+
+## Kept code predictor graphs (2026-11-01, later)
+
+With the batched predictor attention, a predictor graph depends only on how
+many sentences are in the pass and on the pass cache, not on which sentences.
+So its 15 graphs (prefill and 14 steps) are built once for a width, each in a
+metadata buffer of its own with its own GGML allocator, and run on the CPU
+backend directly frame after frame (`cp_graphs`, `cp_reused`, `cp_compute`).
+A new width, a grown pass cache or new packing builds them again; the cache
+growing clears them first, since they refer to it. On by default with
+QWEN3_TTS_CP_BATCH_ATTN=1; QWEN3_TTS_CP_GRAPH_REUSE=0 turns it off. Same
+graphs, same operations: codes identical with and without, while widths go
+2, 4, 3, 6, 1, 5 and members change at one width (test_cp_graph_reuse; 150
+graph builds instead of 210 there, 15 instead of 600 in a 40-frame pass;
+also under ASan/UBSan). On the XPS quick test graph building took 5-7% of the
+time; its saving there is for the next measurement. About 1 MB of graph
+metadata per kept graph.
+
+Decoding beside the pass, full threads when alone (2026-11-01). The NUC
+combination run showed the switch costing time: its corpus had one sentence
+that, under greedy decoding, never ended and ran alone to the 4096-frame limit
+(328 s of audio), and that sentence was then decoded on QWEN3_TTS_DECODE_THREADS
+(two) threads while nothing else computed: vocoder 150 s against 90 s in the
+loop. Each decode now carries its own thread count, set on the worker thread
+before that sentence's vocoder graph: the lowered count while other sentences
+are speaking, the engine's full count when the finished sentence was the last
+one in the pass. test_decode_worker passes (also under ThreadSanitizer).
+
+## A frame limit per sentence, and run-on takes recorded again (2026-11-01)
+
+Qwen3-TTS ends a sentence by choosing its end code. Now and then it never does
+and talks on alone to the call's limit: 4096 frames, 5.5 minutes of audio,
+about 10 minutes of computing on the NUC and a vocoder graph of about 12 GB
+(the NUC combination run met this with greedy decoding on a 33-word item).
+
+Engine: each sentence in a pass or stream has its own limit, 40 frames plus
+QWEN3_TTS_FRAMES_PER_TOKEN (default 15) per prompt token, never above the
+call's (`frame_limit`, `seq::max_frames`). That is several times a slow
+reading pace, so a sentence that ends by itself never meets it and its codes
+are unchanged (test_frame_limit: a sentence that never ends stops at its
+limit with every frame up to there identical; greedy codes otherwise equal
+the previous engine's). 0 turns it off.
+
+Studio (tts_qwen3_dll.py, speak.py, prerecord.py): a single call's limit is
+set the same way from the text (`frame_cap`); a take longer than twice the
+text said slowly (1.5 words, 10 characters or 3 CJK characters a second, plus
+2 s) is a run-on (`ran_on`). A run-on take is never cached. Recorded ahead
+(stream, pass or single) it is handed back as failed and recorded again in
+order; in order it is said again once (a fresh draw), then split into shorter
+calls, and a piece that cannot be split further is kept with a note to
+listen. REALME_RUNAWAY_CHECK=0 turns the check and the single-call limit
+off. t_runaway.py; t_prerecord.py and the batch/stream adapter tests pass.
+
+
+## Kept talker graph, AVX-VNNI kernels, fewer codebooks (2026-11-01, evening)
+
+Kept talker graph (QWEN3_TTS_TALK_GRAPH_REUSE; on with QWEN3_TTS_CP_BATCH_ATTN=1
+as the kept predictor graphs, =0 off, =1 on without it). A talker step's graph
+differs from the previous step's only in where each sentence's attention
+writes and reads its own cache: one position further on. So it is built once
+for a set of sentences, at each sentence's last cache position (every
+intermediate then has room for any step before), allocated with its own GGML
+allocator, and before each step moved to the real positions
+(`realme_attention_move`: the two cache writes and their copies placed, the
+cache views, their permutes and the transpose given the new length, the
+attention products, scale, mask and softmax made that length again, the mask's
+position set where the mask is used). The CPU backend plans every compute from
+the tensors as they are, so the same ops run on the same numbers. Another
+sentence, a grown cache or new packing builds it again (`talk_graph`, keyed by
+each sentence's id and cache buffer). test_talk_graph_reuse: 2816 codes
+identical to talker graphs built every step and to the path with no kept
+graphs at all, across changing members and widths, caches growing from 4
+positions, with and without the mask copy (also under ASan/UBSan; two
+deliberately wrong moves, one length and one stale write position, both
+caught). Talker graph building took 2.8-3.0% of the XPS quick test (7 ms a
+frame step); kept, about 0.2 ms.
+
+AVX-VNNI kernels (QWEN3_TTS_Q8_VNNI=0 off). Intel Core 12th generation and
+Core Ultra, and AMD Zen 5, add vpdpbusd: the four-byte sums that AVX2 makes
+with vpmaddubsw then vpmaddwd, in one instruction. RealMe's 8-bit kernels (the
+row kernel, the two- and four-row packed tiles) are now in
+`realme_q8_kernels.inc`, included twice: once with AVX2's pair, once with
+vpdpbusd, chosen at first use from CPUID 7.1 EAX bit 4. Each lane gets the same
+integer both ways (Q8_0 values lie in -127..127, so nothing saturates), and
+everything after it is the same code, so the numbers are identical bit for bit;
+the self-checks against GGML's own dot product run on the computer itself.
+test_q8_vnni: 1584 row and 2880 packed-tile products equal between the two
+and to GGML's, random and extreme values; test_cpu_compute's 46080 exact
+packed comparisons and the batch tests pass with VNNI active. In cache, the
+VNNI row kernel is about 1.2 times as fast (Sapphire Rapids); in a pass,
+where weights come from memory, less. The local build (rev_build.py) compiles
+and runs a probe: where MSVC knows the instruction, RealMe's kernels are built
+in (CL=/DREALME_AVXVNNI); where the processor also has it, GGML is built with
+GGML_AVX_VNNI=ON, whose single-sentence dot product makes the same integers.
+REALME_BUILD_VNNI=0 builds without. The i7-8550U and i7-10710U have no VNNI and
+keep the AVX2 kernels.
+
+Fewer codebooks (experimental, lossy; `realme_codebooks.inc`, batch and stream
+only). QWEN3_TTS_CP_STEPS=K (1..15, default 15) stops the code predictor after
+codebook K; the talker's next input adds each skipped codebook's mean
+embedding (QWEN3_TTS_CP_FILL=mean, default; made once per table) or nothing
+(=zero), and the vocoder hears codebooks 0..K. QWEN3_TTS_VOCODER_CODEBOOKS=N
+(2..16) has the vocoder hear the first N only, with the transformers
+unchanged: what fewer codebooks can sound like at best. The vocoder edit is
+apply_codebooks_patch (the sum of the rest codebooks runs to the limit; inputs
+left out are skipped). Unset, both are exactly as before. test_codebooks (a
+synthetic vocoder, make_synthetic_vocoder.py, and the synthetic transformer):
+unset or 15/16, codes and samples as before; codebooks past N are ignored;
+K=12 runs 12 predictor graphs a frame, the first frame's codes 0..12 are the
+full run's and 13..15 are 0; the mean embedding is the table's mean (also
+under ASan/UBSan). run_codebook_listening.py renders the same sentences full,
+vocoder-only at 13/11/9 and with 12/10/8 steps (mean and zero fill), saves the
+takes side by side, and reports times, lengths and the vocoder stage's
+signal-to-difference. Not for Studio's production profile until listened to.
+
+## Rows shared out on hybrid processors; the vocoder on a GPU (2026-11-01, night)
+
+Rows shared out (`realme_share.inc`; QWEN3_TTS_Q8_SHARE=1 on, =0 off, unset on
+where CPUID 7.0 EDX bit 15 says the processor is hybrid -- Intel Core 12th
+generation and Core Ultra; not the i7-8550U or i7-10710U). RealMe's 8-bit
+products split rows evenly between threads, so on a processor with fast and
+slow cores the fast ones wait at the end of every product. Shared out, each
+thread takes the next chunk of rows (about total / (8 x threads)) as it
+finishes the last; each row is still computed whole by one thread with the
+same kernel, so the numbers are the same. The two chunk counters sit in the
+product node's op_params after GGML's custom-op header; every graph thread
+calls a custom op once per compute, the last to finish resets them, and the
+barrier after the node orders that before the next compute.
+test_q8_share: 835380 products equal to GGML's dot product shared out and split
+evenly, 1..8 threads, two products in a row, the same graph computed three
+times (counters back at zero each time); test_cpu_compute's packed and grouped
+comparisons and the transformer tests pass with sharing forced on; the codes
+of a 6-sentence, 12-frame run are the same with sharing on or off, 2 or 3
+threads, VNNI on or off, and on the path with no kept graphs.
+
+The vocoder on a GPU (QWEN3_TTS_VOCODER_BACKEND=gpu; `realme_decoder_backend`).
+The integrated GPU first, else a discrete one, as the vocoder's own backend;
+the transformers stay on the CPU (RealMe's revised engine sets
+QWEN3_TTS_BACKEND=cpu). With QWEN3_TTS_DECODE_ASYNC=1 a finished sentence is
+decoded on the GPU while the next frames are computed on the CPU. RealMe's
+CPU vocoder kernels and the one-pass snake step aside on a non-CPU backend
+(as before); ops the GPU lacks fall back to the decoder's CPU backend. Needs
+GGML built with a GPU backend: the local build adds GGML_VULKAN=ON when
+REALME_BUILD_VULKAN=1 and the Vulkan SDK's glslc is found (VULKAN_SDK), and
+then ships ggml-vulkan.dll with the other four. Off unless both are set.
+[Corrected 2026-11-02, see the review section below: as first written the
+vocoder's weights stayed in host memory, so GGML's scheduler ran every op on
+the CPU and nothing reached the GPU; the "53 dB" was the CPU vocoder at two
+thread counts. test_vocoder_beside passed because the CPU fallback is exact.] Speed on a
+real integrated GPU is for the new laptop to measure
+(run_cpu_combinations.py --splits 6+0,6+gpu).
+
+Thread splits (run_cpu_combinations.py --splits "6+0,6+2,5+1,6+6,6+gpu"):
+the confirmed switches with the threads divided between transformers and
+vocoder; GPU takes are compared with GPU takes only.
+
+## The vocoder's convolutions in 8 bits (2026-11-02; experimental, lossy)
+
+QWEN3_TTS_VOCODER_Q8=8 (or 1), =7; off unless set, read at load
+(`realme_vocoder3.inc`, vocoder 3 only). Each output channel's weights per
+tap are rounded to 8 bits with their own scale; each input time step to 8
+bits (=8) or 7 bits (=7) with its own scale as it enters a convolution. The
+integer products are exact on every processor -- AVX2 as GGML's 8-bit dot
+product (sign steps), AVX-VNNI with the input offset by 128 and the offset
+taken off; in mode 7 the input is stored plus 64 and AVX2 needs no sign
+steps -- then one multiply per tap returns to floats; the final
+one-channel convolution, snakes and biases stay 32-bit. The weights are made
+at load beside the 32-bit packing (about 50 MB more; found under it,
+`realme_voc3_pk`).
+
+Synthetic vocoder (random weights, which magnify rounding through 30 layers;
+the real one must be listened to): the sound is 23 dB (=8) or 19 dB (=7)
+above its difference from the 32-bit vocoder; a fake-quantisation sweep
+found per-32-channel scales worth 1-3 dB more and 7-bit weights 4 dB less.
+Whole-vocoder time on this machine's Sapphire Rapids, 2 threads: 32-bit
+3.5-3.8 s; =8 2.1-2.3 s with AVX-VNNI but 3.5 s with AVX2 alone (the sign
+steps eat the gain); =7 2.1 s with AVX-VNNI, 2.7-3.0 s with AVX2 alone.
+So on the NUC (AVX2) only =7 can help, at its lower quality; on a Core Ultra
+=8 is the one to try. test_vocoder_q8: 2688 tile products exactly equal to a
+plain loop for AVX2 and AVX-VNNI in both modes (1..6 rows, extreme values),
+the decoded sound finite and 23.2 / 19.3 dB from 32 bits, the same with AVX2
+and AVX-VNNI (also under ASan/UBSan); unset, vocoder 3's samples are as
+before. Listening: run_codebook_listening.py --stage vocoder adds vocq8 and
+vocq7.
+
+## Review fixes (2026-11-02; an independent code review of the changes above)
+
+GPU vocoder, made real. GGML's scheduler runs an op where its weights are,
+and RealMe loads the vocoder's weights into host memory (QWEN3_TTS_BACKEND=
+cpu), so with QWEN3_TTS_VOCODER_BACKEND=gpu every node still ran on the CPU
+(GGML_SCHED_DEBUG=2: one CPU split). Now (apply_vocoder_gpu_patch,
+`realme_vocoder_weights_to`) the weights, codebooks already normalised, are
+moved into a buffer of the GPU backend once it is chosen; the decoder's CPU
+fallback (for ops the GPU lacks, e.g. the transposed convolutions) gets the
+vocoder's thread count instead of GGML's default 4, also when the stream
+lowers or raises it. On llvmpipe: 7 Vulkan splits and 6 CPU ones; samples
+25 dB above their difference from the 32-bit CPU vocoder on the synthetic
+model (the GPU path is upstream's 16-bit graph, and that GPU's arithmetic);
+upstream's 16-bit CPU graph is 53 dB from the 32-bit one there. So the GPU
+vocoder belongs with the listening-tested options, not the exact ones.
+test_vocoder_beside passes with the decode on the (software) GPU.
+
+Sharing self-check. Rows shared out rely on GGML calling a custom op on every
+graph thread once per compute. The first time sharing would be used (decided
+while a graph is built, in realme_q8_eligible), two products are computed
+twice on three threads; the numbers must equal GGML's dot product and the
+counters be back at zero, or sharing stays off ("8-bit rows shared out
+between cores: on/off").
+
+Smaller: the VNNI build probe compiles RealMe's VNNI kernels in only when
+its test program ran correctly or reported no VNNI (a crash or wrong sum now
+means none); one GGML_VULKAN flag instead of OFF then ON; the stream joins
+its decode worker before returning on a tokenizer failure (it could change
+the decoder's threads while the worker was decoding); the predictor-mean
+cache is keyed by the table's bytes too (a reloaded model at the same
+address made its means again); the 8-bit vocoder packs only convolutions
+with input channels in fours. All engine tests pass again (sharing forced on
+and off).
+
+## One local voice; what was removed (2026-11-02)
+
+`realme-rev-qwen3-tts` is now RealMe's one local voice, built by Studio from
+this source for each computer (`engines/rev_build.py: studio_build`;
+`_Rebuild_Voice_Engine.bat`) and reading the 8-bit GGUF pair as it is (mapped,
+`QWEN3_TTS_WEIGHT_MMAP=1`). Its adapter sets every runtime switch: batched
+predictor attention with kept graphs, attention join and top-k selection
+(`qwen3_tts_set_cpu_options` mask 4194303, enabled 4097), 12 predictor steps
+with mean fill in passes and streams (a sentence on its own: 15), 16
+sentences a pass with 32 GB or more.
+
+Removed, with their patches, files and tests, because the voice no longer
+uses them and none had shown a gain on the NUC: the CPU bundle (RMCPU001,
+`realme_cpu_bundle.inc`, `apply_cpu_bundle_patch`, the direct-bundle model
+path), the packed 8-bit layouts (RMQ8PK1/2/3, `realme_q8_pack.inc`, the
+two- and four-row tile kernels and their dispatch), the projected text
+vocabulary and projection cache (`realme_projection.inc`,
+`apply_projection_cache_patch`), and the offline asset API
+(`realme_assets.inc`: `qwen3_tts_cpu_dimensions`, `_prepare_cpu_weights`,
+`_cpu_projection_layout`, `_project_cpu_tokens`, `_cpu_fingerprint`). The
+runtime-option bits they used (8, 16, 128, 256, 1024, 16384, 32768, 65536,
+131072, 262144, 524288, 1048576, 2097152) are still accepted and do nothing.
+The 8-bit products now take unpacked rows only (`realme_q8_row`, AVX2 or
+AVX-VNNI), as the voice always did.
+
+Checked: the codes of 6 synthetic sentences over 12 frames hash the same
+before and after the removal (with and without batched attention, attention
+join and row sharing, and at 12 steps); every native test passes
+(`test_cpu_compute` without the packed controls: 1440 exact tensor
+comparisons; `test_q8_vnni` row kernels; `test_q8_share`; the transformer,
+cache, graph, vocoder and mapping tests); the source is what `integrate()`
+writes.
+
+Also: a take check on every take recorded in a pass or stream
+(`adapters/tts_qwen3_dll.py: take_problem`: run-on, invalid samples, too
+short for its words, mostly silent, a stop of over 2 s, clipped), a take that
+fails being recorded again on its own -- with all 15 steps.

@@ -12,7 +12,7 @@ paper or a topic into a two-voice podcast.
 | | |
 |---|---|
 | **Gemini** (`gemini-tts`) | your voice cloned in your Google project. Every sentence of a lecture is sent there to be spoken. No graphics card; a lecture records in about a third of its length (100 minutes in 30–40), because the slide videos are made while the audio comes back and two sentences are requested at once; about a dollar an hour of lecture, 130 languages. Needs a **paid** Gemini project: on the free tier Google's terms say people may review what you send, and your voice is personal information |
-| **The free local clone** (`qwen3cpp`) | your voice cloned on your own computer, by RealMe's revised voice engine. Nothing leaves it and nothing to pay; faster than real time on a 6-core PC (an hour of lecture in about three quarters of an hour), longer on a smaller laptop; 10 languages. It comes in a RealMe package, or `3_Get_Voice_Engine.bat` builds it (section 12) |
+| **The free local clone** (`realme-rev-qwen3-tts`) | your voice cloned on your own computer, by RealMe's revised voice engine. Nothing leaves it and nothing to pay; faster than real time on a 6-core PC (a 52-minute lecture recorded in 33 minutes), longer on a smaller laptop; 10 languages. It comes in a RealMe package, or `3_Get_Voice_Engine.bat` builds it (section 12) |
 | **No clone** | the three free draft voices — Amy, Ryan and Cori — read your lectures |
 
 The draft voices are there either way: use them to hear a script before you
@@ -71,7 +71,9 @@ Other launchers:
 | | |
 |---|---|
 | **5_Command_Prompt.bat** | a window where the `realme` command works from any folder |
-| **6_Free_Disk_Space.bat** | removes superseded engine files |
+| **6_Free_Disk_Space.bat** | frees the space old voice-engine builds and data take |
+| **_Rebuild_Voice_Engine.bat** | builds the local voice again for this computer's processor (after an update or on a new computer) |
+| **_Tune_Voice_Engine.bat** | finds the fastest settings of the local voice on this computer (20–40 minutes) |
 | **_Run_Tests.bat** | runs every check and test suite |
 | **_Make_Package_For_Others.bat** | builds `RealMe_Package.zip` for a colleague: no voice, no key |
 
@@ -461,14 +463,13 @@ Two Gemini settings in Twin Setup, both best left alone:
 
 ## 12. The free local voice clone
 
-`qwen3cpp` clones your voice on your own computer. Nothing about your voice or
+`realme-rev-qwen3-tts` clones your voice on your own computer. Nothing about your voice or
 your narration leaves the machine, it works with the network unplugged, and
 recording costs nothing. It runs on **RealMe's revised voice engine**: the
 open-source qwen3-tts.cpp (by predict-woo, on the GGML library) with RealMe's
-changes, which make it about six and a half times as fast with the same
-sound. On a 6-core PC it measured 0.58 seconds of work per second of speech
-at 8 sentences per pass, against 3.8 for the original engine; a whole
-lecture rendered in about 0.7 times its length. Longer on a smaller laptop. Draft with Amy or Ryan first and let the final render run
+changes, which make it several times as fast with the same sound. On a
+6-core PC a 52-minute lecture recorded in 33 minutes (0.63 of its length),
+against 3.8 seconds of work per second of speech for the original engine. Longer on a smaller laptop. Draft with Amy or Ryan first and let the final render run
 unattended. The same engine is published on its own as
 **realme-qwen3-tts.cpp**, for anyone who wants it outside RealMe.
 
@@ -488,16 +489,20 @@ build it for your own processor:
    and Ninja; RealMe finds them itself.
 2. Double-click **`00_Windows\3_Get_Voice_Engine.bat`** and answer *y*. It
    downloads the Qwen3-TTS voice model (about 2.5 GB, once), converts it,
-   builds RealMe's engine from its source inside RealMe,
-   and makes the 8-bit copy of the model that lectures use. About 6 GB of
+   makes the 8-bit copy of the model that lectures use, and builds the
+   voice engine for your processor from its source inside RealMe. About 6 GB of
    disk and 20–40 minutes; parts already done are skipped if you run it
    again.
 3. Choose the free local clone in **Twin Setup → Voice for lectures**.
 
-**After a RealMe update** that changes the engine, double-click
-**`00_Windows\_Rebuild_Voice_Engine.bat`** with the Studio closed. Answer *y*
-to rebuild everything (the engine, the GGML library it runs on and the copy
-the checks use) -- the safe choice after an update. A failed rebuild puts
+**After a RealMe update** that changes the engine, or on a new computer,
+double-click **`00_Windows\_Rebuild_Voice_Engine.bat`** with the Studio
+closed. It builds the voice engine for this processor (5–10 minutes) only
+when its source or the computer changed; `_Rebuild_Voice_Engine.bat force`
+builds it anyway. Its settings (threads, sentences per pass, predictor
+steps) are RealMe's measured ones; `_Tune_Voice_Engine.bat` measures them
+on a new computer. The rest of this section also describes the previous
+engine (`qwen3cpp`), which still makes the model files. A failed rebuild puts
 the working engine back.
 
 ### What makes it fast
@@ -508,9 +513,9 @@ the working engine back.
   its model from memory, so a pass of several sentences reads it once for
   all of them. The sound is exactly the same as one at a time. By default 8
   per pass, fewer where memory is short; as each sentence finishes, the next
-  takes its place in the pass. `00_Windows\_Bench_Batch.bat` (or **Measure
-  this computer** in Twin Setup) measures 1 to 16 per pass on your computer
-  and saves the best size (the smallest within 6% of the fastest).
+  takes its place in the pass. The local voice uses 16 per pass with 32 GB
+  of memory or more, else 8; `00_Windows\_Tune_Voice_Engine.bat` measures
+  the best on your computer.
 - **The 8-bit model**, which reads half as much per step and is not told
   apart in listening. In a pass, RealMe multiplies each 8-bit weight row
   against every sentence at once, with exactly GGML's arithmetic (AVX2 on
@@ -539,7 +544,7 @@ The computer was a small Intel NUC: an i7-10710U, a 15-watt laptop processor
 with 6 cores and 12 threads, 64 GB of DDR4-2667 memory and no graphics card
 (Intel UHD graphics only), with the engine built for AVX2 processors. The
 settings were RealMe's defaults: the 8-bit model, 8 sentences per pass (what
-`_Bench_Batch.bat` chose on it), refilled as sentences finished, RealMe's
+measured on it), refilled as sentences finished, RealMe's
 vocoder kernel, 6 threads, and two
 slide-video encoders on the 6 threads the engine leaves free.
 
@@ -600,12 +605,10 @@ and no engine switch from `realme key`. Settings made in the shell before the
 Studio started are left alone and named; recordings already made are kept.
 These defaults suit most computers. **Measure this computer**, the second
 button, is optional: it finds the best pass size for this one (about 15
-minutes, followed in Activity; nothing else records meanwhile), as
-`_Bench_Batch.bat` does. After the voice engine is rebuilt, a measurement
+minutes, followed in Activity; nothing else records meanwhile), for the previous engine. After the voice engine is rebuilt, a measurement
 made before the rebuild is set aside and the default used until it is
 measured again. `realme setup` says which pass size and vocoder are in use
-and where the pass size comes from. `00_Windows\_Engine_Check_8bit.bat` and `_Engine_Check_Vocoder.bat`
-record the same sentences each way, to listen to side by side.
+and where the pass size comes from.
 
 If it does not start:
 

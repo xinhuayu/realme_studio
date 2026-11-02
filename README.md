@@ -8,10 +8,11 @@ clones your voice in your Google project: no graphics card needed, a lecture
 records in about a third of its length (100 minutes in 30–40), about a dollar
 an hour of lecture — your recording and the
 narration are sent to Google, so use a **paid** API project. **The free local
-clone** (`qwen3cpp`) keeps everything on your computer at no cost, on
-RealMe's revised voice engine: faster than real time on a 6-core PC (an
-hour of lecture in about three quarters of an hour). It comes in a RealMe package, or
-`3_Get_Voice_Engine.bat` builds it (Visual Studio Build Tools). Or use the
+clone** (`realme-rev-qwen3-tts`) keeps everything on your computer at no
+cost, on RealMe's revised voice engine: faster than real time on a 6-core PC
+(a 52-minute lecture recorded in 33 minutes on a 2019 NUC). It comes in a
+RealMe package, or `3_Get_Voice_Engine.bat` builds it (Visual Studio Build
+Tools); `_Rebuild_Voice_Engine.bat` builds it again for a new processor. Or use the
 three free draft voices for everything.
 
 Slides go in as a **PDF**. A `.pptx` works only where LibreOffice is
@@ -93,6 +94,16 @@ and how it was checked, is in
 
 ### The local voice engine
 
+- **The local voice is `realme-rev-qwen3-tts`** (DESIGN.md section 0). Studio
+  builds it from the engine source below for each computer's processor:
+  `_Rebuild_Voice_Engine.bat` (`realme engine rev`; `force` to compile again
+  anyway) into `tools\realme-rev-qwen3-tts`, reading the 8-bit model files
+  in `tools\qwen3cpp\models_q8` as they are. Its settings are fixed in
+  `engines/rev.py` (`realme engine rev --threads N --cp-steps 12|15` changes
+  this computer's), and every take is checked as it is recorded. The previous
+  engine (`qwen3cpp`, described below) is no longer offered as a voice; it
+  still converts and quantizes the model files (`_Rebuild_Voice_Engine.bat
+  legacy`) and is the portable build a colleague's package carries.
 - RealMe's engine source is `03_App/realme/engines/qwen3cpp_realme`: the
   original qwen3-tts.cpp with every RealMe change already made, RealMe's own
   `src/realme_*.inc`, and GGML's one gated file under `ggml_overlay/`. Every
@@ -127,14 +138,14 @@ and how it was checked, is in
   most 4, as free memory allows (`REALME_RECORD_WORKERS`). Slide videos are
   made on the threads the engine leaves free (`REALME_EARLY_VIDEOS`).
   `realme setup` says what this computer will use.
-- Checks on the real voice, each leaving the audio to listen to:
-  `_Engine_Speedup_Check.bat` (`realme engine-timing --compare`),
-  `_Engine_Check_8bit.bat`, `_Engine_Check_Vocoder.bat`; `_Bench_Batch.bat`
-  (`realme bench-batch`) measures the best pass size and saves it;
-  `_Engine_Timing.bat` reports where the time goes; `_Bench_Parallel.bat`
-  (`realme bench-parallel`) measures whether more than one engine at once
-  helps, one sentence at a time or in passes (`--batch 8`). None changes the
-  working engine.
+- Measuring on the real voice: `_Tune_Voice_Engine.bat`
+  (`03_App\run_cpu_combinations.py`) times every combination of the local
+  voice's switches and pass sizes, checks they give the same audio, and says
+  the fastest; `03_App\run_codebook_listening.py` renders the predictor-step
+  and 8-bit-vocoder variants side by side to listen to. For the previous
+  engine, `realme engine-timing --compare`, `realme bench-batch` and
+  `realme bench-parallel` remain on the command line (their launchers were
+  retired in November 2026). None changes the working engine.
 
 ### The voice server
 

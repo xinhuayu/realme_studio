@@ -75,8 +75,10 @@ def main() -> int:
           "and never both")
     for n in ("elevenlabs", "chatterbox", "indextts", "google_chirp3"):
         check(n in NOT_DEVELOPED, f"{n} is not one we set up")
-    for n in ("qwen3cpp", "piper"):
+    for n in ("realme-rev-qwen3-tts", "piper"):
         check(n in DEVELOPED, f"{n} is")
+    check("qwen3cpp" in NOT_DEVELOPED and "qwen3cpp" in REGISTRY,
+          "the previous local engine is no longer offered, but still usable by name")
     check(all(n in REGISTRY for n in NOT_DEVELOPED),
           "the ones we do not set up are still usable by name")
     # Retired engines: not offered, not checked, not constructible.

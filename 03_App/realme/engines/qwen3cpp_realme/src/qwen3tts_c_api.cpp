@@ -5,6 +5,7 @@
  * Objective-C objects when called from background threads. */
 
 #include "qwen3_tts.h"
+#include "realme_runtime.inc"
 
 #ifdef __APPLE__
 #include <objc/objc.h>
@@ -50,6 +51,7 @@ struct Qwen3TtsAudio {
 struct Qwen3Tts {
     qwen3_tts::Qwen3TTS engine;
     std::string last_error;
+    qwen3_tts::realme_runtime_state cpu_runtime;
 };
 
 // Helper: convert C params to C++ params
@@ -118,6 +120,8 @@ Qwen3TtsAudio * qwen3_tts_synthesize(
         Qwen3Tts * tts, const char * text,
         const Qwen3TtsParams * params) {
     if (!tts || !text) return nullptr;
+    qwen3_tts::realme_call_scope scope(tts->cpu_runtime);
+    if (!scope.acquired) return nullptr;
     AUTORELEASE_BEGIN
     auto cpp_params = to_cpp_params(params);
     auto result = tts->engine.synthesize(text, cpp_params);
@@ -149,6 +153,8 @@ Qwen3TtsAudio * qwen3_tts_synthesize_with_voice_file(
         const char * reference_audio_path,
         const Qwen3TtsParams * params) {
     if (!tts || !text || !reference_audio_path) return nullptr;
+    qwen3_tts::realme_call_scope scope(tts->cpu_runtime);
+    if (!scope.acquired) return nullptr;
     AUTORELEASE_BEGIN
     auto cpp_params = to_cpp_params(params);
     auto result = tts->engine.synthesize_with_voice(text, reference_audio_path, cpp_params);
@@ -165,6 +171,8 @@ Qwen3TtsAudio * qwen3_tts_synthesize_with_voice_samples(
         const float * ref_samples, int32_t n_ref_samples,
         const Qwen3TtsParams * params) {
     if (!tts || !text || !ref_samples || n_ref_samples <= 0) return nullptr;
+    qwen3_tts::realme_call_scope scope(tts->cpu_runtime);
+    if (!scope.acquired) return nullptr;
     AUTORELEASE_BEGIN
     auto cpp_params = to_cpp_params(params);
     auto result = tts->engine.synthesize_with_voice(text, ref_samples, n_ref_samples, cpp_params);
@@ -180,6 +188,8 @@ int32_t qwen3_tts_extract_embedding_file(
         Qwen3Tts * tts, const char * reference_audio_path,
         float * embedding_out, int32_t max_size) {
     if (!tts || !reference_audio_path || !embedding_out || max_size <= 0) return -1;
+    qwen3_tts::realme_call_scope scope(tts->cpu_runtime);
+    if (!scope.acquired) return -1;
 
     // Load WAV and resample to 24kHz
     std::vector<float> ref_samples;
@@ -228,7 +238,9 @@ Qwen3TtsAudio * qwen3_tts_synthesize_with_embedding(
         Qwen3Tts * tts, const char * text,
         const float * embedding, int32_t embedding_size,
         const Qwen3TtsParams * params) {
-    if (!tts || !text || !embedding || embedding_size <= 0) return nullptr;
+    if (!tts || !text) return nullptr;
+    qwen3_tts::realme_call_scope scope(tts->cpu_runtime);
+    if (!scope.acquired) return nullptr;
     AUTORELEASE_BEGIN
     auto cpp_params = to_cpp_params(params);
     auto result = tts->engine.synthesize_with_embedding(text, embedding, embedding_size, cpp_params);
@@ -238,6 +250,17 @@ Qwen3TtsAudio * qwen3_tts_synthesize_with_embedding(
     auto * out = to_c_audio(result);
     AUTORELEASE_END
     return out;
+}
+
+// RealMe per-engine CPU runtime controls
+// mask=0 restores environment defaults; bits 1..2097152 select independent CPU experiments.
+// 0 success; -1 invalid bits/handle; -2 engine busy. Changes apply to the next call.
+int32_t qwen3_tts_set_cpu_options(Qwen3Tts * tts, uint32_t mask, uint32_t enabled) {
+    if (!tts || (mask & ~uint32_t(qwen3_tts::REALME_CPU_FLAGS)) || (enabled & ~mask)) return -1;
+    qwen3_tts::realme_call_scope scope(tts->cpu_runtime);
+    if (!scope.acquired) return -2;
+    tts->cpu_runtime.options={mask,enabled};
+    return 0;
 }
 
 const char * qwen3_tts_get_error(const Qwen3Tts * tts) {

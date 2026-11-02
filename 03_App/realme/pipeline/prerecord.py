@@ -113,6 +113,61 @@ MAX_BATCH = 16
 #: longest sentence the engine allows (4096 slices).
 GB_PER_BATCH_SENTENCE = 0.5
 
+#: An engine whose sentence caches grow (build_info "cache_growth") holds
+#: only what a sentence has used, doubled at most, so its memory follows the
+#: sentences actually recorded. One talker position in that cache: 28
+#: layers, keys and values, 8 heads of 128, two bytes each.
+KV_BYTES_PER_POSITION = 28 * 2 * 8 * 128 * 2
+#: Audio frames per second of speech (12 Hz codec: 80 ms a frame).
+FRAMES_PER_SECOND = 12.5
+#: Speech slower than any lecture pace, so the estimate errs long.
+WORDS_PER_SECOND_SLOW = 1.5
+#: Per sentence outside the cache (activations, predictor cache, sampling).
+GB_SENTENCE_OVERHEAD = 0.02
+
+
+def _seconds_long(text: str) -> float:
+    """A generous estimate of how long a sentence takes to say."""
+    words = len(text.split())
+    wide = sum(1 for ch in text if ord(ch) >= 0x2E80)   # CJK: no spaces
+    return max(words / WORDS_PER_SECOND_SLOW, len(text) / 10.0, wide / 3.0) + 2.0
+
+
+def gb_per_sentence(tts, texts=()) -> float:
+    """Memory one more sentence in a pass needs, for these sentences.
+
+    An engine that sizes each sentence's cache for the longest sentence it
+    allows needs GB_PER_BATCH_SENTENCE whatever is said. One whose caches
+    grow needs room for the longest of `texts`: its positions (prompt and
+    frames), times two for the doubling, plus the old copy held while a
+    cache grows (three in all). Never more than the fixed figure. Measured
+    on a 6-core NUC (6 threads, 8 to 16 slots, short sentences), each extra
+    sentence added about 16 MB; this estimate is several times that.
+    """
+    base = base_engine(tts)
+    grows = getattr(base, "cache_grows", None)
+    texts = [t for t in texts if t]
+    if not (callable(grows) and grows()) or not texts:
+        return GB_PER_BATCH_SENTENCE
+    longest = max(texts, key=_seconds_long)
+    frames = _seconds_long(longest) * FRAMES_PER_SECOND
+    prompt = 2 * len(longest.split()) + len(longest) / 4 + 32
+    gb = 3 * (frames + prompt) * KV_BYTES_PER_POSITION / 1e9 + GB_SENTENCE_OVERHEAD
+    return min(GB_PER_BATCH_SENTENCE, gb)
+
+
+def fit_memory(n: int, b: int, each: float, free: float | None) -> tuple[int, int]:
+    """Engines and sentences per pass that fit in `free` GB: fewer engines
+    first, then fewer sentences per pass. Unknown free memory changes
+    nothing."""
+    per = GB_PER_ENGINE + b * each
+    while n > 1 and free is not None and free < n * per + GB_SPARE:
+        n -= 1
+    while b > 1 and free is not None and free < per + GB_SPARE:
+        b -= 1
+        per = GB_PER_ENGINE + b * each
+    return max(1, n), b
+
 
 def batch_for(tts, n_takes: int) -> int:
     """Sentences per pass of one local-clone engine. 1 means one at a time."""
@@ -133,7 +188,8 @@ def batch_for(tts, n_takes: int) -> int:
         # q8_0`); one not measured here uses what a 6-core PC measured.
         try:
             from realme.adapters.tts_qwen3_dll import batch_default
-            b = batch_default(getattr(base, "quant", None))
+            own_default = getattr(base, "batch_default", None)
+            b = own_default() if callable(own_default) else batch_default(getattr(base, "quant", None))
         except ImportError:
             b = 1
     return max(1, min(MAX_BATCH, b, n_takes))
@@ -248,14 +304,20 @@ def _record(tts, take: Take, results) -> None:
     """Record one take and report it: done, hurried, quota, or error."""
     from realme.adapters.base import QuotaExceeded
     from realme.core.media import duration_of
-    from realme.pipeline.speak import _rush_of
+    from realme.pipeline.speak import _rush_of, _runaway_of
     try:
         take.path.parent.mkdir(parents=True, exist_ok=True)
         t0 = time.perf_counter()
         _say(tts, take)
         secs = time.perf_counter() - t0
         rush = _rush_of(tts)
-        if rush:
+        ran = _runaway_of(tts)
+        if ran:
+            # Not entered in the ledger: recorded again in order, where a
+            # second run-on is split into smaller pieces.
+            results.put(("error", take.key, 0.0,
+                         f"it ran on past its text ({ran:.0f} s for {len(take.text.split())} words)"))
+        elif rush:
             # Not entered in the ledger: the loop records it again and splits
             # it if it is still hurried -- the QC must see it, as it would have.
             results.put(("rushed", take.key, secs, rush))
@@ -288,8 +350,15 @@ def _record_batch(tts, group: list, results) -> None:
         tts.synthesize_batch([(t.text, t.path, t.pace, t.language)
                               for t in group])
         secs = (time.perf_counter() - t0) / len(group)
+        ask = getattr(tts, "runaway_take", None)
         for t in group:
-            results.put(("done", t.key, secs, duration_of(t.path)))
+            ran = ask(t.path) if callable(ask) else None
+            if ran:
+                # A reason (take_problem); an older engine gave the seconds.
+                results.put(("error", t.key, 0.0, ran if isinstance(ran, str) else
+                             f"it ran on past its text ({ran:.0f} s for {len(t.text.split())} words)"))
+            else:
+                results.put(("done", t.key, secs, duration_of(t.path)))
     except QuotaExceeded as e:
         for t in group:
             results.put(("quota", t.key, 0.0, (str(e), _per_minute(e))))
@@ -616,6 +685,9 @@ class Prerecorder:
         """Nothing more will come: let the loop record what is left -- all
         but a sentence a thread is still recording, which settles when its
         result arrives."""
+        # A take already back but not yet read is recorded, not "left": the
+        # loop must not record (and pay for) it again.
+        self._enter_done()
         with self._inflight_mu:
             self._drain_jobs()
             busy = set(self._inflight)
@@ -751,6 +823,28 @@ class Prerecorder:
             if p.is_alive():
                 p.terminate()
                 p.join(timeout=5)
+        # Takes that came back but were never read: when recording stops
+        # (Google's allowance runs out, say), every sentence no thread is
+        # still recording counts as settled -- including those whose result
+        # is already waiting here. Entered now, so a paid take is kept.
+        self._enter_done()
+
+    def _enter_done(self) -> None:
+        """Enter every finished take still waiting in the results queue."""
+        if getattr(self, "results", None) is None:
+            return
+        while True:
+            try:
+                kind, key, secs, extra = self.results.get_nowait()
+            except _queue.Empty:
+                break
+            except Exception:                    # a closed process queue
+                break
+            if kind == "done" and key in self.takes and key not in self.keys:
+                self.ledger.put(key, self.takes[key].path, float(extra))
+                self.keys.add(key)
+                self.resolved.add(key)
+                self.synth_s += secs
 
     #: How long the error path waits for hosted-voice requests already sent.
     PAID_WAIT_S = 90.0
@@ -768,16 +862,7 @@ class Prerecorder:
         deadline = time.perf_counter() + self.PAID_WAIT_S
         for th in self._threads:
             th.join(timeout=max(0.0, deadline - time.perf_counter()))
-        while True:
-            try:
-                kind, key, secs, extra = self.results.get_nowait()
-            except _queue.Empty:
-                break
-            if kind == "done" and key in self.takes and key not in self.keys:
-                self.ledger.put(key, self.takes[key].path, float(extra))
-                self.keys.add(key)
-                self.resolved.add(key)
-                self.synth_s += secs
+        self._enter_done()
 
     def stats(self) -> dict:
         return {"keys": self.keys, "spoken": len(self.keys),
@@ -806,13 +891,11 @@ def start(manifest, tts, workdir: Path, ledger, *, mode: str = "natural",
         # more engines if there is memory for each one's passes too.
         from realme.parbench import available_memory_gb
         free = available_memory_gb()
-        per = GB_PER_ENGINE + b * GB_PER_BATCH_SENTENCE
-        while n > 1 and free is not None and free < n * per + GB_SPARE:
-            n -= 1
-        while b > 1 and free is not None and free < per + GB_SPARE:
-            b -= 1
-            per = GB_PER_ENGINE + b * GB_PER_BATCH_SENTENCE
-        n = max(1, n)
+        each = gb_per_sentence(tts, [t.text for t in takes])
+        n, b = fit_memory(n, b, each, free)
+        if free is not None:
+            log(f"  memory: {free:.1f} GB free; {b} per pass at about "
+                f"{each:.2f} GB a sentence")
     if n <= 1 and b <= 1:
         return None
     Path(workdir).mkdir(parents=True, exist_ok=True)

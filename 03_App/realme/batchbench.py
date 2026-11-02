@@ -136,7 +136,18 @@ def main_cli(sizes, sentences: int, outdir: Path, reference: Path | None,
     from realme.core.env import data_home
     outdir.mkdir(parents=True, exist_ok=True)
     from realme.pipeline.prerecord import base_engine
-    tts = base_engine(build("qwen3cpp", reference_wav=reference))
+    # The local voice lectures use: realme-rev-qwen3-tts where it is built,
+    # else the previous engine.
+    from realme.enrollment.choice import local_clone_installed
+    engine = "realme-rev-qwen3-tts" if local_clone_installed() else "qwen3cpp"
+    log(f"  engine: {engine}")
+    tts = base_engine(build(engine, reference_wav=reference))
+    if hasattr(tts, "cp_steps"):
+        # A sentence on its own always takes all 15 predictor steps; passes
+        # are measured the same way, so one at a time and a pass compare
+        # like with like (and sound identical). The pass size that suits
+        # 15 steps suits 12.
+        tts.cp_steps = 15
     tts.preflight()
     if getattr(getattr(tts, "_lib", None), BATCH_FN, None) is None:
         log("  This voice engine was built before the batch entry point. Run "
@@ -149,13 +160,13 @@ def main_cli(sizes, sentences: int, outdir: Path, reference: Path | None,
             "measure.")
         return 1
     from realme.parbench import available_memory_gb
-    from realme.pipeline.prerecord import (GB_PER_BATCH_SENTENCE,
-                                           GB_PER_ENGINE, GB_SPARE)
+    from realme.pipeline.prerecord import (GB_PER_ENGINE, GB_SPARE,
+                                           gb_per_sentence)
     free = available_memory_gb()
     if free is not None:
+        each = gb_per_sentence(tts, DEFAULT_SCRIPT)
         fit = [b for b in sizes
-               if b == 1 or GB_PER_ENGINE + b * GB_PER_BATCH_SENTENCE
-               + GB_SPARE <= free]
+               if b == 1 or GB_PER_ENGINE + b * each + GB_SPARE <= free]
         if fit != list(sizes):
             log(f"  {free:.0f} GB free: measuring {fit} only")
         sizes = fit
@@ -179,7 +190,7 @@ def main_cli(sizes, sentences: int, outdir: Path, reference: Path | None,
     log("\n  " + v["say"])
     stamp = time.strftime("%Y%m%d_%H%M%S")
     record = {"when": stamp, "identical": same, "sizes": list(sizes),
-              "quant": quant_setting(), "sgemm_all": all_on,
+              "engine": engine, "quant": quant_setting(), "sgemm_all": all_on,
               "rows": rows, "verdict": v,
               "threads": getattr(tts, "threads", None)}
     rf = outdir / f"batch_{stamp}.json"
@@ -200,8 +211,9 @@ def main_cli(sizes, sentences: int, outdir: Path, reference: Path | None,
             saved = {saved.get("quant") or "f16": saved}
     except (OSError, ValueError):
         saved = {}
-    saved[quant_setting()] = {"batch": v["batch"], "when": stamp,
-                              "speedup": v.get("speedup")}
+    # The new voice keeps its own answer, beside the previous engine's per model.
+    saved[engine if engine != "qwen3cpp" else quant_setting()] = {
+        "batch": v["batch"], "when": stamp, "speedup": v.get("speedup")}
     f.write_text(json.dumps(saved, indent=2), encoding="utf-8")
     log(f"  Saved: lectures in your local voice record {v['batch']} "
         f"sentence{'s' if v['batch'] != 1 else ''} per pass "

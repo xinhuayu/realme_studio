@@ -1,14 +1,18 @@
 @echo off
 REM ===================================================================
-REM  Reclaims the disk space held by an older engine folder, once
-REM  RealMe carries its own copy.
+REM  Frees disk space the voice engine no longer needs. Close the Studio
+REM  first. Two steps; neither deletes anything until you say so.
 REM
-REM  This runs in two passes and the first one deletes nothing. It
-REM  checks that RealMe's engine actually loads and that the copied
-REM  weights are the full size, lists what has become a second copy,
-REM  and stops. Only if you then answer YES does anything go - and
-REM  anything RealMe did not adopt (your voice database, profiles,
-REM  settings) is archived beside the folder before that happens.
+REM  1. Older builds of the local voice (realme-rev-qwen3-tts) except the
+REM     one in use, the CPU bundles the old separate engine package
+REM     prepared, that package's own DLLs, packed-weight caches and scratch
+REM     copies. Lists them with sizes; type YES to delete. Never your model
+REM     files, voice, lectures or settings.
+REM  2. Optional: an engine folder from before RealMe carried its own (an
+REM     old real_voice_qwen3). Press Enter to skip. It checks that RealMe's
+REM     engine loads and the copied weights are complete, lists what has
+REM     become a second copy, and deletes only after you answer YES -
+REM     archiving anything RealMe did not adopt beside the folder first.
 REM ===================================================================
 setlocal
 cd /d "%~dp0.."
@@ -25,6 +29,12 @@ REM  after parsing. Turned on only now, after every %~dp0, so a `!` in the
 REM  folder name is not eaten.
 setlocal EnableDelayedExpansion
 
+echo.
+echo  === 1. old engine builds and data ===
+"%REALME_ENV%\python.exe" "03_App\cleanup_engine_space.py"
+echo.
+echo  === 2. an engine folder from before RealMe ^(optional^) ===
+
 REM  An old engine folder can be offered as the default by setting
 REM  REALME_LEGACY_QWEN3 in the environment before running this.
 
@@ -36,7 +46,7 @@ if defined REALME_LEGACY_QWEN3 (
   echo.
   set /p OLD="  Press Enter to use it, or paste another folder: "
 ) else (
-  set /p OLD="  Old engine folder: "
+  set /p OLD="  Old engine folder (press Enter to skip): "
 )
 REM  Explorer's "Copy as path" wraps the path in quotes. Removed with delayed
 REM  expansion, after cmd has parsed the line, so a `)` or `&` in the path is
@@ -47,7 +57,10 @@ if defined OLD set "OLD=!OLD:"=!"
 if "!OLD!"=="" set "OLD=!REALME_LEGACY_QWEN3!"
 REM  "C:\x\" would reach realme as C:\x" - the \" reads as an escaped quote.
 if defined OLD if "!OLD:~-1!"=="\" set "OLD=!OLD!."
-if "!OLD!"=="" exit /b 0
+if "!OLD!"=="" (
+  echo  Skipped.
+  pause & exit /b 0
+)
 if not exist "!OLD!" (
   echo  That folder does not exist: !OLD!
   pause & exit /b 1

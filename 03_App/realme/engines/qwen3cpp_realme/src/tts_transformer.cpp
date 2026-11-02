@@ -12,6 +12,9 @@
 #include <cstdlib>
 #include <cctype>
 #include <sys/stat.h>
+#include "realme_text_mmap.inc"
+#include "realme_sampling.inc"
+#include "realme_embedding.inc"
 
 namespace qwen3_tts {
 
@@ -119,9 +122,20 @@ void TTSTransformer::unload_model() {
     state_.compute_meta.clear();
     last_hidden_.clear();
     embd_row_fp16_scratch_.clear();
+    realme_embedding_rows_.reset();
 }
 
 bool TTSTransformer::load_model(const std::string & model_path) {
+    // Optional reproducible sampling for short accuracy checks; default RNG is unchanged.
+    if (const char * seed = std::getenv("QWEN3_TTS_SEED")) {
+        char * end = nullptr;
+        const auto value = std::strtoull(seed, &end, 10);
+        if (end != seed && *end == 0 && value <= UINT32_MAX &&
+            std::all_of(seed, static_cast<const char *>(end), [](char c) { return c >= '0' && c <= '9'; })) {
+            rng_.seed((uint32_t) value);
+            fprintf(stderr, "  [realme] sampling seed: %u\n", (unsigned) value);
+        }
+    }
     unload_model();
 
     skip_ggml_code_pred_layers_ = false;
@@ -701,8 +715,9 @@ bool TTSTransformer::load_tensor_data(const std::string & path, struct gguf_cont
         return false;
     }
     
+    realme_map_text(model_, path, ctx, backend);
     model_.buffer = ggml_backend_alloc_ctx_tensors(model_.ctx, backend);
-    if (!model_.buffer) {
+    if (!model_.buffer && !(model_.realme_text_mapping && model_.realme_text_mapping->all_weights)) {
         error_msg_ = "Failed to allocate tensor buffer";
         release_preferred_backend(backend);
         return false;
@@ -731,6 +746,7 @@ bool TTSTransformer::load_tensor_data(const std::string & path, struct gguf_cont
         struct ggml_tensor * tensor = it->second;
         size_t nbytes = ggml_nbytes(tensor);
         
+        if (model_.realme_text_mapping && tensor->buffer == model_.realme_text_mapping->buffer) continue;
         read_buf.resize(nbytes);
         
         if (fseek(f, data_offset + offset, SEEK_SET) != 0) {
@@ -963,6 +979,8 @@ bool TTSTransformer::lookup_single_embedding_row(struct ggml_tensor * embedding,
         return false;
     }
 
+    if (realme_embedding_row(realme_embedding_rows_, embedding, token_id, out_row,
+                             ggml_backend_is_cpu(state_.backend), embd_row_fp16_scratch_)) return true;
     const size_t row_offset = (size_t) token_id * embedding->nb[1];
     if (embedding->type == GGML_TYPE_F32) {
         ggml_backend_tensor_get(embedding, out_row, row_offset, (size_t) embd_dim * sizeof(float));
@@ -2298,15 +2316,7 @@ bool TTSTransformer::predict_codes_autoregressive_coreml(const float * hidden,
         }
 
         if (top_k > 0 && top_k < vocab_size) {
-            std::vector<std::pair<float, int32_t>> scored(vocab_size);
-            for (int32_t i = 0; i < vocab_size; ++i) {
-                scored[i] = {logits_ptr[i], i};
-            }
-            std::partial_sort(scored.begin(), scored.begin() + top_k, scored.end(),
-                [](const std::pair<float, int32_t> & a, const std::pair<float, int32_t> & b) {
-                    return a.first > b.first;
-                });
-            float threshold = scored[top_k - 1].first;
+            float threshold = realme_topk_threshold(logits_ptr, vocab_size, top_k, code_probs);
             for (int32_t i = 0; i < vocab_size; ++i) {
                 if (logits_ptr[i] < threshold) {
                     logits_ptr[i] = -INFINITY;
@@ -2430,15 +2440,7 @@ bool TTSTransformer::predict_codes_autoregressive(const float * hidden, int32_t 
         }
         // Top-k filtering
         if (top_k > 0 && top_k < vocab_size) {
-            std::vector<std::pair<float, int32_t>> scored(vocab_size);
-            for (int32_t i = 0; i < vocab_size; ++i) {
-                scored[i] = {logits_ptr[i], i};
-            }
-            std::partial_sort(scored.begin(), scored.begin() + top_k, scored.end(),
-                [](const std::pair<float, int32_t> & a, const std::pair<float, int32_t> & b) {
-                    return a.first > b.first;
-                });
-            float threshold = scored[top_k - 1].first;
+            float threshold = realme_topk_threshold(logits_ptr, vocab_size, top_k, code_probs);
             for (int32_t i = 0; i < vocab_size; ++i) {
                 if (logits_ptr[i] < threshold) {
                     logits_ptr[i] = -INFINITY;
@@ -2765,15 +2767,7 @@ bool TTSTransformer::generate(const int32_t * text_tokens, int32_t n_tokens,
             }
 
             if (top_k > 0 && top_k < cfg.codec_vocab_size) {
-                std::vector<std::pair<float, int32_t>> scored(cfg.codec_vocab_size);
-                for (int32_t i = 0; i < cfg.codec_vocab_size; ++i) {
-                    scored[i] = {logits[i], i};
-                }
-                std::partial_sort(scored.begin(), scored.begin() + top_k, scored.end(),
-                    [](const std::pair<float, int32_t> & a, const std::pair<float, int32_t> & b) {
-                        return a.first > b.first;
-                    });
-                float threshold = scored[top_k - 1].first;
+                float threshold = realme_topk_threshold(logits.data(), cfg.codec_vocab_size, top_k, probs);
                 for (int32_t i = 0; i < cfg.codec_vocab_size; ++i) {
                     if (logits[i] < threshold) {
                         logits[i] = -INFINITY;
@@ -2940,6 +2934,7 @@ bool TTSTransformer::forward_with_audio(const int32_t * tokens, int32_t n_tokens
 }
 
 void free_transformer_model(tts_transformer_model & model) {
+    model.realme_text_mapping.reset();
     if (model.realme_f32_buffer) {
         ggml_backend_buffer_free(model.realme_f32_buffer);
         model.realme_f32_buffer = nullptr;

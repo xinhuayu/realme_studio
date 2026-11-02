@@ -1137,7 +1137,7 @@ def main() -> int:
         os.environ.pop("REALME_GEMINI_NO_RATE_CHECK", None)
 
     print("\nit leads the list, and nobody is moved onto it behind their back")
-    check(DEVELOPED[0] == "gemini-tts" and DEVELOPED[1] == "qwen3cpp",
+    check(DEVELOPED[0] == "gemini-tts" and DEVELOPED[1] == "realme-rev-qwen3-tts",
           "the Studio offers it first, with the local engine right behind",
           str(DEVELOPED))
     from realme.app.profile import DEFAULTS as _D, Profile as _Prof
@@ -1156,10 +1156,11 @@ def main() -> int:
         {"adapters": {"tts": "qwen3cpp", "script_writer": "gemini"}}),
         encoding="utf-8")
     reloaded = _Prof(home / "profile")
-    check(reloaded.data["adapters"]["tts"] == "qwen3cpp",
-          "an existing local choice survives the update untouched",
+    # The retired local engine moves to the new local voice: still local.
+    check(reloaded.data["adapters"]["tts"] == "realme-rev-qwen3-tts",
+          "an existing local choice stays local through the update",
           reloaded.data["adapters"]["tts"])
-    check(_Prof(home / "profile").data["adapters"]["tts"] == "qwen3cpp",
+    check(_Prof(home / "profile").data["adapters"]["tts"] == "realme-rev-qwen3-tts",
           "and survives being loaded again after any backfill was written")
 
     print("\non-the-spot QC: a hurried chunk is re-recorded, not shipped")

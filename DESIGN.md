@@ -1,9 +1,103 @@
 # The free local voice clone: design
 
 How RealMe records a lecture in the lecturer's cloned voice on their own
-computer, and why it runs faster than real time on an ordinary CPU. For using it,
-see START_HERE.md section 12; for every engine change with its switch and
-check, `03_App/realme/engines/qwen3cpp_batch/REALME_CHANGES.md`.
+computer, and why it runs faster than real time on an ordinary CPU. For
+using it, see START_HERE.md section 12; for every engine change with its
+switch and check, `03_App/realme/engines/qwen3cpp_batch/REALME_CHANGES.md`.
+
+**Start here (2026-11-01).** There is one local voice, `realme-rev-qwen3-tts`
+(section 0). It is built by Studio from the engine source in this folder, for
+each computer's processor, and reads the 8-bit model files the converter
+made, as they are. The engine work of October and November 2026 (the CPU
+experiments, their handoffs, check files and the separate engine package)
+is in `_Archive/engine_development_2026-11/`. Everything it kept is
+described here and in `REALME_CHANGES.md`; nobody needs to read the archive
+to work on the engine.
+
+## 0. realme-rev-qwen3-tts: the one local voice
+
+```
+Studio (Twin Setup: Your voice, free local clone)
+  └─ adapters/tts_qwen3_rev.py   RealmeRevTTS (a Qwen3DllTTS): settings, take identity, take check
+       └─ tools/realme-rev-qwen3-tts/local/build_<date>/bin/qwen3tts.dll + ggml*.dll
+            built from tools/realme-rev-qwen3-tts/source = export of engines/qwen3cpp_realme + GGML (gated)
+            reads tools/qwen3cpp/models_q8/qwen3-tts-0.6b-q8_0.gguf + qwen3-tts-tokenizer-f16.gguf (mapped)
+```
+
+**Building** (`engines/rev_build.py: studio_build`; `_Rebuild_Voice_Engine.bat`
+or `realme engine rev`):
+
+1. `cpp.export_source` writes the integrated source with GGML and its
+   tinyBLAS gate into `tools/realme-rev-qwen3-tts/source` (replaced only when
+   it changed).
+2. `ensure_engine` compiles it with MSVC, CMake and Ninja into a new
+   `local/build_<date>` folder, for this processor (`GGML_NATIVE`,
+   `REALME_NATIVE`, OpenMP, tinyBLAS). It first builds a probe: AVX-VNNI
+   kernels are compiled in where the compiler knows the instruction and chosen
+   at run time; GGML's own VNNI only where this processor has it.
+   `REALME_BUILD_VULKAN=1` with the Vulkan SDK adds a GPU backend the vocoder
+   can use. Unchanged source on the same computer is not rebuilt (`force`
+   rebuilds). A failed build leaves the previous one selected
+   (`local/engine_active.json`).
+3. `local/active.json` keeps this computer's choices (threads, predictor
+   steps, the model folder); `local/model_identity.json` the model files'
+   SHA-256, remembered by size and time.
+
+**Settings** (`engines/rev.py`), as measured on the NUC (i7-10710U, 6 cores,
+64 GB): 38 runs of every combination gave identical audio; the best,
+batched predictor attention with kept graphs, attention join and 16
+sentences a pass, took 35.2 s against 42.0 s for the previous settings.
+
+| Setting | Value | Where |
+|---|---|---|
+| code predictor's batched attention, kept predictor and talker graphs | on (exact) | `QWEN3_TTS_CP_BATCH_ATTN=1` in `cpu_settings` |
+| attention join, top-k by selection | on (exact) | `ENABLED` = 4097, set through `qwen3_tts_set_cpu_options` |
+| sentences a pass | 16 with 32 GB or more, else 8 | `batch_default`; `REALME_RECORD_BATCH` |
+| threads | one per physical core, up to 16 | `realme engine rev --threads N`; `REALME_ENGINE_THREADS` |
+| code predictor steps (passes and streams) | 12, mean fill; a sentence on its own always 15 | `realme engine rev --cp-steps 15` |
+| model | the 8-bit pair, mapped read-only | `WEIGHT_MMAP=1` |
+| vocoder | 32-bit, RealMe's kernel (mode 3), fast snake | `VOCODER_F32=3`, `FAST_SNAKE=1` |
+| 8-bit rows shared between fast and slow cores | on where the processor says it is hybrid (Core Ultra, 12th gen and later), after a self-check | `QWEN3_TTS_Q8_SHARE` |
+| AVX-VNNI 8-bit kernels | where the processor has them (bit-identical to AVX2) | `QWEN3_TTS_Q8_VNNI=0` off |
+| decoding beside the pass | off (measured 1.23x slower on the NUC) | `QWEN3_TTS_DECODE_ASYNC=1` |
+
+Options, off unless set (in the settings file, `.env`), each part of a take's
+fingerprint: `QWEN3_TTS_VOCODER_Q8=8` (the vocoder's convolutions in 8 bits;
+PESQ 4.48 against the 32-bit vocoder, no faster on AVX2, about 1.6x with
+AVX-VNNI) or `=7` (7-bit input, 1.25x on AVX2, PESQ 4.23);
+`QWEN3_TTS_VOCODER_BACKEND=gpu` (an engine built with Vulkan);
+`QWEN3_TTS_VOCODER_CODEBOOKS=N` (listening tests only).
+
+**Predictor steps.** Each frame is 16 codes; the predictor makes codes 1..15
+one after another. With 12 steps, codebooks 13-15 are left to each
+codebook's mean embedding. Listened to on the NUC (6 sentences): 12 steps
+could not be told from 15, 10 was acceptable, 8 audibly worse (and with zero
+fill one sentence ran on, 3.75 times its length). A fifth of the predictor's
+steps saves a few per cent of the whole; it is the default to show that each
+stage can be tuned, with 15 as the fallback.
+
+**The take check** (`tts_qwen3_dll.take_problem`). Every take recorded in a
+pass or a stream is checked before it is kept, on the samples already in
+memory (about a millisecond): it ran on past its text; invalid samples; under
+40% of the time the text takes said fast (4 or more words); under 25% of it
+with sound; a silence over 2 s between first and last sound; over 0.2% of
+samples at full scale. A take that fails is not kept: the recording loop
+records that sentence again on its own, in order -- with all 15 steps, the
+fallback. On the 78 takes of the two listening tests it flagged only the
+run-on. `REALME_TAKE_CHECK=0` leaves only the run-on check.
+
+**What it gives.** A 51.8-minute lecture (51 slides, 578 sentences) on the
+NUC recorded in 1956.7 s (0.63 of its length) against 2435.8 s the day
+before (0.80 of it), the voice not told apart. The
+original upstream engine needs 3.79 s of work per second of speech.
+
+**The previous local engine** (`qwen3cpp`: the same source built the older
+way, upstream's settings) is no longer offered in the voice list; a profile
+that used it moves to `realme-rev-qwen3-tts`. It is still built by
+`_Rebuild_Voice_Engine.bat legacy` and by `3_Get_Voice_Engine.bat`, which
+use it to convert and quantize the model files. Once the NUC lecture on the
+new voice is confirmed, the converter moves to the new engine and the old
+build path is removed.
 
 ## 1. The pieces
 
@@ -165,7 +259,60 @@ recorded in 37.2 minutes and rendered in 38.0, 0.72 and 0.73 of the video's
 recorded in 44.4 minutes and rendered in 45.6 (0.86 and 0.89 of that take's
 51.5 minutes). 16% less time; the voice not told apart.
 
+### Growing sentence caches on a 16 GB CPU laptop
+
+CPU batches and refilled streams now start each talker cache with the prompt
+plus 128 audio positions and the usual eight-position allowance, rather than
+reserving all 4096 audio positions at once. Before a graph needs more space,
+the cache grows geometrically up to its original capacity limit. Used F16 key
+and value bytes are copied unchanged, after the previous scheduler graph has
+been reset. The generation limit, attention arithmetic, and sampling order
+are unchanged. A completed stream slot's allocations can serve the next
+sentence; all its sentence state is reset. Reuse is local to one stream and
+bounded by its slot count. Fixed batches grow but release their caches on
+completion; single-sentence generation retains its previous allocation.
+
+`QWEN3_TTS_CACHE_GROW=0` restores eager allocation and disables reuse.
+`QWEN3_TTS_CACHE_INITIAL` changes the initial audio allowance (128 by default;
+small values exercise growth boundaries), and `QWEN3_TTS_CACHE_TRACE=1` logs
+growth and reuse. The prerecorder's 0.5 GB per sentence memory estimate stays
+conservative: a long sentence can still grow to the original limit.
+
+Implementation notes, measured results, commands, and the Claude Code cross
+check are in `_Archive/engine_development_2026-11/CACHE_GROWTH_HANDOFF.md`. The real-model
+checker is `03_App/check_cache_growth.py`. Keep the physical 16 GB XPS results
+separate from the 64 GB NUC working computer's results.
+
+### Read-only text embedding storage on CPU
+
+The Q8 transformer's 622 MB F16 text vocabulary table is mapped read-only from
+the original GGUF on CPU. GGML wraps that storage and its context allocator
+skips the already assigned tensor. This avoids the private table allocation
+and its full-size loading copy; the OS pages in the vocabulary rows used by
+the narration. All weight bytes and embedding operations stay unchanged.
+The model owns the view until unload. Other weights use the normal loader.
+GPU backends and failed mappings retain copying; `QWEN3_TTS_TEXT_MMAP=0`
+selects copying explicitly. Implementation, measurements, and reproduction
+commands are in `_Archive/engine_development_2026-11/TEXT_MMAP_HANDOFF.md`.
+
+### Lazy mode-3 vocoder fallback weights
+
+The CPU mode-3 vocoder prepares its packed decoder weights before the regular
+F32 copies. Regular preparation skips those packed tensors and keeps only the
+three earlier convolutions. If the fast decoder stage cannot be built, the
+missing older F32 layout is prepared in a separate buffer before building the
+fallback graph. It is retained for reuse until unload. Allocation failure
+returns a clear decoding error and allows retry. Original F16 storage remains
+available for frame-cap fallback. `QWEN3_TTS_VOCODER_LAZY=0`, set before engine
+creation, retains eager copies. See
+`_Archive/engine_development_2026-11/VOCODER_STORAGE_HANDOFF.md` for exact storage counts,
+validation, measurements, and the Claude Code cross check.
+
 ## 4. Building
+
+`realme-rev-qwen3-tts` is built as section 0 says. What follows is how the
+integrated source is made, which it shares, and the previous engine's build
+(`tools/qwen3cpp`), kept for converting the model files until it is retired.
 
 Two source folders, side by side in `engines/`:
 
@@ -226,6 +373,9 @@ README_UPSTREAM, build scripts, the 8-bit tool and the voice server).
 
 ## 5. Defaults and who decides
 
+For `realme-rev-qwen3-tts`, the settings in section 0 are set by its adapter
+on every call and take precedence; this table is the previous engine's.
+
 The engine reads its switches from the environment once, when it loads. The
 adapter sets RealMe's defaults just before that, and only where nothing is
 set:
@@ -233,7 +383,7 @@ set:
 | Setting | Default | Set by the user in |
 |---|---|---|
 | model | 8-bit once made, else 16-bit (`quant_setting`) | Twin Setup *model*; `REALME_QWEN3CPP_QUANT` |
-| sentences per pass (up to 16) | measured by `_Bench_Batch.bat` or Twin Setup's *Measure this computer* on the engine as built (1, 2, 4, 8, 12, 16; the smallest within 6% of the fastest), else 8, lowered where free memory is short | Twin Setup; `REALME_RECORD_BATCH` (1 = off) |
+| sentences per pass (up to 16) | measured by `realme bench-batch` or Twin Setup's *Measure this computer* on the engine as built (1, 2, 4, 8, 12, 16; the smallest within 6% of the fastest), else 8, lowered where free memory is short | Twin Setup; `REALME_RECORD_BATCH` (1 = off) |
 | fast snake, 32-bit vocoder | on (`vocoder_defaults`): the kernel (`3`) on an engine built with it, else the copy-free form (`2`), else `1` | Twin Setup *Vocoder*; `QWEN3_TTS_FAST_SNAKE`, `QWEN3_TTS_VOCODER_F32` |
 | 32-bit vocoder's longest sentence | none with `2` or `3`; with `1`, 30 s with 32 GB of memory, 20 s with 16, 10 s below (`FRAMES_BY_MEMORY`) | `QWEN3_TTS_VOCODER_F32_MAX_FRAMES` |
 | threads | one per physical core, up to 6 | `QWEN3_TTS_THREADS` |
@@ -300,9 +450,11 @@ reduced to fit.
   under both sanitizers. Refilled passes: every sentence identical to one
   at a time with 1, 2, 4 and 8 places and out-of-order finishing, through
   the C API and through the adapter.
-- On the lecturer's computer: `_Engine_Speedup_Check.bat`,
-  `_Engine_Check_8bit.bat`, `_Engine_Check_Vocoder.bat` (the same sentences
-  each way, measured and left to listen to) and `_Bench_Batch.bat`.
+- On the lecturer's computer: `_Tune_Voice_Engine.bat` (every combination
+  of switches, identical audio required) and
+  `03_App\run_codebook_listening.py` (variants side by side to listen to).
+  For the previous engine, `realme engine-timing --compare` and
+  `realme bench-batch`.
 
 ## 8. The engine for other tools
 
@@ -383,3 +535,23 @@ command-line options override it.
   positions, so under 1% to gain.
 - The upstream CLI's `-j` is still not applied (upstream behaviour);
   `QWEN3_TTS_THREADS` is.
+
+## 10. Future plans and ideas
+
+Measured or reasoned on the two computers here (Core i7-8550U XPS, 16 GB;
+Core i7-10710U NUC, 64 GB), neither with a usable GPU. Each is for a computer
+that can measure it; none is needed for today's voice.
+
+| Idea | For | What is known | First step |
+|---|---|---|---|
+| Streaming vocoder: decode a sentence frame by frame as it is generated | a GPU machine, or interactive use | on the CPU, chunked decoding gains at most about 5% a frame; exact streaming needs a key/value cache for the vocoder's 8-layer pre-transformer and carried convolution state, and softmax rounding changes with sequence length | re-evaluate with a GPU vocoder, where decoding beside generation is free |
+| Vocoder on a GPU | laptops with integrated or discrete GPUs | built (`REALME_BUILD_VULKAN=1`, `QWEN3_TTS_VOCODER_BACKEND=gpu`); checked on a software GPU only, 25 dB from the 32-bit CPU vocoder on random weights | measure speed and listen on the 2025 XPS's Arc GPU; then decide a default |
+| The new Dell XPS (Core Ultra) | the next working computer | AVX-VNNI kernels (bit-identical) and P/E-core row sharing are in and switch on by themselves | `_Rebuild_Voice_Engine.bat`, then `run_cpu_combinations.py` and a lecture, to set its own threads and pass size |
+| MacBook (M4/M5) | Apple silicon | the NEON kernels and the 8-bit products were checked on emulated ARMv8.2; the build path (`rev_build.ensure_engine`) is Windows/MSVC only | a macOS build path (clang, CMake, `.dylib`, Accelerate and Metal off at first), then the same checks; later SME2/i8mm kernels |
+| Signed 8-bit dot products (AVX-VNNI-INT8, `vpdpbssd`) | Lunar Lake, Arrow Lake and later | removes the sign trick in the 8-bit kernels and the vocoder's 8-bit path | a third kernel include, chosen at run time like VNNI |
+| AVX-512 kernels | Zen 4/5, future Intel | twice the lanes for the 8-bit products | as above |
+| Wider 8-bit tiles, fewer graph nodes | every CPU | the transformers run at under 10% of the processor's 8-bit peak: latency-bound by thousands of small operations and barriers a frame | fuse a layer's products into one node per pass |
+| NPU or iGPU through OpenVINO | Core Ultra NPU | lossy (its own quantization) | an experiment only, listened to |
+| 8-bit vocoder as a default | VNNI computers | PESQ 4.48, about 1.6x for the vocoder with VNNI | listen on the new XPS; make it that computer's default if not told apart |
+| Fewer predictor steps per sentence | every CPU | 12 is the default; 10 acceptable | a take check that asks for 15 only where it hears a problem |
+

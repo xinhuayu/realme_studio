@@ -806,11 +806,11 @@ Consider a cohort where 15.3 percent received the intervention…</pre>
           about a third of its length, 130 languages. Your reference clip and every sentence you
           render are sent to Google, so it wants a paid project. The render
           log says what each slide cost as it goes.</td></tr>
-        <tr><th>Free local clone<br><span class="mono" style="font-weight:400">qwen3cpp</span></th><td><b>Your voice, cloned on this computer.</b>
-          Nothing leaves it and nothing to pay; about real time on a 6-core
-          desktop (an hour of lecture in about an hour), longer on a laptop.
-          It comes in RealMe packages, or <code>00_Windows\3_Get_Voice_Engine.bat</code>
-          builds it. Pick it in Twin Setup or per render in the Lecture
+        <tr><th>Free local clone<br><span class="mono" style="font-weight:400">realme-rev-qwen3-tts</span></th><td><b>Your voice, cloned on this computer.</b>
+          Nothing leaves it and nothing to pay; about real time or better on a
+          6-core desktop, longer on a laptop.
+          <code>00_Windows\3_Get_Voice_Engine.bat</code> builds it the first time,
+          <code>_Rebuild_Voice_Engine.bat</code> again for a new processor. Pick it in Twin Setup or per render in the Lecture
           tab.</td></tr>
       </table>
       <p class="hint">Voice cloning itself is optional: with neither clone,
@@ -1179,8 +1179,8 @@ Consider a cohort where 15.3 percent received the intervention…</pre>
         needs no GPU; a lecture records in about a third of its length
         (100 minutes in 30–40) and costs about a dollar an hour.</p>
       <p class="hint">The other cloned voice, the free local clone
-        <b>qwen3cpp</b>, keeps everything on this computer at no cost, at
-        about real time on a 6-core PC. Pick it under <i>Voice for
+        <b>realme-rev-qwen3-tts</b>, keeps everything on this computer at no cost,
+        at about real time or better on a 6-core PC. Pick it under <i>Voice for
         lectures</i> above; if it is not installed,
         <code>00_Windows\3_Get_Voice_Engine.bat</code> builds it.</p>
       <p class="hint"><b>Before anything is uploaded.</b> On Google's free
@@ -1750,7 +1750,8 @@ function esc(s){return String(s==null?'':s).replace(/[&<>"]/g,c=>({'&':'&amp;','
 /* ------------------------------------------------------- plain language
  * Menus and notes name voices the way a lecturer would, not by engine id.
  * Option VALUES stay the engine ids -- only the words shown change. */
-const ENGINE_NAMES = {'gemini-tts': 'Gemini', 'qwen3cpp': 'free local clone',
+const ENGINE_NAMES = {'gemini-tts': 'Gemini', 'realme-rev-qwen3-tts': 'free local clone',
+  'qwen3cpp': 'previous local engine',
   'qwen3cpp-cli': 'local clone, command-line build',
   'qwen3': 'local clone, Python build'};
 /* Developer variants of the local clone: listed only when they work here. */
@@ -1770,6 +1771,8 @@ function cap(s){ return s ? s[0].toUpperCase() + s.slice(1) : s; }
 /* Why an engine cannot be picked, in a few words with the next step. */
 function whyUnavailable(k, v){
   const d = String((v && v.detail) || '');
+  if(k === 'realme-rev-qwen3-tts') return /models_q8|model files/.test(d)
+    ? 'not installed (3_Get_Voice_Engine.bat)' : 'not built here yet (_Rebuild_Voice_Engine.bat)';
   if(k.startsWith('gemini')){
     if(/GEMINI_API_KEY/.test(d)) return 'needs a Gemini key (2_Set_Key.bat)';
     if(/replicated voice/i.test(d)) return 'not created yet (Twin Setup)';
@@ -1873,7 +1876,7 @@ async function boot(){
   else
     // Gemini is the default clone; the local engine is optional, so it is
     // offered in the tooltip rather than as the thing to do.
-    pills.push(`<span class="pill warn" title="Or the free local clone, qwen3cpp (00_Windows\\3_Get_Voice_Engine.bat builds it). Or use the draft voices: Twin Setup → Voice for lectures">no cloned voice yet — Twin Setup → Your voice → Gemini</span>`);
+    pills.push(`<span class="pill warn" title="Or the free local clone, realme-rev-qwen3-tts (00_Windows\\3_Get_Voice_Engine.bat builds it). Or use the draft voices: Twin Setup → Voice for lectures">no cloned voice yet — Twin Setup → Your voice → Gemini</span>`);
   // The engine loads in the background from the moment the Studio starts, so
   // the first Preview does not pay for it. Say so while it happens, so a
   // 30-second model load does not look like an idle page.
@@ -3272,15 +3275,18 @@ function paintLocalClone(r){
   panel.classList.toggle('hidden', !r.installed);
   if(!r.installed) return;
   $('lc-quant').value = r.quant;
-  const auto = (r.measured||{})[r.quant] || (r.defaults||{})[r.quant] || 1;
-  const how = (r.measured||{})[r.quant] ? 'measured on this computer' : 'the default';
-  const stale = (r.stale||[]).includes(r.quant);
+  // The local voice (realme-rev-qwen3-tts) has its own measured or default size.
+  const lv = r.local_voice || {};
+  const auto = lv.batch || (r.measured||{})[r.quant] || (r.defaults||{})[r.quant] || 1;
+  const how = lv.batch ? (lv.source === 'measured' ? 'measured on this computer' : 'the default for this computer\'s memory')
+    : (r.measured||{})[r.quant] ? 'measured on this computer' : 'the default';
+  const stale = !lv.batch && (r.stale||[]).includes(r.quant);
   $('lc-batch').innerHTML =
     `<option value="auto">Automatic — ${auto} (${how})</option>`
     + [1,2,4,8,12,16].map(n => `<option value="${n}">${n === 1 ? '1 — one at a time' : n}</option>`).join('');
   $('lc-batch').value = String(r.batch);
-  $('lc-batch').disabled = !r.batches_built;
-  if($('lc-measure')) $('lc-measure').disabled = !r.batches_built;
+  $('lc-batch').disabled = !(r.batches_built || lv.batch);
+  if($('lc-measure')) $('lc-measure').disabled = !(r.batches_built || lv.batch);
   const shell = r.shell || [];
   $('lc-quant').disabled = shell.includes('REALME_QWEN3CPP_QUANT');
   if(shell.includes('REALME_RECORD_BATCH')) $('lc-batch').disabled = true;

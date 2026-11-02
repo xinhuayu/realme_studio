@@ -19,7 +19,7 @@ DEVELOPER = "Xinhua Yu, the RealMe developer"
 
 CHOICES = {
     "gemini": "gemini-tts",
-    "local": "qwen3cpp",
+    "local": "realme-rev-qwen3-tts",
     "none": "piper",
 }
 
@@ -39,11 +39,13 @@ PROMPT = f"""
 
 
 def local_clone_installed() -> bool:
-    """Is the local engine built here, with its weights?"""
+    """Is the local voice (realme-rev-qwen3-tts) built here, with the model
+    files it reads?"""
     try:
-        from realme.engines.cpp import status
-        st = status()
-        return bool(st.get("built") and st.get("weights_ready"))
+        from realme.engines.rev import engine_home, selection, library_folder
+        home = engine_home()
+        selection(home)                      # the model files are there
+        return (library_folder(home) / "qwen3tts.dll").is_file()
     except Exception:
         return False
 
@@ -58,7 +60,7 @@ def _already_decided(prof) -> str | None:
     if not enrolled:
         return None
     tts = str((d.get("adapters") or {}).get("tts") or "")
-    if tts.startswith("qwen3"):
+    if tts.startswith("qwen3") or tts == CHOICES["local"]:
         return "local"
     if tts.startswith("piper"):
         return "none"
@@ -84,7 +86,7 @@ def next_steps(choice: str, tts: str) -> list[str]:
     if choice == "gemini":
         return ["Next: 2_Set_Key.bat (your Gemini key), then 4_Start_Studio.bat",
                 "-> Twin Setup -> Your voice, and Gemini cloned voice."]
-    if choice == "local" and tts == "qwen3cpp":
+    if choice == "local" and tts == "realme-rev-qwen3-tts":
         return ["The local clone is installed. Next: 4_Start_Studio.bat",
                 "-> Twin Setup -> Your voice, to record the voice it clones."]
     if choice == "local":
@@ -92,7 +94,7 @@ def next_steps(choice: str, tts: str) -> list[str]:
                 "00_Windows\\3_Get_Voice_Engine.bat (it needs Visual Studio Build",
                 "Tools and about 6 GB of disk), or install a RealMe package that",
                 f"carries it (ask {DEVELOPER}). Until then lectures use the",
-                "draft voices; once it is here, choose qwen3cpp in",
+                "draft voices; once it is here, choose your voice (free local clone) in",
                 "Twin Setup -> Voice for lectures."]
     return ["Lectures will use the free draft voices.",
             "A Gemini key (2_Set_Key.bat) is still needed to draft narration",
